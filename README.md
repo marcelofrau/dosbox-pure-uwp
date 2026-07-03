@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/social-preview.jpg" alt="DOSBox Pure - Xbox UWP Port" width="800"/>
+  <img src="docs/images/social-preview.jpg" alt="DOSBox Pure - Xbox UWP Port" width="800"/>
 </p>
 
 <picture>
