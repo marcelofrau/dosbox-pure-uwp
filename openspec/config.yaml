@@ -1,0 +1,23 @@
+schema: spec-driven
+
+context: |
+  Project: DOSBox Pure Unleashed UWP
+  Description: Port of dosbox-pure (libretro core) to UWP for Windows/Xbox.
+  Tech stack: C++/CX, DirectX 11, Direct2D, SDL2 (gamepad + audio), UWP WinRT APIs
+  Build: MSBuild.exe via .sln (Release|x64 only). ARM/ARM64 NOT supported.
+  Platform: UWP sandbox (no Win32 fopen, no OpenGL, no MIDI API)
+  Core: dosbox-pure libretro (submodule at e166344)
+
+  Critical conventions:
+  - All changes go in dosbox-uwp/local/dosbox-pure/ mirroring submodule structure
+  - NEVER commit to extern/dosbox-pure/ submodule directly
+  - CompileAsWinRT=false for legacy C++ core files
+  - SET_HW_RENDER must return 0 (reject HW, force software Voodoo path)
+  - Pixel format: DXGI_FORMAT_B8G8R8A8_UNORM + D2D1_ALPHA_MODE_IGNORE
+  - NEVER .get() on WinRT async from STA — use .then() chaining
+  - D2D BeginDraw/EndDraw mandatory around every DrawBitmap call
+  - GetDpi() from render target, never hardcode 96.0f
+  - Prepend "[dosbox-uwp]" on all OutputDebugStringA calls
+  - x64 only
+
+  Env defines: __LIBRETRO__, DBP_STANDALONE, _CRT_SECURE_NO_WARNINGS, _CRT_NONSTDC_NO_DEPRECATE

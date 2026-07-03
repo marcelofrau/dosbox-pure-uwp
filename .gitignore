@@ -57,3 +57,16 @@ AppPackages/
 # NuGet
 packages/
 *.nupkg
+
+# Personal AI tooling config (user-specific)
+.claude/
+.codex/
+
+# OpenCode dependencies
+.opencode/node_modules/
+
+# Build output (CMake)
+build/
+
+# Run output
+.run-output/

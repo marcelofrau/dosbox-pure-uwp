@@ -71,278 +71,200 @@ Legend: ✅ done  🏗️ partial  🔲 not started  ⏸️ blocked  ❌ broken
 
 ---
 
-## Phase 2 — Libretro Frontend Stub
-**Goal: UWP app calls retro_init() + retro_load_game(), core runs, video renders**
-**Status: 🏗️ PARTIAL — env callbacks implementados, GET_VARIABLE retorna 0, launcher não aparece**
-
-### 2.1 — Lifecycle
-- [x] `retro_set_environment()` → `retro_env_wrap` static wrapper
-- [x] `retro_set_video_refresh()` → `RetroCore::retro_video`
-- [x] `retro_set_audio_sample_batch()` → `RetroCore::retro_audio`
-- [x] `retro_set_input_poll()` → `RetroCore::retro_input_poll`
-- [x] `retro_set_input_state()` → `RetroCore::retro_input_state`
-- [x] `retro_init()` / `retro_deinit()`
-- [x] `retro_load_game(retro_game_info*)` — data passed as pointer + size
-- [x] `retro_get_system_av_info()` — geometry + timing
-- [x] `retro_unload_game()`
-- [x] `retro_run()` — called every frame from Update()
-
-### 2.2 — retro_environment handler — implemented
-**Status: 🟢 IMPLEMENTED**
-
-| Cmd | Nome | Handler |
-|-----|------|---------|
-| 36 | `GET_VFS_INTERFACE` | entrega `uwp_vfs_iface` (v3) ✅ |
-| 6 | `GET_SYSTEM_DIRECTORY` | `LocalFolder` (UTF-8) ✅ |
-| 7 | `GET_SAVE_DIRECTORY` | `LocalFolder` (UTF-8) ✅ |
-| 9 | `SET_PIXEL_FORMAT` | retorna 1 ✅ |
-| 33 | `SET_HW_RENDER` | **retorna 0** — rejeita HW, força SW ✅ |
-| 47 | `SET_MESSAGE_EXT` | log via OutputDebugStringA ✅ |
-| 44 | `SET_KEYBOARD_CALLBACK` | push held keys ✅ |
-| 62 | `GET_THROTTLE_STATE` | `RETRO_THROTTLE_NONE` ✅ |
-| 35 | `SHUTDOWN` | log ✅ |
-
-### 2.3 — retro_environment handler — NOT implemented
-**Status: 🔴 UNSUPPORTED (fall to default, return 0)**
-
-| Cmd | Nome | Consequência |
-|-----|------|-------------|
-| **15** | **`GET_VARIABLE`** | **CRÍTICO — core pergunta centenas de vezes, sem resposta launcher não aparece** |
-| 13 | `SET_VARIABLE` | core notifica mudança de variável |
-| **16** | **`SET_VARIABLES`** | **core tenta registrar ~70 variáveis, sem registro variáveis ficam com default e GET_VARIABLE nunca é chamado corretamente** |
-| 55 | `GET_CURRENT_SOFTWARE_FRAMEBUFFER` | core pergunta se framebuffer SW está válido |
-| 56 | `GET_HW_RENDER_INTERFACE` | core pergunta sobre HW render (ok retornar false) |
-| 27 | `SET_SUPPORT_ACHIEVEMENTS` | achievements desligados (ok) |
-| 18 | `GET_LIBRETRO_PATH` | core query path (ok retornar false) |
-| 58 | `SET_SUPPORT_NO_GAME` | core pergunta se aceita "no game" |
-| 69 | `GET_AUDIO_VIDEO_ENABLE` | core verifica se AV está habilitado |
-
-### 2.4 — Smoke test
-- [x] App chama `BootCore()` → retro_init ✅ → mostra "Core ready. Press F1 to load a game."
-- [x] F1 picker → `LoadGame(path, data)` → `retro_load_game` ✅
-- [x] Frame renderizado na tela (DOSBox core visível) ✅
-- [x] Logging via `OutputDebugStringA` com prefixo `[dosbox-uwp]` ✅
-- [x] FPS/debug overlay com status do core ✅
-
-### 2.5 — Config variables & launcher (PENDENTE)
-- [ ] Levantar lista completa de variáveis do core (source: `core_options.h` — ~70 vars)
-- [ ] Implementar `SET_VARIABLES` (cmd 16) — registrar variáveis no core
-- [ ] Implementar `GET_VARIABLE` (cmd 15) — responder com valores default para cada key
-- [ ] Implementar `GET_CURRENT_SOFTWARE_FRAMEBUFFER` (cmd 55) — retornar true
-- [ ] Opcional: `GET_VARIABLE_UPDATE` (cmd 65) — notificar mudanças
-- [ ] Testar: launcher do DOSBox Pure aparece ao carregar ROM sem jogo configurado
-
----
-
-## Phase 3 — Video Pipeline
-**Goal: DOSBox screen rendering via D2D**
-**Status: ✅ DONE (1 sub-item pending)**
-
-### 3.1 — retro_video callback
-- [x] `retro_video_refresh_cb(data, width, height, pitch)` implemented
-- [x] Reject frames with `pitch == 0` (catches `RETRO_HW_FRAME_BUFFER_VALID`)
-- [x] Copy pixels to `std::vector<uint8_t>` with mutex protection
-- [x] `GrabVideoFrame()` — thread-safe read + invalidate
-
-### 3.2 — D2D bitmap renderer
-- [x] `RetroScreenRenderer` class
-- [x] `CreateBitmap` with `DXGI_FORMAT_B8G8R8A8_UNORM` + `D2D1_ALPHA_MODE_IGNORE`
-- [x] `GetDpi()` from context (not hardcoded) — previne D2DERR_BITMAP_BOUND_AS_TARGET
-- [x] `CopyFromMemory` — copy framebuffer pixels to D2D bitmap
-- [x] `BeginDraw()` → `DrawBitmap()` with letterbox → `EndDraw()`
-- [x] `D2DERR_RECREATE_TARGET` handling (reset bitmap)
-
-### 3.3 — Render loop
-- [x] `Update()` calls `retro_run()`
-- [x] `Render()` grabs frame → renders via D2D (not D3D)
-- [x] Fallback: 3D cube (Sample3DSceneRenderer) when no ROM loaded
-- [x] StepTimer for FPS vsync
-
-### 3.4 — Verify
-- [x] Load ROM (.dosz with .exe or .zip)
-- [x] DOS boot screen visible
-- [ ] Measure FPS baseline (not done)
-
----
-
-## Phase 4 — Input
-**Goal: Keyboard + gamepad working in DOS games**
-**Status: 🏗️ PARTIAL**
-
-### 4.1 — Libretro callbacks
-- [x] `retro_input_poll()` — empty (libretro pattern: frontend reads state before callback)
-- [x] `retro_input_state(port, device, index, id)` implemented for:
-  - [x] `RETRO_DEVICE_KEYBOARD` — reads `s_keyboardState[id]`
-  - [x] `RETRO_DEVICE_JOYPAD` — reads `s_keyboardState[id]` (partial: uses keyboard state, not gamepad)
-  - [x] `RETRO_DEVICE_MOUSE` — relative X/Y (accumulated via `SetMouseMove`)
-  - [x] `RETRO_DEVICE_POINTER` — normalized X/Y + press state
-
-### 4.2 — OnKeyEvent (App.cpp → dosbox_uwpMain)
-- [x] Space → BUTTON_A (gamepad A emulation)
-- [ ] **BUG: uses Windows VirtualKey codes** (`0x0D`=Enter, `0x1B`=Escape, `0x08`=Back, `0x26`=Up, etc.) **not RETROK_* constants** — core calls `SET_KEYBOARD_CALLBACK` but pushes wrong key values. Core ignores them.
-- [ ] Missing: A-Z and 0-9 map correctly only by accident (VK codes match ASCII for letters/numbers)
-- [ ] Missing: F1-F12 mapping (F1 used by file picker)
-- [ ] Missing: Numpad, punctuation, modifiers (Shift/Ctrl/Alt use VK codes)
-- [ ] Missing: `RETRO_DEVICE_ANALOG` — thumbsticks (stub returns 0)
-
-### 4.3 — SDL/UWP gamepad → libretro JOYPAD mapping
-- [x] SDL_GameController connected/disconnected events handled
-- [x] UWP Gamepad API fallback (Xbox without SDL)
-- [ ] BUTTON_A → RETRO_DEVICE_ID_JOYPAD_A (currently maps to keyboard, not joypad)
-- [ ] Left stick → RETRO_DEVICE_ANALOG (not implemented)
-- [ ] D-pad → RETRO_DEVICE_JOYPAD up/down/left/right (not implemented)
-- [ ] Shoulder buttons, triggers → RETRO_DEVICE_JOYPAD (not implemented)
-
-### 4.4 — Verify
-- [ ] Navigate DOSBox Pure launcher menus (blocked by Phase 2.5)
-- [ ] Play simple game (Commander Keen, Doom, etc.)
-- [ ] Test gamepad in-game
-
----
-
-## Phase 5 — Audio
-**Goal: DOS audio (PC speaker, AdLib, Sound Blaster) plays through SDL**
-**Status: 🔲 NOT STARTED — buffer exists, not routed to output**
-
-### 5.1 — Libretro → frontend
-- [x] `retro_audio_sample_batch(data, frames)` — stores PCM samples in `s_audioBuffer` with mutex
-- [x] `GrabAudio()` — returns pointer + frame count
-- [ ] **BUG: `retro_audio` replaces buffer instead of appending** — if main loop doesn't consume, data is lost each frame
-- [ ] `Update()` never calls `GrabAudio()` — data sits in buffer forever
-
-### 5.2 — Route to SDL
-- [ ] SDL audio device is initialized in `SdlInput::Initialize()` (44100Hz, S16SYS, mono) — **already works for beep test**
-- [ ] Call `SDL_QueueAudio(m_audioDevice, data, size)` with samples from `GrabAudio()`
-- [ ] Thread safety: `s_audioMutex` already exists — use same mutex in main loop when reading
-- [ ] **Note**: no blocker here — just wire `GrabAudio()` → `SDL_QueueAudio()` in `Update()`
-
-### 5.3 — Verify
-- [ ] PC speaker beeps in DOS games
-- [ ] AdLib/Sound Blaster music plays
-- [ ] No crackling or dropouts
-
----
-
-## Phase 6 — Config & Save States
-**Goal: Persistent config, save/load states, battery-backed SRAM**
+## Phase A — Core Infra (Changes 1-3)
+**Goal: ROMs load, keyboard + gamepad work in core**
 **Status: 🔲 NOT STARTED**
 
-### 6.1 — RetroCore config variables
-- [ ] Duplicate of Phase 2.5 — implement GET_VARIABLE first
-- [ ] Default values for all ~70 config keys (from `core_options.h`)
-- [ ] Optional: load/save config to JSON or CFG in LocalFolder
+### Change: `patch-fopen-vfs`
+**Files:** `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp`, `extern/libretro-common/vfs/vfs_implementation_uwp.cpp`, `dosbox-uwp/local/dosbox-pure/src/misc/cross.cpp`
 
-### 6.2 — Save states
+- [ ] `fopen_wrap()` → use `CreateFile2FromAppW` (via VFS or direct) instead of CRT `fopen()`
+- [ ] Real `open_directory()` implementation (VFS `opendir`/`readdir`)
+- [ ] `info->data` fallback (patch core to accept in-memory buffer)
+- [ ] Verify `stat()`/`access()` UWP compat
+- [ ] **Result:** ZIP/DOSZ mounts as C: drive, games load
+
+### Change: `fix-keyboard-input`
+**Files:** `dosbox-uwp/dosbox_uwpMain.cpp`, `dosbox-uwp/Content/RetroCore.cpp/.h`
+
+- [ ] Map `Windows::System::VirtualKey` → `RETROK_*` (Enter, Escape, Backspace, Tab, Arrows, Shift, Ctrl, Alt, F1-F12, Numpad, punctuation)
+- [ ] Expand `s_keyboardState[256]` → `s_keyboardState[RETROK_LAST]` (324)
+- [ ] Resolve F1 conflict (picker vs core key)
+- [ ] **Result:** Keyboard navigates Puremenu launcher
+
+### Change: `fix-gamepad-input`
+**Files:** `dosbox-uwp/Content/SdlInput.cpp/.h`, `dosbox-uwp/Content/RetroCore.cpp`
+
+- [ ] SDL buttons A/B/X/Y/Select/Start → `RETRO_DEVICE_ID_JOYPAD_*`
+- [ ] D-pad → `RETRO_DEVICE_ID_JOYPAD_UP/DOWN/LEFT/RIGHT`
+- [ ] Left/Right sticks → `RETRO_DEVICE_ANALOG` (LY/LX/RY/RX)
+- [ ] Triggers (L2/R2) → `RETRO_DEVICE_ID_JOYPAD_L2/R2`
+- [ ] Shoulder (L1/R1) → `RETRO_DEVICE_ID_JOYPAD_L/R`
+- [ ] **Result:** Gamepad navigates Puremenu + plays games
+
+---
+
+## Phase B — OSD/Launcher (Changes 4-5)
+**Goal: Puremenu visible, configurable, navigable**
+**Status: 🔲 NOT STARTED**
+
+### Change: `register-core-options`
+**Files:** `dosbox-uwp/Content/RetroCore.cpp`
+
+- [ ] `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` — expose ~52 vars from `core_options.h`
+- [ ] `RETRO_ENVIRONMENT_GET_VARIABLE` — respond with current values
+- [ ] `RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE` — notify changes
+- [ ] Fallback v1/v0 if core requests older version
+- [ ] **Result:** Puremenu launcher appears with options
+
+### Change: `software-framebuffer`
+**Files:** `dosbox-uwp/Content/RetroCore.cpp`
+
+- [ ] `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER` — expose SW framebuffer pointer
+- [ ] Allow Pure OSD to draw overlay on top of game
+- [ ] **Result:** OSD overlay visible (menus, notifications)
+
+---
+
+## Phase C — Audio (Change 6)
+**Goal: DOSBox sound plays through speaker**
+**Status: 🔲 NOT STARTED**
+
+### Change: `wire-audio`
+**Files:** `dosbox-uwp/dosbox_uwpMain.cpp`, `dosbox-uwp/Content/RetroCore.cpp`
+
+- [ ] Call `GrabAudio()` in `Update()` after `retro_run()`
+- [ ] Send samples to `SDL_QueueAudio(m_audioDevice, ...)`
+- [ ] Replace buffer replace → ring buffer (or double buffer) to avoid data loss
+- [ ] Thread safety with `s_audioMutex`
+- [ ] Verify sample rate (core 48000Hz stereo vs SDL 44100Hz mono)
+- [ ] **Result:** PC speaker, AdLib, Sound Blaster produce audio
+
+---
+
+## Phase D — Platform (Changes 7-9)
+**Goal: Mouse, joypad binding, multi-disc**
+**Status: 🔲 NOT STARTED**
+
+### Change: `dbps-mouse`
+**Files:** `dosbox-uwp/App.cpp`, `dosbox-uwp/dosbox_pure_sta.cpp`
+
+- [ ] Connect CoreWindow `PointerPressed/Moved/Released` → `DBPS_GetMouse`
+- [ ] Relative (MOUSE) + absolute (POINTER)
+- [ ] Scroll wheel support
+- [ ] Mouse capture toggle (relative for FPS games)
+- [ ] **Result:** Mouse works in DOS games and OSD
+
+### Change: `dbps-platform`
+**Files:** `dosbox-uwp/dosbox_pure_sta.cpp`
+
+- [ ] `DBPS_HaveJoy` — return whether gamepad connected
+- [ ] `DBPS_GetJoyBind` — return current mapping
+- [ ] `DBPS_ApplyConfigOverrides` — read/write `FRONTEND.DBP`
+- [ ] `DBPS_IsConfigOverride` / `DBPS_ToggleConfigOverride` / `DBPS_GetConfigOverrideJSON`
+- [ ] `DBPS_SubmitOSDFrame` — route OSD frame to renderer
+- [ ] `DBPS_StartCaptureJoyBind` — binding UI
+- [ ] **Result:** DBPS stubs functional, core integrated with platform
+
+### Change: `disk-control`
+**Files:** `dosbox-uwp/Content/RetroCore.cpp`
+
+- [ ] `RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE`
+- [ ] Callbacks: `set_eject_state`, `get_eject_state`, `get_image_index`, `set_image_index`, `get_num_images`, `replace_image_index`, `add_image_index`, `set_initial_image`
+- [ ] **Result:** Multi-disc games (eject/swap) work
+
+---
+
+## Phase E — UX (Changes 10-11)
+**Goal: Configurable visual experience, modern overlay**
+**Status: 🔲 NOT STARTED**
+
+### Change: `video-enhancements`
+**Files:** `dosbox-uwp/Content/RetroScreenRenderer.cpp/.h`
+
+- [ ] Scale modes: pixel-perfect, integer, stretch, aspect-ratio
+- [ ] Core video options exposed via GET_VARIABLE (machine, cga, svga, aspect_correction, overscan)
+- [ ] FPS baseline measurement
+- [ ] **Result:** User controls scaling and video options
+
+### Change: `rmlui-overlay`
+**Files:** New (RMLUI integration)
+
+- [ ] Integrate RMLUI as D2D/D3D overlay
+- [ ] Visual ROM picker (replace/supplement native FileOpenPicker)
+- [ ] Modern config UI (replace Pure text-mode OSD)
+- [ ] Touch-friendly virtual keyboard
+- [ ] Visual save state manager
+- [ ] **Result:** Modern GUI overlay on DOSBox
+
+---
+
+## Phase F — Save States (Change 12)
+**Goal: Save/load game state**
+**Status: 🔲 NOT STARTED**
+
+### Change: `save-states`
+**Files:** `dosbox-uwp/dosbox_pure_sta.cpp`, `dosbox-uwp/Content/RetroCore.cpp`
+
 - [ ] `retro_serialize_size()` — query state size
 - [ ] `retro_serialize(void* data, size_t size)` — serialize state
 - [ ] `retro_unserialize(const void* data, size_t size)` — restore state
-- [ ] Save/load to `LocalFolder\saves\`
-- [ ] Hotkey: F5 save, F7 load (or F9 quick load — see core_options)
-- [ ] Requires `dosbox_pure_sta.cpp` stubs: `DBPS_RequestSaveLoad`, `DBPS_HaveSaveSlot`
-
-### 6.3 — SRAM (battery-backed saves)
-- [ ] `retro_get_memory_data(RETRO_MEMORY_SAVE_RAM)`
-- [ ] `retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)`
+- [ ] `DBPS_RequestSaveLoad` — trigger save/load from core
+- [ ] `DBPS_HaveSaveSlot` — query available slots
+- [ ] Hotkeys: F5 save, F7 load (or via Puremenu)
 - [ ] Auto-save on suspend/shutdown
-
-### 6.4 — dosbox_pure_sta.cpp stubs
-Current: all 9 functions are no-ops. Need proper implementations for:
-
-| Stub | Purpose | Priority |
-|------|---------|----------|
-| `DBPS_OnContentLoad` | Notify content loaded | Low |
-| `DBPS_SubmitOSDFrame` | OSD rendering | Medium (for launcher/messages) |
-| `DBPS_GetMouse` | Mouse input from OS | High (for pointer/touch) |
-| `DBPS_StartCaptureJoyBind` | Joypad binding UI | Low |
-| `DBPS_HaveJoy` | Joypad available | Medium |
-| `DBPS_GetJoyBind` | Joypad binding query | Low |
-| `DBPS_RequestSaveLoad` | Save state triggers | High (for F5/F7) |
-| `DBPS_HaveSaveSlot` | Save slot available | High |
-| `DBPS_ApplyConfigOverrides` | Config file support | Medium |
-| `DBPS_IsConfigOverride` | Config check | Medium |
-| `DBPS_ToggleConfigOverride` | Toggle config | Medium |
-| `DBPS_GetConfigOverrideJSON` | Export config | Low |
+- [ ] SRAM (`retro_get_memory_data/size`) if core uses it
+- [ ] **Result:** Save states functional
 
 ---
 
-## Phase 7 — Deployment & Polish
-**Goal: App runs on Xbox Dev Mode / Windows Store**
-**Status: 🏗️ PARTIAL**
-
-### 7.1 — File picker
-- [x] F1 opens `FileOpenPicker` with 11 file types (.zip, .dosz, .exe, .com, .bat, .iso, .chd, .cue, .img, .ima, .vhd, .conf)
-- [x] Read file via `FileIO::ReadBufferAsync(file)` (STA-safe — no .get())
-- [x] Data passed as `std::vector<uint8_t>` to `LoadGame`
-
-### 7.2 — Packaging
-- [ ] MSIX package signing with PFX
-- [ ] Deploy to Xbox Dev Mode (test)
-- [ ] Cert install script
-
-### 7.3 — Performance
-- [ ] Profile GPU/CPU of libretro loop
-- [ ] Dynamic resolution scaling (if needed)
-- [ ] Shader CRT/scanlines (optional)
-
-### 7.4 — UX
-- [ ] Splash screen / loading state (currently shows "Core ready. Press F1")
-- [ ] Savestate thumbnails
-- [ ] On-screen keyboard (needed for text input in DOS)
-
----
-
-## Phase 8 — Future / Stretch
-**Status: ⏳ WISHLIST**
-
-- [ ] Netplay (`dbp_network.cpp` already compiled into project — untested)
-- [ ] RetroAchievements (need `SET_SUPPORT_ACHIEVEMENTS` + login UI)
-- [ ] Cheats (need cheat API integration)
-- [ ] Shaders GLSL → HLSL (CRT, scanlines, etc.)
-- [ ] Mouse/touch pointer input — **PARTIALLY done** (MOUSE/POINTER in retro_input_state)
-- [ ] Virtual keyboard XAML overlay
-- [ ] C++/WinRT migration (scaffold uses C++/CX — deprecated but working)
-- [ ] ARM64 target (Xbox Series is x64 but future Surface?)
-- [ ] Investigate: ~1500 C4244 warnings cleanup
-
----
-
-## Dependencies Between Phases
+## Dependencies Between Changes
 
 ```
-Phase 0 (scaffold) ───────────────────── ✅ done
+Phase 0 (scaffold) ────────────────── ✅ done
     │
     ▼
-Phase 1 (core compila) ───────────────── ✅ done
+Phase 1 (core compiles) ───────────── ✅ done
     │
     ▼
-Phase 2 (frontend stub) ──────────────── 🏗️ partial (env var stubs)
+Phase A ── patch-fopen-vfs ────────── 🔲 BLOCKS EVERYTHING
+    │         │
+    │         ├── fix-keyboard-input ── 🔲 unblocks launcher navigation
+    │         └── fix-gamepad-input ─── 🔲 unblocks gamepad
     │
-    ├────► Phase 3 (video) ─────────────── ✅ done (1 item pending)
+Phase B ── register-core-options ──── 🔲 unblocks launcher + config
+    │         │
+    │         └── software-framebuffer ── 🔲 OSD overlay
     │
-    ├────► Phase 4 (input) ─────────────── 🏗️ partial (VK codes broken)
+Phase C ── wire-audio ─────────────── 🔲 independent
     │
-    ├────► Phase 5 (audio) ─────────────── 🔲 not started (buffer exists)
+Phase D ── dbps-mouse ─────────────── 🔲 independent
+    │         │
+    │         ├── dbps-platform ──────── 🔲 depends on mouse
+    │         └── disk-control ───────── 🔲 independent
     │
-    ├────► Phase 6 (config/saves) ──────── 🔲 not started
+Phase E ── video-enhancements ─────── 🔲 depends on options
+    │         │
+    │         └── rmlui-overlay ──────── 🔲 depends on almost everything
     │
-    └────► Phase 7 (deploy) ────────────── 🏗️ partial (picker done)
+Phase F ── save-states ────────────── 🔲 independent (but complex)
 ```
-
-Fases 3, 4, 5, 7 podem ser trabalhadas parcialmente em paralelo (não bloqueiam entre si).
-Fase 2 (especialmente 2.5 — GET_VARIABLE) é pré-requisito para launcher.
-Fase 4.2 (RETROK_ mapping) é pré-requisito para qualquer input de teclado.
-Fase 6 depende de Phase 2.5 + dosbox_pure_sta.cpp.
 
 ---
 
-## Known Bugs & Status
+## OpenSpec Changes
 
-| Bug | Fase | Status |
-|-----|------|--------|
-| RETROK_ mapping: VK codes instead of RETROK_ constants | 4 | ❌ broken |
-| GET_VARIABLE returns 0 — launcher blocked | 2 | ❌ broken |
-| retro_audio replaces buffer instead of append | 5 | ⚠️ needs ring buffer |
-| GrabAudio never called in Update() | 5 | ❌ not wired |
-| MOUSE/POINTER exist but no real mouse input (no mouse event handler) | 4 | 🏗️ partial |
-| No joystick axis → libretro analog mapping | 4 | 🔲 todo |
-| ~1500 C4244 warnings | 1 | 🟡 cosmetic |
+| Change | Status | OpenSpec Path |
+|--------|--------|---------------|
+| `patch-fopen-vfs` | 🔲 created | `openspec/changes/patch-fopen-vfs/` |
+| `fix-keyboard-input` | 🔲 created | `openspec/changes/fix-keyboard-input/` |
+| `fix-gamepad-input` | 🔲 created | `openspec/changes/fix-gamepad-input/` |
+| `register-core-options` | 🔲 created | `openspec/changes/register-core-options/` |
+| `software-framebuffer` | 🔲 created | `openspec/changes/software-framebuffer/` |
+| `wire-audio` | 🔲 created | `openspec/changes/wire-audio/` |
+| `dbps-mouse` | 🔲 created | `openspec/changes/dbps-mouse/` |
+| `dbps-platform` | 🔲 created | `openspec/changes/dbps-platform/` |
+| `disk-control` | 🔲 created | `openspec/changes/disk-control/` |
+| `video-enhancements` | 🔲 created | `openspec/changes/video-enhancements/` |
+| `rmlui-overlay` | 🔲 created | `openspec/changes/rmlui-overlay/` |
+| `save-states` | 🔲 created | `openspec/changes/save-states/` |
