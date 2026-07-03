@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/social-preview.jpg" alt="DOSBox Pure - Xbox UWP Port" width="800"/>
+</p>
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/status-work--in--progress-yellow?style=for-the-badge">
   <img alt="Status" src="https://img.shields.io/badge/status-work--in--progress-yellow?style=for-the-badge">
