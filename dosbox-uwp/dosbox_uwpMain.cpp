@@ -43,6 +43,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 
 dosbox_uwpMain::~dosbox_uwpMain()
 {
+    CleanupTempFile();
     m_retroCore->Shutdown();
     m_deviceResources->RegisterDeviceNotify(nullptr);
 }
@@ -56,6 +57,13 @@ void dosbox_uwpMain::BootCore()
         OutputDebugStringA("[dosbox-uwp] retro_init FAILED\n");
         return;
     }
+
+    auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+    std::wstring basePath = localFolder->Path->Data();
+
+    _wmkdir((basePath + L"\\saves").c_str());
+    _wmkdir((basePath + L"\\config").c_str());
+    OutputDebugStringA("[dosbox-uwp] LocalFolder dirs: saves/, config/\n");
 
     OutputDebugStringA("[dosbox-uwp] Core initialized OK\n");
 
@@ -75,6 +83,9 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
 
     OutputDebugStringA("[dosbox-uwp] Loading ROM...\n");
 
+    CleanupTempFile();
+    m_currentTempPath = path;
+
     if (m_retroCore->LoadGame(path, romData))
     {
         m_statusText = L"Game loaded!";
@@ -88,6 +99,22 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         m_statusTimer = 120;
         OutputDebugStringA("[dosbox-uwp] retro_load_game FAILED\n");
     }
+}
+
+void dosbox_uwpMain::CleanupTempFile()
+{
+    if (m_currentTempPath.empty())
+        return;
+
+    char buf[256];
+    int len = WideCharToMultiByte(CP_UTF8, 0, m_currentTempPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string pathUtf8(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, m_currentTempPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
+    sprintf_s(buf, "[dosbox-uwp] Cleanup temp: %s\n", pathUtf8.c_str());
+    OutputDebugStringA(buf);
+
+    _wremove(m_currentTempPath.c_str());
+    m_currentTempPath.clear();
 }
 
 void dosbox_uwpMain::CreateWindowSizeDependentResources()

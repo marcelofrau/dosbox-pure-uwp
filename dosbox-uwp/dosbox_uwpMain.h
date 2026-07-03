@@ -50,5 +50,8 @@ namespace dosbox_uwp
         bool m_retroRunning = false;
         std::wstring m_statusText;
         int m_statusTimer = 0;
+
+        std::wstring m_currentTempPath;
+        void CleanupTempFile();
     };
 }

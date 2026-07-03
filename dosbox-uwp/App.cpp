@@ -214,35 +214,51 @@ void App::OpenFilePicker()
 
 	create_task(picker->PickSingleFileAsync()).then([this](Windows::Storage::StorageFile^ file)
 	{
-		if (file != nullptr)
-		{
-			char buf[512];
-			int len = WideCharToMultiByte(CP_UTF8, 0, file->Path->Data(), -1, nullptr, 0, nullptr, nullptr);
-			std::string pathUtf8(len, '\0');
-			WideCharToMultiByte(CP_UTF8, 0, file->Path->Data(), -1, &pathUtf8[0], len, nullptr, nullptr);
-			sprintf_s(buf, "[dosbox-uwp] File picker: %s\n", pathUtf8.c_str());
-			OutputDebugStringA(buf);
-
-			std::wstring path = file->Path->Data();
-			create_task(Windows::Storage::FileIO::ReadBufferAsync(file)).then([this, path](Windows::Storage::Streams::IBuffer^ buffer)
-			{
-				if (buffer != nullptr && buffer->Length > 0)
-				{
-					auto dataReader = Windows::Storage::Streams::DataReader::FromBuffer(buffer);
-					std::vector<uint8_t> romData(buffer->Length);
-					dataReader->ReadBytes(Platform::ArrayReference<uint8_t>(romData.data(), (unsigned)buffer->Length));
-					m_main->LoadRom(path, std::move(romData));
-				}
-				else
-				{
-					OutputDebugStringA("[dosbox-uwp] File read failed or empty\n");
-				}
-			});
-		}
-		else
+		if (file == nullptr)
 		{
 			OutputDebugStringA("[dosbox-uwp] Picker cancelled\n");
+			return;
 		}
+
+		char buf[256];
+		sprintf_s(buf, "[dosbox-uwp] Picked: %ls\n", file->Name->Data());
+		OutputDebugStringA(buf);
+
+		create_task(Windows::Storage::FileIO::ReadBufferAsync(file)).then([this, file](Windows::Storage::Streams::IBuffer^ buffer)
+		{
+			if (buffer == nullptr || buffer->Length == 0)
+			{
+				OutputDebugStringA("[dosbox-uwp] File read failed or empty\n");
+				return;
+			}
+
+			auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+
+			create_task(localFolder->CreateFolderAsync(
+				L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
+			.then([this, file, buffer](Windows::Storage::StorageFolder^ tempFolder)
+			{
+				create_task(tempFolder->CreateFileAsync(
+					file->Name, Windows::Storage::CreationCollisionOption::ReplaceExisting))
+				.then([this, buffer](Windows::Storage::StorageFile^ tempFile)
+				{
+					create_task(Windows::Storage::FileIO::WriteBufferAsync(tempFile, buffer))
+					.then([this, tempFile]()
+					{
+						std::wstring localPath = tempFile->Path->Data();
+
+						char buf[256];
+						int len = WideCharToMultiByte(CP_UTF8, 0, localPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+						std::string utf8Path(len - 1, '\0');
+						WideCharToMultiByte(CP_UTF8, 0, localPath.c_str(), -1, &utf8Path[0], len, nullptr, nullptr);
+						sprintf_s(buf, "[dosbox-uwp] Local temp: %s\n", utf8Path.c_str());
+						OutputDebugStringA(buf);
+
+						m_main->LoadRom(localPath, {});
+					});
+				});
+			});
+		});
 	});
 }
 
