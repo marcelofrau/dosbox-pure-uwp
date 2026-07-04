@@ -478,6 +478,17 @@ size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
     // Always queue audio. Frame pacing is the flow control.
     SDL_QueueAudio(s_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
 
+    // Pre-buffer: keep SDL paused until queue holds ~93ms of audio.
+    // This prevents the queue from hitting zero between SDL callback periods
+    // (23.2ms @ 1024 samples) and our frame periods (14.3ms @ 70fps).
+    static bool preBuffered = false;
+    if (!preBuffered && SDL_GetQueuedAudioSize(s_audioDevice) >= 16384)
+    {
+        SDL_PauseAudioDevice(s_audioDevice, 0);
+        preBuffered = true;
+        OutputDebugStringA("[dosbox-uwp] retro_audio: pre-buffer filled, unpausing SDL\n");
+    }
+
     return frames;
 }
 

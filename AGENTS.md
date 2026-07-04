@@ -8,6 +8,7 @@ All documentation, code, comments, and commit messages MUST be in English.
 (User may converse in Portuguese or English; agent responds accordingly.)
 
 ## Critical Rules
+- **NEVER commit or push** without explicit user request. Stage changes only. Wait for "commit", "push", "faz o commit", etc.
 - **NEVER commit to submodule** `extern/dosbox-pure/`. Patches go in `dosbox-uwp/local/dosbox-pure/` mirroring same directory structure.
 - **Build via .sln** not .vcxproj. `$(SolutionDir)` needed for `uwp-dep.props` SDL paths.
 - **x64 only.** ARM64/ARM/x86 NOT supported (Xbox Series is x64).

@@ -74,7 +74,8 @@ bool SdlInput::Initialize()
         OutputDebugStringA(buf);
         if (obtained.freq != 44100 || obtained.channels != 2)
             OutputDebugStringA("[dosbox-uwp] WARNING: SDL audio format mismatch (expected 44100Hz stereo)\n");
-        SDL_PauseAudioDevice(m_audioDevice, 0);
+        // Start paused — retro_audio will unpause after pre-buffer fills
+        SDL_PauseAudioDevice(m_audioDevice, 1);
     }
     else
     {
