@@ -397,6 +397,27 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         if (changed) *changed = false;
         return 1;
     }
+    case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
+    {
+        auto* av = static_cast<const retro_system_av_info*>(data);
+        if (av && av->timing.fps > 0)
+            s_targetFps = av->timing.fps;
+        char buf[256];
+        sprintf_s(buf, "[dosbox-uwp]   SET_SYSTEM_AV_INFO: %dx%d @ %.2fHz sample_rate=%.0f\n",
+            av->geometry.base_width, av->geometry.base_height,
+            av->timing.fps, av->timing.sample_rate);
+        OutputDebugStringA(buf);
+        return 1;
+    }
+    case RETRO_ENVIRONMENT_SET_GEOMETRY:
+    {
+        auto* geom = static_cast<const retro_game_geometry*>(data);
+        char buf[256];
+        sprintf_s(buf, "[dosbox-uwp]   SET_GEOMETRY: %dx%d aspect=%.2f\n",
+            geom->base_width, geom->base_height, geom->aspect_ratio);
+        OutputDebugStringA(buf);
+        return 1;
+    }
     default:
 #ifdef FRAME_TRACE
         sprintf_s(buf, "[dosbox-uwp]   UNSUPPORTED env cmd=%d\n", cmd);
@@ -454,20 +475,8 @@ size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
     if (!data || frames == 0 || !s_audioDevice) return frames;
 
-    // Flow control: skip if SDL has >1s of audio buffered (~176KB at 44100Hz stereo)
-    // Log every 120th call
-    {
-        static unsigned audioLogCounter = 0;
-        if ((++audioLogCounter % 120) == 0)
-        {
-            Uint32 queued = SDL_GetQueuedAudioSize(s_audioDevice);
-            char buf[128];
-            sprintf_s(buf, "[dosbox-uwp] retro_audio: frames=%zu SDL_queued=%u\n", frames, queued);
-            OutputDebugStringA(buf);
-        }
-    }
-    if (SDL_GetQueuedAudioSize(s_audioDevice) < 176400)
-        SDL_QueueAudio(s_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
+    // Always queue audio. Frame pacing is the flow control.
+    SDL_QueueAudio(s_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
 
     return frames;
 }

@@ -169,25 +169,45 @@ void dosbox_uwpMain::Update()
                 OutputDebugStringA("[dosbox-uwp] Select -> file picker\n");
         }
 
-        // Frame pacing: skip if not enough time since last frame
+        // Frame pacing: spin-wait after RunFrame to hit exact target frame time
         m_pacingEnabled = m_retroRunning && m_retroCore->IsLoaded();
         if (m_pacingEnabled)
         {
             double targetFps = m_retroCore->GetTargetFps();
-            if (targetFps > 0 && m_lastFrameTime.QuadPart != 0)
+            if (targetFps > 0)
             {
-                QueryPerformanceCounter(&_t2);
-                double elapsedMs = (double)(_t2.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                // If not enough time since last frame, spin-wait (yield) until target
                 double targetMs = 1000.0 / targetFps;
-                if (elapsedMs < targetMs)
-                    m_pacingEnabled = false;
+                if (m_lastFrameTime.QuadPart != 0)
+                {
+                    LARGE_INTEGER _now;
+                    QueryPerformanceCounter(&_now);
+                    double elapsedMs = (double)(_now.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                    while (elapsedMs < targetMs)
+                    {
+                        if (targetMs - elapsedMs > 1.0)
+                            SwitchToThread();
+                        QueryPerformanceCounter(&_now);
+                        elapsedMs = (double)(_now.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                    }
+                }
             }
-        }
-
-        if (m_pacingEnabled)
-        {
             QueryPerformanceCounter(&m_lastFrameTime);
             m_retroCore->RunFrame();
+            // Spin-wait remaining time to hit exact frame interval
+            if (targetFps > 0)
+            {
+                double targetMs = 1000.0 / targetFps;
+                LARGE_INTEGER _now;
+                do {
+                    QueryPerformanceCounter(&_now);
+                    double elapsedMs = (double)(_now.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                    if (elapsedMs >= targetMs)
+                        break;
+                    if (targetMs - elapsedMs > 1.0)
+                        SwitchToThread();
+                } while (true);
+            }
             // Exit if core requested shutdown (e.g. Exit from PUREMENU)
             if (RetroCore::IsShutdownRequested())
             {
