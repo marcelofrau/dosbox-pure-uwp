@@ -55,21 +55,26 @@ bool SdlInput::Initialize()
     }
     m_initialized = true;
 
-    // init SDL audio device for beep
+    // init SDL audio device at 44100Hz stereo (matches core output)
     SDL_AudioSpec desired = {};
     desired.freq = 44100;
     desired.format = AUDIO_S16SYS;
-    desired.channels = 1;
-    desired.samples = 4096;
+    desired.channels = 2;
+    desired.samples = 1024;
 
     SDL_AudioSpec obtained = {};
-    m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
     if (m_audioDevice > 0)
     {
         m_audioReady = true;
         m_audioSampleRate = obtained.freq;
+        char buf[128];
+        sprintf_s(buf, "SDL audio: %dHz %dch %d samples/period\n",
+            obtained.freq, obtained.channels, obtained.samples);
+        OutputDebugStringA(buf);
+        if (obtained.freq != 44100 || obtained.channels != 2)
+            OutputDebugStringA("[dosbox-uwp] WARNING: SDL audio format mismatch (expected 44100Hz stereo)\n");
         SDL_PauseAudioDevice(m_audioDevice, 0);
-        OutputDebugStringA("SDL audio: OK\n");
     }
     else
     {

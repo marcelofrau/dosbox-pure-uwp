@@ -42,6 +42,10 @@
 #include <string>
 #include <sstream>
 
+// UWP: always compile audio pipeline even with DBP_STANDALONE
+#define DBP_STANDALONE_AUDIO 1
+// (usage: replace `#ifndef DBP_STANDALONE` with `#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)` for audio-related blocks)
+
 // RETROARCH AUDIO/VIDEO
 #if defined(GEKKO) || defined(MIYOO) // From RetroArch/config.def.h
 #define DBP_DEFAULT_SAMPLERATE 32000.0
@@ -78,7 +82,7 @@ static Bit16s dbp_content_year, dbp_forcefps;
 static Bit8u buffer_active, dbp_overscan;
 static bool dbp_doublescan, dbp_padding;
 static struct DBP_Buffer { Bit32u *video, width, height, cap, pad_x, pad_y, border_color; float ratio; } dbp_buffers[3];
-#ifndef DBP_STANDALONE
+#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
 static struct DBP_Audio { int16_t* audio; Bit32u length; } dbp_audio[2];
 static Bit8u dbp_audio_active;
 #endif
@@ -1587,16 +1591,10 @@ void GFX_EndUpdate(const Bit16u *changedLines)
 
 	if (dbp_intercept_next && dbp_intercept_next->usegfx())
 	{
-		#ifdef DBP_STANDALONE
-		DBP_Buffer& osdbf = dbp_osdbuf[(buffer_active + 1) % 3];
-		if (!osdbf.video) osdbf.video = (Bit32u*)malloc(DBPS_OSD_WIDTH*DBPS_OSD_HEIGHT*4);
-		memset(osdbf.video, 0, DBPS_OSD_WIDTH*DBPS_OSD_HEIGHT*4);
-		dbp_intercept_next->gfx(osdbf);
-		#else
+		// UWP: always draw OSD directly onto framebuffer (non-standalone path)
 		if (dbp_opengl_draw && voodoo_ogl_is_showing()) // zero all including alpha because we'll blend the OSD after displaying voodoo
 			memset(buf.video, 0, buf.width * buf.height * 4);
 		dbp_intercept_next->gfx(buf);
-		#endif
 		buf.border_color = 0xDEADBEEF; // force redraw
 	}
 
@@ -3582,7 +3580,7 @@ void retro_run(void)
 			}
 
 			// submit last frame
-			#ifndef DBP_STANDALONE
+			#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
 			Bit32u numEmptySamples = (Bit32u)(av_info.timing.sample_rate / av_info.timing.fps);
 			DBP_Audio& aud = dbp_audio[dbp_audio_active ^= 1];
 			if (numEmptySamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, numEmptySamples * 4); aud.length = numEmptySamples; }
@@ -3629,10 +3627,15 @@ void retro_run(void)
 		dbp_perf_uniquedraw = dbp_perf_count = dbp_perf_totaltime = 0;
 	}
 
-	#ifndef DBP_STANDALONE
+	#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
 	// mix audio
 	Bit32u haveSamples = DBP_MIXER_DoneSamplesCount(), mixSamples = 0; double numSamples;
-	if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
+	if (av_info.timing.fps <= 0 || av_info.timing.sample_rate <= 0) {
+		numSamples = 0;
+		dbp_audio_remain = 0.0;
+		if ((dbp_framecount % 60) == 0)
+			OutputDebugStringA("[dosbox-uwp] audio: skip (av_info not ready)\n");
+	} else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
 		numSamples = haveSamples;
 	else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD || dbp_throttle.mode == RETRO_THROTTLE_SLOW_MOTION || dbp_throttle.rate < 1)
 		numSamples = (av_info.timing.sample_rate / av_info.timing.fps) + dbp_audio_remain;
@@ -3643,13 +3646,19 @@ void retro_run(void)
 	{
 		mixSamples = (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples);
 		dbp_audio_remain = ((numSamples <= mixSamples || numSamples > haveSamples) ? 0.0 : (numSamples - mixSamples));
+		if ((dbp_framecount % 60) == 0)
+		{
+			char _dbg[256];
+			sprintf_s(_dbg, "[dosbox-uwp] audio: frame=%u need=%.1f have=%u mix=%u remain=%.1f\n",
+				dbp_framecount, numSamples, haveSamples, mixSamples, dbp_audio_remain);
+			OutputDebugStringA(_dbg);
+		}
 		DBP_Audio& aud = dbp_audio[dbp_audio_active ^= 1];
 		if (mixSamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, mixSamples * 4); aud.length = mixSamples; }
-		MIXER_CallBack(0, (Bit8u*)aud.audio, mixSamples * 4);
+		if (mixSamples)
+			MIXER_CallBack(0, (Bit8u*)aud.audio, mixSamples * 4);
 	}
 	#endif
-
-	// Read buffer_active before waking up emulation thread
 	const DBP_Buffer& buf = dbp_buffers[buffer_active];
 	Bit32u view_width = buf.width, view_height = buf.height;
 
@@ -3657,11 +3666,19 @@ void retro_run(void)
 
 	DBP_ThreadControl(skip_emulate ? TCM_RESUME_FRAME : TCM_NEXT_FRAME);
 
-	#ifndef DBP_STANDALONE
+	#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
 	// submit audio
-	//log_cb(RETRO_LOG_INFO, "[retro_run] Submit %d samples (remain %f) - Had: %d - Left: %d\n", mixSamples, dbp_audio_remain, haveSamples, DBP_MIXER_DoneSamplesCount());
 	if (mixSamples)
+	{
+		if ((dbp_framecount % 60) == 0)
+		{
+			char _dbg[256];
+			sprintf_s(_dbg, "[dosbox-uwp] audio_submit: frame=%u mix=%u remain=%.1f have=%u\n",
+				dbp_framecount, mixSamples, dbp_audio_remain, DBP_MIXER_DoneSamplesCount());
+			OutputDebugStringA(_dbg);
+		}
 		audio_batch_cb(dbp_audio[dbp_audio_active].audio, mixSamples);
+	}
 	#endif
 
 	if (tpfActual)

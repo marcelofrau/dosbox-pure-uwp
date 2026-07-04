@@ -123,7 +123,10 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				m_deviceResources->Present();
+				// Adaptive vsync: if frame was late, skip vsync wait to catch up
+				int syncInterval = m_main->WasFrameLate() ? 0 : 1;
+				UINT flags = m_main->WasFrameLate() ? DXGI_PRESENT_DO_NOT_WAIT : 0;
+				m_deviceResources->Present(syncInterval, flags);
 			}
 		}
 		else
@@ -195,8 +198,10 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 	m_windowClosed = true;
 }
 
-void App::OpenFilePicker()
+	void App::OpenFilePicker()
 {
+	m_main->SetLoadState(dosbox_uwpMain::LOAD_PICKING);
+
 	auto picker = ref new Windows::Storage::Pickers::FileOpenPicker();
 	picker->ViewMode = Windows::Storage::Pickers::PickerViewMode::List;
 	picker->FileTypeFilter->Append(".zip");
@@ -217,8 +222,11 @@ void App::OpenFilePicker()
 		if (file == nullptr)
 		{
 			OutputDebugStringA("[dosbox-uwp] Picker cancelled\n");
+			m_main->SetLoadState(dosbox_uwpMain::LOAD_IDLE);
 			return;
 		}
+
+		m_main->SetLoadState(dosbox_uwpMain::LOAD_READING);
 
 		char buf[256];
 		sprintf_s(buf, "[dosbox-uwp] Picked: %ls\n", file->Name->Data());
@@ -229,8 +237,11 @@ void App::OpenFilePicker()
 			if (buffer == nullptr || buffer->Length == 0)
 			{
 				OutputDebugStringA("[dosbox-uwp] File read failed or empty\n");
+				m_main->SetLoadState(dosbox_uwpMain::LOAD_FAILED);
 				return;
 			}
+
+			m_main->SetLoadState(dosbox_uwpMain::LOAD_BOOTING);
 
 			auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
 
@@ -255,6 +266,7 @@ void App::OpenFilePicker()
 						OutputDebugStringA(buf);
 
 						m_main->LoadRom(localPath, {});
+						m_main->SetLoadState(m_main->IsLoaded() ? dosbox_uwpMain::LOAD_DONE : dosbox_uwpMain::LOAD_FAILED);
 					});
 				});
 			});

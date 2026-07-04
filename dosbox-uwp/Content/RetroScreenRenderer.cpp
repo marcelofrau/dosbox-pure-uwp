@@ -33,9 +33,11 @@ void RetroScreenRenderer::UpdateVideoFrame(const uint8_t* data, unsigned width, 
     }
 
     char buf[256];
+#ifdef FRAME_TRACE
     sprintf_s(buf, "[dosbox-uwp] UpdateVideoFrame: %ux%u pitch=%u d2dContext=%p\n",
         width, height, pitch, m_deviceResources->GetD2DDeviceContext());
     OutputDebugStringA(buf);
+#endif
 
     auto d2dContext = m_deviceResources->GetD2DDeviceContext();
 
@@ -75,9 +77,11 @@ void RetroScreenRenderer::Render()
     auto logicalSize = m_deviceResources->GetLogicalSize();
 
     char buf[256];
+#ifdef FRAME_TRACE
     sprintf_s(buf, "[dosbox-uwp] Render: frame=%ux%u logical=%.0fx%.0f\n",
         m_frameWidth, m_frameHeight, logicalSize.Width, logicalSize.Height);
     OutputDebugStringA(buf);
+#endif
 
     d2dContext->BeginDraw();
 
@@ -92,9 +96,11 @@ void RetroScreenRenderer::Render()
 
     D2D1_RECT_F destRect = D2D1::RectF(offsetX, offsetY, offsetX + drawW, offsetY + drawH);
 
+#ifdef FRAME_TRACE
     sprintf_s(buf, "[dosbox-uwp]   DrawBitmap dest=(%.0f,%.0f)-(%.0f,%.0f) bitmap=%p\n",
         destRect.left, destRect.top, destRect.right, destRect.bottom, m_videoBitmap.Get());
     OutputDebugStringA(buf);
+#endif
 
     d2dContext->DrawBitmap(
         m_videoBitmap.Get(),

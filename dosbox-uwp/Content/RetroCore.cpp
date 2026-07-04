@@ -6,6 +6,9 @@
 
 #include <cstring>
 #include <algorithm>
+#include <cstdarg>
+#include <string>
+#include <SDL.h>
 
 static retro_vfs_interface uwp_vfs_iface = {
     reinterpret_cast<retro_vfs_get_path_t>(retro_vfs_file_get_path_impl),
@@ -29,18 +32,25 @@ static retro_vfs_interface uwp_vfs_iface = {
     reinterpret_cast<retro_vfs_closedir_t>(retro_vfs_closedir_impl)
 };
 
+#include "dosbox_pure_sta.h"
+
 using namespace dosbox_uwp;
 
 RetroVideoFrame RetroCore::s_lastFrame;
 std::mutex RetroCore::s_frameMutex;
-std::vector<int16_t> RetroCore::s_audioBuffer;
-std::mutex RetroCore::s_audioMutex;
-bool RetroCore::s_keyboardState[256] = {};
+bool RetroCore::s_keyboardState[RETROK_LAST] = {};
+retro_keyboard_event_t RetroCore::s_keyboardCallback = nullptr;
+retro_log_printf_t RetroCore::s_logCallback = nullptr;
 int RetroCore::s_mouseRelX = 0;
 int RetroCore::s_mouseRelY = 0;
 float RetroCore::s_ptrX = 0;
 float RetroCore::s_ptrY = 0;
 bool RetroCore::s_ptrDown = false;
+double RetroCore::s_targetFps = 60.0;
+bool RetroCore::s_shutdownRequested = false;
+
+static SDL_AudioDeviceID s_audioDevice = 0;
+static const char* OVERRIDE_MENU_TIME = "-1";
 
 RetroCore::RetroCore() {}
 RetroCore::~RetroCore() { Shutdown(); }
@@ -107,6 +117,18 @@ bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>
         return false;
     }
 
+    // Fetch AV info: populates core's internal av_info (fps, sample_rate)
+    retro_system_av_info av = {};
+    retro_get_system_av_info(&av);
+    {
+        char buf[256];
+        sprintf_s(buf, "[dosbox-uwp] av_info: %dx%d @ %.2fHz, sample_rate=%.0f\n",
+            av.geometry.base_width, av.geometry.base_height,
+            av.timing.fps, av.timing.sample_rate);
+        OutputDebugStringA(buf);
+    }
+    s_targetFps = av.timing.fps > 0 ? av.timing.fps : 60.0;
+
     m_loaded = true;
     OutputDebugStringA("[dosbox-uwp] retro_load_game SUCCESS\n");
     return true;
@@ -123,7 +145,19 @@ void RetroCore::RunFrame()
         sprintf_s(buf, "[dosbox-uwp] RunFrame #%d\n", frameCount);
         OutputDebugStringA(buf);
     }
+
+    LARGE_INTEGER t1, t2, freq;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t1);
     retro_run();
+    QueryPerformanceCounter(&t2);
+    if ((frameCount % 60) == 0)
+    {
+        double ms = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq.QuadPart;
+        char buf[128];
+        sprintf_s(buf, "[dosbox-uwp] RunFrame #%d took %.1fms\n", frameCount, ms);
+        OutputDebugStringA(buf);
+    }
 }
 
 void RetroCore::UnloadGame()
@@ -131,6 +165,8 @@ void RetroCore::UnloadGame()
     if (!m_loaded) return;
     OutputDebugStringA("[dosbox-uwp] UnloadGame\n");
     m_loaded = false;
+    if (s_audioDevice)
+        SDL_ClearQueuedAudio(s_audioDevice);
     retro_unload_game();
 }
 
@@ -151,6 +187,7 @@ RetroVideoFrame RetroCore::GrabVideoFrame()
     std::lock_guard<std::mutex> lock(s_frameMutex);
     RetroVideoFrame frame = s_lastFrame;
     s_lastFrame.valid = false;
+#ifdef FRAME_TRACE
     if (frame.valid)
     {
         char buf[128];
@@ -158,19 +195,26 @@ RetroVideoFrame RetroCore::GrabVideoFrame()
             frame.width, frame.height, frame.pitch, frame.data.size());
         OutputDebugStringA(buf);
     }
+#endif
     return frame;
 }
 
-RetroAudioSamples RetroCore::GrabAudio()
+void RetroCore::ToggleOSD()
 {
-    std::lock_guard<std::mutex> lock(s_audioMutex);
-    RetroAudioSamples result;
-    if (!s_audioBuffer.empty())
-    {
-        result.samples = s_audioBuffer.data();
-        result.frames = s_audioBuffer.size() / 2;
-    }
-    return result;
+    OutputDebugStringA("[dosbox-uwp] ToggleOSD\n");
+    DBPS_ToggleOSD();
+}
+
+static void RETRO_CALLCONV uwp_log(enum retro_log_level level, const char* fmt, ...)
+{
+    (void)level;
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    OutputDebugStringA("[dosbox-pure] ");
+    OutputDebugStringA(buf);
 }
 
 static const char* retro_env_name(unsigned cmd)
@@ -185,6 +229,7 @@ static const char* retro_env_name(unsigned cmd)
     case RETRO_ENVIRONMENT_SET_MESSAGE_EXT: return "SET_MESSAGE_EXT";
     case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: return "SET_KEYBOARD_CALLBACK";
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE: return "GET_THROTTLE_STATE";
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: return "GET_LOG_INTERFACE";
     case RETRO_ENVIRONMENT_SHUTDOWN: return "SHUTDOWN";
     default: return "UNKNOWN";
     }
@@ -192,7 +237,12 @@ static const char* retro_env_name(unsigned cmd)
 
 void RetroCore::SetKeyState(unsigned key, bool down)
 {
-    if (key < 256) s_keyboardState[key] = down;
+    if (key < RETROK_LAST)
+    {
+        s_keyboardState[key] = down;
+        if (s_keyboardCallback)
+            s_keyboardCallback(down, key, 0, 0);
+    }
 }
 
 void RetroCore::SetMouseMove(int relX, int relY)
@@ -208,11 +258,18 @@ void RetroCore::SetPointer(float x, float y, bool down)
     s_ptrDown = down;
 }
 
+void RetroCore::SetAudioDevice(unsigned int device)
+{
+    s_audioDevice = (SDL_AudioDeviceID)device;
+}
+
 int RetroCore::retro_env(unsigned cmd, void* data)
 {
     char buf[256];
+#ifdef FRAME_TRACE
     sprintf_s(buf, "[dosbox-uwp] retro_env cmd=%d(%s)\n", cmd, retro_env_name(cmd));
     OutputDebugStringA(buf);
+#endif
 
     switch (cmd)
     {
@@ -282,35 +339,74 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
     {
         auto* cb = static_cast<const retro_keyboard_callback*>(data);
-        if (cb && cb->callback)
-        {
-            OutputDebugStringA("[dosbox-uwp]   SET_KEYBOARD_CALLBACK: pushing held keys\n");
-            for (unsigned key = 0; key < RETROK_LAST; key++)
-            {
-                bool down = s_keyboardState[key];
-                if (down)
-                    cb->callback(down, key, 0, 0);
-            }
-        }
+        s_keyboardCallback = cb ? cb->callback : nullptr;
+        OutputDebugStringA("[dosbox-uwp]   SET_KEYBOARD_CALLBACK: stored\n");
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
     {
         auto* state = static_cast<retro_throttle_state*>(data);
         state->mode = RETRO_THROTTLE_NONE;
-        state->rate = 0.0f;
-        OutputDebugStringA("[dosbox-uwp]   THROTTLE_STATE=NONE\n");
+        state->rate = (float)s_targetFps;
+#ifdef FRAME_TRACE
+        char buf[128];
+        sprintf_s(buf, "[dosbox-uwp]   THROTTLE_STATE: rate=%.0f\n", s_targetFps);
+        OutputDebugStringA(buf);
+#endif
+        return 1;
+    }
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
+    {
+        auto* cb = static_cast<retro_log_callback*>(data);
+        cb->log = uwp_log;
+        OutputDebugStringA("[dosbox-uwp]   GET_LOG_INTERFACE: log callback provided\n");
         return 1;
     }
     case RETRO_ENVIRONMENT_SHUTDOWN:
         OutputDebugStringA("[dosbox-pure] SHUTDOWN requested\n");
+        s_shutdownRequested = true;
         return 1;
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
+        return 1;
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
+        return 1;
+    case RETRO_ENVIRONMENT_SET_VARIABLES:
+        return 1;
+    case RETRO_ENVIRONMENT_GET_VARIABLE:
+    {
+        auto* var = static_cast<retro_variable*>(data);
+        if (var && var->key)
+        {
+            if (!strcmp(var->key, "dosbox_pure_menu_time"))
+            {
+                var->value = OVERRIDE_MENU_TIME;
+                OutputDebugStringA("[dosbox-uwp]   GET_VARIABLE(menu_time) = -1\n");
+                return 1;
+            }
+#ifdef FRAME_TRACE
+            char kbuf[256];
+            sprintf_s(kbuf, "[dosbox-uwp]   GET_VARIABLE(%s) = NOT FOUND\n", var->key);
+            OutputDebugStringA(kbuf);
+#endif
+        }
+        return 0;
+    }
+    case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+    {
+        bool* changed = static_cast<bool*>(data);
+        if (changed) *changed = false;
+        return 1;
+    }
     default:
+#ifdef FRAME_TRACE
         sprintf_s(buf, "[dosbox-uwp]   UNSUPPORTED env cmd=%d\n", cmd);
         OutputDebugStringA(buf);
+#endif
         return 0;
     }
 }
+
+static int g_videoFrameCount = 0;
 
 void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pitch)
 {
@@ -328,6 +424,21 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
         return;
     }
 
+    g_videoFrameCount++;
+
+    // Log resolution changes
+    {
+        static unsigned prevW = 0, prevH = 0;
+        if (w != prevW || h != prevH)
+        {
+            char buf[128];
+            prevW = w; prevH = h;
+            sprintf_s(buf, "[dosbox-uwp] retro_video RESOLUTION CHANGE: %ux%u (frame #%d)\n",
+                w, h, g_videoFrameCount);
+            OutputDebugStringA(buf);
+        }
+    }
+
     std::lock_guard<std::mutex> lock(s_frameMutex);
     size_t totalSize = (size_t)h * pitch;
     s_lastFrame.data.resize(totalSize);
@@ -341,12 +452,23 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
 
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
-    if (!data || frames == 0) return frames;
+    if (!data || frames == 0 || !s_audioDevice) return frames;
 
-    std::lock_guard<std::mutex> lock(s_audioMutex);
-    size_t samples = frames * 2;
-    s_audioBuffer.resize(samples);
-    memcpy(s_audioBuffer.data(), data, samples * sizeof(int16_t));
+    // Flow control: skip if SDL has >1s of audio buffered (~176KB at 44100Hz stereo)
+    // Log every 120th call
+    {
+        static unsigned audioLogCounter = 0;
+        if ((++audioLogCounter % 120) == 0)
+        {
+            Uint32 queued = SDL_GetQueuedAudioSize(s_audioDevice);
+            char buf[128];
+            sprintf_s(buf, "[dosbox-uwp] retro_audio: frames=%zu SDL_queued=%u\n", frames, queued);
+            OutputDebugStringA(buf);
+        }
+    }
+    if (SDL_GetQueuedAudioSize(s_audioDevice) < 176400)
+        SDL_QueueAudio(s_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
+
     return frames;
 }
 
@@ -362,12 +484,12 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
 
     if (device == RETRO_DEVICE_KEYBOARD)
     {
-        return (id < 256 && s_keyboardState[id]) ? 1 : 0;
+        return (id < RETROK_LAST && s_keyboardState[id]) ? 1 : 0;
     }
 
     if (device == RETRO_DEVICE_JOYPAD)
     {
-        if (id < 256 && s_keyboardState[id])
+        if (id < RETROK_LAST && s_keyboardState[id])
             return 1;
         return 0;
     }

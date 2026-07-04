@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libretro.h"
 #include <string>
 #include <vector>
 #include <mutex>
@@ -18,12 +19,6 @@ namespace dosbox_uwp
         bool valid = false;
     };
 
-    struct RetroAudioSamples
-    {
-        const int16_t* samples = nullptr;
-        size_t frames = 0;
-    };
-
     class RetroCore
     {
     public:
@@ -40,7 +35,13 @@ namespace dosbox_uwp
         bool IsInitialized() const { return m_initialized; }
 
         RetroVideoFrame GrabVideoFrame();
-        RetroAudioSamples GrabAudio();
+        void ToggleOSD();
+
+        double GetTargetFps() const { return s_targetFps; }
+
+        static void SetAudioDevice(unsigned int device);
+
+        static bool IsShutdownRequested() { return s_shutdownRequested; }
 
         static void SetKeyState(unsigned key, bool down);
         static void SetMouseMove(int relX, int relY);
@@ -52,15 +53,17 @@ namespace dosbox_uwp
 
     static RetroVideoFrame s_lastFrame;
         static std::mutex s_frameMutex;
-        static std::vector<int16_t> s_audioBuffer;
-        static std::mutex s_audioMutex;
+        static double s_targetFps;
 
-        static bool s_keyboardState[256];
+        static bool s_keyboardState[RETROK_LAST];
+        static retro_keyboard_event_t s_keyboardCallback;
+        static retro_log_printf_t s_logCallback;
         static int s_mouseRelX;
         static int s_mouseRelY;
         static float s_ptrX;
         static float s_ptrY;
         static bool s_ptrDown;
+        static bool s_shutdownRequested;
 
     public:
         static int retro_env(unsigned cmd, void* data);

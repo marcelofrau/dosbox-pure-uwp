@@ -22,7 +22,7 @@ namespace DX
 		void HandleDeviceLost();
 		void RegisterDeviceNotify(IDeviceNotify* deviceNotify);
 		void Trim();
-		void Present();
+		void Present(int syncInterval = 1, UINT flags = 0);
 
 		// The size of the render target, in pixels.
 		Windows::Foundation::Size	GetOutputSize() const					{ return m_outputSize; }

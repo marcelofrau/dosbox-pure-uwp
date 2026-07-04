@@ -618,13 +618,10 @@ void DX::DeviceResources::Trim()
 }
 
 // Present the contents of the swap chain to the screen.
-void DX::DeviceResources::Present() 
+void DX::DeviceResources::Present(int syncInterval, UINT flags) 
 {
-	// The first argument instructs DXGI to block until VSync, putting the application
-	// to sleep until the next VSync. This ensures we don't waste any cycles rendering
-	// frames that will never be displayed to the screen.
 	DXGI_PRESENT_PARAMETERS parameters = { 0 };
-	HRESULT hr = m_swapChain->Present1(1, 0, &parameters);
+	HRESULT hr = m_swapChain->Present1(syncInterval, flags, &parameters);
 
 	// Discard the contents of the render target.
 	// This is a valid operation only when the existing contents will be entirely
@@ -639,6 +636,10 @@ void DX::DeviceResources::Present()
 	if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
 	{
 		HandleDeviceLost();
+	}
+	else if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+	{
+		// Non-blocking present failed because GPU still busy — skip this frame
 	}
 	else
 	{

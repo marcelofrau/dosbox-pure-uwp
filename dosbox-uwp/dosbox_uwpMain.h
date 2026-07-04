@@ -23,7 +23,13 @@ namespace dosbox_uwp
         virtual void OnDeviceRestored();
         void OnKeyEvent(Windows::System::VirtualKey key, bool down);
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);
+        enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
         bool WasFilePickerRequested() { bool r = m_requestFilePicker; m_requestFilePicker = false; return r; }
+        bool WasFrameLate() const { return m_frameLate; }
+        int GetLateFrameCount() const { return m_lateFrameCount; }
+        LoadState GetLoadState() const { return m_loadState; }
+        void SetLoadState(LoadState s) { m_loadState = s; }
+        bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
 
     private:
         void BootCore();
@@ -53,5 +59,17 @@ namespace dosbox_uwp
 
         std::wstring m_currentTempPath;
         void CleanupTempFile();
+
+        // Load state tracking (for hang detection)
+        LoadState m_loadState = LOAD_IDLE;
+        int m_loadTimer = 0;
+
+        // Frame pacing tracking
+        bool m_frameLate = false;
+        int m_lateFrameCount = 0;
+        int m_lateFramesHud = 0;
+        bool m_pacingEnabled = false;
+        LARGE_INTEGER m_lastFrameTime = {};
+        LARGE_INTEGER m_qpcFreq = {};
     };
 }

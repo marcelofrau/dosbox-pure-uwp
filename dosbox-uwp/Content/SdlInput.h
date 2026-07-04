@@ -28,6 +28,7 @@ namespace dosbox_uwp
         const char* GetControllerName() const { return m_controllerName; }
         const char* GetLastEventText() const { return m_lastEventStr; }
         int GetAudioSampleRate() const { return m_audioSampleRate; }
+        SDL_AudioDeviceID GetAudioDevice() const { return m_audioDevice; }
         void SetKeyboardButton(int btn, bool held);
         void PlayBeep(float frequency = 880.0f, float duration = 0.15f, float volume = 0.5f);
 
