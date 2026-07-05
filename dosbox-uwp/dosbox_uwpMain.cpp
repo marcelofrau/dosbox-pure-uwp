@@ -106,6 +106,7 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         m_statusTimer = 120;
         OutputDebugStringA("[dosbox-uwp] Game loaded OK\n");
         m_retroRunning = true;
+        m_defaultClearColor = DirectX::Colors::Black;
     }
     else
     {
@@ -167,6 +168,11 @@ void dosbox_uwpMain::Update()
                 OutputDebugStringA("[dosbox-uwp] R3 -> file picker\n");
             else
                 OutputDebugStringA("[dosbox-uwp] Select -> file picker\n");
+        }
+
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_L3) && m_retroCore && m_retroCore->IsLoaded()) {
+            OutputDebugStringA("[dosbox-uwp] L3 -> toggle PUREMENU\n");
+            m_retroCore->ToggleOSD();
         }
 
         // Frame pacing: tight spin-wait to hit exact target FPS
@@ -396,16 +402,17 @@ bool dosbox_uwpMain::Render()
     return true;
 }
 
+void dosbox_uwpMain::ToggleOSD()
+{
+    if (!m_retroCore)
+        return;
+    m_retroCore->ToggleOSD();
+}
+
 void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
 {
     if (!m_retroCore)
         return;
-
-    // F1 toggles PUREMENU
-    if (down && key == Windows::System::VirtualKey::F1)
-    {
-        m_retroCore->ToggleOSD();
-    }
 
     int vk = (int)key;
     unsigned retroKey = RETROK_UNKNOWN;

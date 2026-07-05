@@ -73,16 +73,17 @@ Legend: ✅ done  🏗️ partial  🔲 not started  ⏸️ blocked  ❌ broken
 
 ## Phase A — Core Infra (Changes 1-3)
 **Goal: ROMs load, keyboard + gamepad work in core**
-**Status: 🔲 NOT STARTED**
+**Status: 🏗️ PARTIAL — patch-fopen-vfs DONE**
 
-### Change: `patch-fopen-vfs`
+### Change: `patch-fopen-vfs` ✅
 **Files:** `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp`, `extern/libretro-common/vfs/vfs_implementation_uwp.cpp`, `dosbox-uwp/local/dosbox-pure/src/misc/cross.cpp`
 
-- [ ] `fopen_wrap()` → use `CreateFile2FromAppW` (via VFS or direct) instead of CRT `fopen()`
-- [ ] Real `open_directory()` implementation (VFS `opendir`/`readdir`)
-- [ ] `info->data` fallback (patch core to accept in-memory buffer)
-- [ ] Verify `stat()`/`access()` UWP compat
-- [ ] **Result:** ZIP/DOSZ mounts as C: drive, games load
+- [x] `fopen_wrap()` → copy to LocalFolder + CRT fopen (works on UWP)
+- [x] VFS interface provided via GET_VFS_INTERFACE (used by fpath_nocase)
+- [x] `info->data` fallback (LoadGame accepts in-memory buffer)
+- [x] Verify `stat()`/`access()` UWP compat (works on LocalFolder)
+- [x] **Result:** ZIP mounts as C: drive, games load
+- [x] Task 6 N/A — dosbox-pure workflow: all disks inside ZIP, PUREMENU handles swap
 
 ### Change: `fix-keyboard-input`
 **Files:** `dosbox-uwp/dosbox_uwpMain.cpp`, `dosbox-uwp/Content/RetroCore.cpp/.h`

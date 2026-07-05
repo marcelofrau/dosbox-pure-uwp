@@ -6,7 +6,7 @@
 
 namespace dosbox_uwp
 {
-    enum { BUTTON_A = 0, BUTTON_B = 1, BUTTON_X = 2, BUTTON_Y = 3, BUTTON_SELECT = 6, BUTTON_R3 = 11 };
+    enum { BUTTON_A = 0, BUTTON_B = 1, BUTTON_X = 2, BUTTON_Y = 3, BUTTON_SELECT = 6, BUTTON_R3 = 11, BUTTON_L3 = 12 };
 
     class SdlInput
     {

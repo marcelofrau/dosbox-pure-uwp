@@ -200,6 +200,7 @@ void SdlInput::PollEvents()
             { SDL_CONTROLLER_BUTTON_B, BUTTON_B },
             { SDL_CONTROLLER_BUTTON_X, BUTTON_X },
             { SDL_CONTROLLER_BUTTON_Y, BUTTON_Y },
+            { SDL_CONTROLLER_BUTTON_LEFTSTICK, BUTTON_L3 },
             { SDL_CONTROLLER_BUTTON_RIGHTSTICK, BUTTON_R3 },
             { SDL_CONTROLLER_BUTTON_BACK, BUTTON_SELECT },
         };
@@ -258,6 +259,7 @@ void SdlInput::PollUwpGamepad()
             { GamepadButtons::B, BUTTON_B, "B" },
             { GamepadButtons::X, BUTTON_X, "X" },
             { GamepadButtons::Y, BUTTON_Y, "Y" },
+            { GamepadButtons::LeftThumbstick, BUTTON_L3, "L3" },
             { GamepadButtons::RightThumbstick, BUTTON_R3, "R3" },
             { GamepadButtons::View, BUTTON_SELECT, "Select" },
         };

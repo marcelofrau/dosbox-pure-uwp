@@ -28,8 +28,8 @@ Current: 0 errors, ~1500 warnings C4244 (cosmetic).
 | `dosbox-uwp/Content/RetroCore.cpp/.h` | libretro bridge: init, load, run, callbacks, retro_env, VFS |
 | `dosbox-uwp/Content/RetroScreenRenderer.cpp/.h` | D2D bitmap render + letterbox |
 | `dosbox-uwp/dosbox_uwpMain.cpp/.h` | Main loop, Update/Render, input routing |
-| `dosbox-uwp/App.cpp` | Entry point, F1 → FileOpenPicker → async file read → LoadRom |
-| `dosbox-uwp/dosbox_pure_sta.cpp` | DBPS_* stubs (9 no-ops) |
+| `dosbox-uwp/App.cpp` | Entry point, Ctrl+Alt+F2 → FileOpenPicker → async file read → LoadRom |
+| `dosbox-uwp/dosbox_pure_sta.cpp` | DBPS_* stubs (10 no-ops) |
 | `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp` | Patched core (copied from submodule) |
 | `extern/libretro-common/vfs/vfs_implementation_uwp.cpp` | UWP VFS via CreateFile2FromAppW |
 
@@ -66,6 +66,13 @@ Return 0 to force SW path. Returning 1 causes GL crash (no OpenGL context).
 
 ## Logging
 All `OutputDebugStringA` prepend `[dosbox-uwp]` for DebugView filtering.
+
+## References
+- dosbox-pure official docs: https://docs.libretro.com/library/dosbox_pure/
+- Upstream repo: https://github.com/schellingb/dosbox-pure
+- RetroArch UWP fork (VFS reference): https://github.com/XboxEmulationHub/RetroArch
+
+## Keyboard & Gamepad Bindings
 
 ## Status
 - Phase 0-3 done (scaffold, core compiles, libretro frontend, video pipeline)

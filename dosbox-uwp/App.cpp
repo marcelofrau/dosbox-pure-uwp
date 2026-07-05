@@ -284,11 +284,31 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 {
 	auto key = args->VirtualKey;
 
-	if (key == VirtualKey::F1)
+	if (key == VirtualKey::Control)
 	{
-		args->Handled = true;
-		OpenFilePicker();
+		m_ctrlHeld = true;
 		return;
+	}
+	if (key == VirtualKey::Menu)
+	{
+		m_altHeld = true;
+		return;
+	}
+
+	if (m_ctrlHeld && m_altHeld)
+	{
+		if (key == VirtualKey::F1)
+		{
+			args->Handled = true;
+			m_main->ToggleOSD();
+			return;
+		}
+		if (key == VirtualKey::F2)
+		{
+			args->Handled = true;
+			OpenFilePicker();
+			return;
+		}
 	}
 
 	m_main->OnKeyEvent(key, true);
@@ -296,7 +316,18 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 
 void App::OnKeyUp(CoreWindow^ sender, KeyEventArgs^ args)
 {
-	m_main->OnKeyEvent(args->VirtualKey, false);
+	auto key = args->VirtualKey;
+	if (key == VirtualKey::Control)
+	{
+		m_ctrlHeld = false;
+		return;
+	}
+	if (key == VirtualKey::Menu)
+	{
+		m_altHeld = false;
+		return;
+	}
+	m_main->OnKeyEvent(key, false);
 }
 
 // DisplayInformation event handlers.

@@ -7,6 +7,7 @@
 | Repo | URL | Role |
 |------|-----|------|
 | **dosbox-pure** (core) | https://github.com/schellingb/dosbox-pure | Emulation core (libretro). Submodule em `extern/dosbox-pure/` |
+| **dosbox-pure** (docs oficial) | https://docs.libretro.com/library/dosbox_pure/ | Manual de uso, teclas, configuração, FAQ |
 | **dosbox-pure-unleashed** | https://github.com/schellingb/dosbox-pure-unleashed | Standalone desktop frontend (ZillaLib + main.cpp). **Não vamos usar** — só referência |
 | **RetroArch** (UWP fork) | https://github.com/XboxEmulationHub/RetroArch | Referência para VFS UWP, frontend UWP, ciclo de vida |
 | **ZillaLib** | Sibling do unleashed | Platform layer (SDL + OpenGL). **Não vamos usar** — substituído pelo scaffold UWP |

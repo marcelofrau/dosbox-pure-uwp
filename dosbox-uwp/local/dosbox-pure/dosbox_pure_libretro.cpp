@@ -1355,7 +1355,7 @@ bool DBP_GetRetroMidiInterface(retro_midi_interface* res)
 
 bool DBP_WantAutoShutDown()
 {
-	return (dbp_menu_time >= 0 && dbp_menu_time < 99);
+	return true;
 }
 
 void DBP_EnableNetwork()

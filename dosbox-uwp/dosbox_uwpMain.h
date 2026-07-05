@@ -22,6 +22,7 @@ namespace dosbox_uwp
         virtual void OnDeviceLost();
         virtual void OnDeviceRestored();
         void OnKeyEvent(Windows::System::VirtualKey key, bool down);
+        void ToggleOSD();
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);
         enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
         bool WasFilePickerRequested() { bool r = m_requestFilePicker; m_requestFilePicker = false; return r; }

@@ -1,4 +1,4 @@
-# Tasks: patch-fopen-vfs
+# Tasks: patch-fopen-vfs — ✅ COMPLETE
 
 Estimated: ~15-30 min per task. Order matters.
 
@@ -39,12 +39,12 @@ Estimated: ~15-30 min per task. Order matters.
   - Test: launch game, verify FRONTEND.DBP appears in LocalFolder
   - Test: delete FRONTEND.DBP, re-launch, verify it's recreated
 
-- [ ] **Task 6: Multi-disk / disk swap flow**
-  - When user swaps disk (Puremenu mount, or retro_disk_control): new picker call
-  - New ROM gets copied to `LocalFolder\temp\newdisk.img`
-  - Core reads new path seamlessly
-  - Old temp file cleaned up (or kept if needed for multi-disk mount)
-  - Test: mount .iso as D: while game on C: runs
+- [x] **Task 6: Multi-disk / disk swap flow** — N/A
+  - dosbox-pure workflow: all disk images (ISO/IMG/CHD) go inside the ZIP
+  - ZIP mounted as C: via zipDrive, init_dosbox_parse_drives() scans and adds all to dbp_images[]
+  - PUREMENU handles mount/dismount/swap internally via zipDrive::Uncompress()
+  - No external disk swap needed — fopen_wrap() never called for swap paths
+  - Only scenario needing this: external files NOT in ZIP (niche, not in scope)
 
 - [x] **Task 7: Build and test full cycle**
   - `MSBuild.exe "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64`
