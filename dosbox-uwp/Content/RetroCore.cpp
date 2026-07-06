@@ -36,8 +36,11 @@ static retro_vfs_interface uwp_vfs_iface = {
 
 using namespace dosbox_uwp;
 
-RetroVideoFrame RetroCore::s_lastFrame;
-std::mutex RetroCore::s_frameMutex;
+const void* RetroCore::s_frameData = nullptr;
+unsigned RetroCore::s_frameWidth = 0;
+unsigned RetroCore::s_frameHeight = 0;
+unsigned RetroCore::s_framePitch = 0;
+bool RetroCore::s_frameValid = false;
 bool RetroCore::s_keyboardState[RETROK_LAST] = {};
 retro_keyboard_event_t RetroCore::s_keyboardCallback = nullptr;
 retro_log_printf_t RetroCore::s_logCallback = nullptr;
@@ -63,7 +66,8 @@ static bool retro_env_wrap(unsigned cmd, void* data)
 bool RetroCore::Init()
 {
     OutputDebugStringA("[dosbox-uwp] RetroCore::Init enter\n");
-    s_lastFrame.valid = false;
+    s_frameValid = false;
+    s_frameData = nullptr;
 
     OutputDebugStringA("[dosbox-uwp] retro_set_environment\n");
     retro_set_environment(retro_env_wrap);
@@ -180,23 +184,6 @@ void RetroCore::Shutdown()
         OutputDebugStringA("[dosbox-uwp] retro_deinit\n");
         retro_deinit();
     }
-}
-
-RetroVideoFrame RetroCore::GrabVideoFrame()
-{
-    std::lock_guard<std::mutex> lock(s_frameMutex);
-    RetroVideoFrame frame = s_lastFrame;
-    s_lastFrame.valid = false;
-#ifdef FRAME_TRACE
-    if (frame.valid)
-    {
-        char buf[128];
-        sprintf_s(buf, "[dosbox-uwp] GrabVideoFrame: %ux%u pitch=%u size=%zu\n",
-            frame.width, frame.height, frame.pitch, frame.data.size());
-        OutputDebugStringA(buf);
-    }
-#endif
-    return frame;
 }
 
 void RetroCore::ToggleOSD()
@@ -460,14 +447,11 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
         }
     }
 
-    std::lock_guard<std::mutex> lock(s_frameMutex);
-    size_t totalSize = (size_t)h * pitch;
-    s_lastFrame.data.resize(totalSize);
-    memcpy(s_lastFrame.data.data(), data, totalSize);
-    s_lastFrame.width = w;
-    s_lastFrame.height = h;
-    s_lastFrame.pitch = (unsigned)pitch;
-    s_lastFrame.valid = true;
+    s_frameData = data;
+    s_frameWidth = w;
+    s_frameHeight = h;
+    s_framePitch = (unsigned)pitch;
+    s_frameValid = true;
 }
 
 

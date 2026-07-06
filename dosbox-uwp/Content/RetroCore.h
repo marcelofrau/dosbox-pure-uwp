@@ -3,22 +3,12 @@
 #include "libretro.h"
 #include <string>
 #include <vector>
-#include <mutex>
 #include <cstdint>
 
 struct retro_vfs_interface;
 
 namespace dosbox_uwp
 {
-    struct RetroVideoFrame
-    {
-        std::vector<uint8_t> data;
-        unsigned width = 0;
-        unsigned height = 0;
-        unsigned pitch = 0;
-        bool valid = false;
-    };
-
     class RetroCore
     {
     public:
@@ -34,8 +24,14 @@ namespace dosbox_uwp
         bool IsLoaded() const { return m_loaded; }
         bool IsInitialized() const { return m_initialized; }
 
-        RetroVideoFrame GrabVideoFrame();
         void ToggleOSD();
+
+        static bool HasFrame() { return s_frameValid; }
+        static const void* GetFrameData() { return s_frameData; }
+        static unsigned GetFrameWidth() { return s_frameWidth; }
+        static unsigned GetFrameHeight() { return s_frameHeight; }
+        static unsigned GetFramePitch() { return s_framePitch; }
+        static void ClearFrame() { s_frameValid = false; s_frameData = nullptr; }
 
         double GetTargetFps() const { return s_targetFps; }
 
@@ -48,11 +44,14 @@ namespace dosbox_uwp
         static void SetPointer(float x, float y, bool down);
 
     private:
-    bool m_initialized = false;
-    bool m_loaded = false;
+        bool m_initialized = false;
+        bool m_loaded = false;
 
-    static RetroVideoFrame s_lastFrame;
-        static std::mutex s_frameMutex;
+        static const void* s_frameData;
+        static unsigned s_frameWidth;
+        static unsigned s_frameHeight;
+        static unsigned s_framePitch;
+        static bool s_frameValid;
         static double s_targetFps;
 
         static bool s_keyboardState[RETROK_LAST];

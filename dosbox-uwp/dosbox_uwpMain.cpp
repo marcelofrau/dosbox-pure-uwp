@@ -358,13 +358,14 @@ bool dosbox_uwpMain::Render()
     {
         static int renderCount = 0;
         renderCount++;
-        auto frame = m_retroCore->GrabVideoFrame();
+        bool haveFrame = m_retroCore->HasFrame();
 
         if ((renderCount % 300) == 0)
         {
             char buf[128];
-            sprintf_s(buf, "[dosbox-uwp] Render #%d: frame.valid=%d w=%u h=%u data.size=%zu\n",
-                renderCount, frame.valid, frame.width, frame.height, frame.data.size());
+            sprintf_s(buf, "[dosbox-uwp] Render #%d: frame.valid=%d w=%u h=%u\n",
+                renderCount, haveFrame,
+                m_retroCore->GetFrameWidth(), m_retroCore->GetFrameHeight());
             OutputDebugStringA(buf);
         }
 
@@ -372,9 +373,14 @@ bool dosbox_uwpMain::Render()
         QueryPerformanceFrequency(&_rfreq);
         QueryPerformanceCounter(&_r0);
 
-        if (frame.valid)
+        if (haveFrame)
         {
-            m_retroScreen->UpdateVideoFrame(frame.data.data(), frame.width, frame.height, frame.pitch);
+            m_retroScreen->UpdateVideoFrame(
+                (const uint8_t*)m_retroCore->GetFrameData(),
+                m_retroCore->GetFrameWidth(),
+                m_retroCore->GetFrameHeight(),
+                m_retroCore->GetFramePitch());
+            m_retroCore->ClearFrame();
         }
 
         m_retroScreen->Render();
@@ -387,7 +393,8 @@ bool dosbox_uwpMain::Render()
                 double r_ms = (double)(_r1.QuadPart - _r0.QuadPart) * 1000.0 / _rfreq.QuadPart;
                 char _dbg[256];
                 sprintf_s(_dbg, "[dosbox-uwp] RENDER #%u: %.1fms  valid=%d %ux%u\n",
-                    _rc, r_ms, frame.valid, frame.width, frame.height);
+                    _rc, r_ms, haveFrame,
+                    m_retroCore->GetFrameWidth(), m_retroCore->GetFrameHeight());
                 OutputDebugStringA(_dbg);
             }
         }
