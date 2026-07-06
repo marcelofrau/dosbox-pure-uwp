@@ -74,7 +74,7 @@ void dosbox_uwpMain::BootCore()
     OutputDebugStringA("[dosbox-uwp] Core initialized OK\n");
     OutputDebugStringA("[dosbox-uwp] Keyboard mapping active: VirtualKey->RETROK_\n");
 
-    m_statusText = L"Core ready. Press F1 to load a game.";
+    m_statusText = L"Core ready. Press F11 to load a game. F10 = Puremenu.";
     m_statusTimer = 300;
     m_retroRunning = true;
 }
@@ -540,10 +540,19 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
 
     if (retroKey != RETROK_UNKNOWN)
     {
-        char buf[128];
-        sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X down=%d retroKey=%u\n", vk, down, retroKey);
-        OutputDebugStringA(buf);
-        RetroCore::SetKeyState(retroKey, down);
+        if (!m_retroCore->IsLoaded())
+        {
+            char buf[128];
+            sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X ignored — core not loaded\n", vk);
+            OutputDebugStringA(buf);
+        }
+        else
+        {
+            char buf[128];
+            sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X down=%d retroKey=%u\n", vk, down, retroKey);
+            OutputDebugStringA(buf);
+            RetroCore::SetKeyState(retroKey, down);
+        }
     }
 }
 

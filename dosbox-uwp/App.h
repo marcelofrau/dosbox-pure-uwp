@@ -32,6 +32,7 @@ namespace dosbox_uwp
 		void OnWindowClosed(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::CoreWindowEventArgs^ args);
 		void OnKeyDown(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::KeyEventArgs^ args);
 		void OnKeyUp(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::KeyEventArgs^ args);
+		void OnAcceleratorKeyActivated(Windows::UI::Core::CoreDispatcher^ sender, Windows::UI::Core::AcceleratorKeyEventArgs^ args);
 
 		// DisplayInformation event handlers.
 		void OnDpiChanged(Windows::Graphics::Display::DisplayInformation^ sender, Platform::Object^ args);
@@ -45,8 +46,6 @@ namespace dosbox_uwp
 		std::unique_ptr<dosbox_uwpMain> m_main;
 		bool m_windowClosed;
 		bool m_windowVisible;
-		bool m_ctrlHeld = false;
-		bool m_altHeld = false;
 	};
 }
 

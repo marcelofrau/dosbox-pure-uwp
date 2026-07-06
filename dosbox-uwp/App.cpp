@@ -73,6 +73,9 @@ void App::SetWindow(CoreWindow^ window)
 	window->KeyUp +=
 		ref new TypedEventHandler<CoreWindow^, KeyEventArgs^>(this, &App::OnKeyUp);
 
+	window->Dispatcher->AcceleratorKeyActivated +=
+		ref new TypedEventHandler<CoreDispatcher^, AcceleratorKeyEventArgs^>(this, &App::OnAcceleratorKeyActivated);
+
 	DisplayInformation^ currentDisplayInformation = DisplayInformation::GetForCurrentView();
 
 	currentDisplayInformation->DpiChanged +=
@@ -284,32 +287,26 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 {
 	auto key = args->VirtualKey;
 
-	if (key == VirtualKey::Control)
+	if (key == VirtualKey::F10)
 	{
-		m_ctrlHeld = true;
-		return;
-	}
-	if (key == VirtualKey::Menu)
-	{
-		m_altHeld = true;
+		args->Handled = true;
+		OutputDebugStringA(m_main->IsLoaded() ?
+			"[dosbox-uwp] F10 -> ToggleOSD\n" :
+			"[dosbox-uwp] F10 ignored — core not loaded\n");
+		if (m_main->IsLoaded())
+			m_main->ToggleOSD();
 		return;
 	}
 
-	if (m_ctrlHeld && m_altHeld)
+	if (key == VirtualKey::F11)
 	{
-		if (key == VirtualKey::F1)
-		{
-			args->Handled = true;
-			m_main->ToggleOSD();
-			return;
-		}
-		if (key == VirtualKey::F2)
-		{
-			args->Handled = true;
-			OpenFilePicker();
-			return;
-		}
+		args->Handled = true;
+		OpenFilePicker();
+		return;
 	}
+
+	if (key == VirtualKey::F12)
+		args->Handled = true;
 
 	m_main->OnKeyEvent(key, true);
 }
@@ -317,17 +314,21 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 void App::OnKeyUp(CoreWindow^ sender, KeyEventArgs^ args)
 {
 	auto key = args->VirtualKey;
-	if (key == VirtualKey::Control)
-	{
-		m_ctrlHeld = false;
-		return;
-	}
-	if (key == VirtualKey::Menu)
-	{
-		m_altHeld = false;
-		return;
-	}
 	m_main->OnKeyEvent(key, false);
+}
+
+void App::OnAcceleratorKeyActivated(CoreDispatcher^ sender, AcceleratorKeyEventArgs^ args)
+{
+    if (args->EventType == CoreAcceleratorKeyEventType::SystemKeyDown &&
+        args->VirtualKey == VirtualKey::F10)
+    {
+        args->Handled = true;
+        OutputDebugStringA(m_main->IsLoaded() ?
+            "[dosbox-uwp] F10 -> ToggleOSD (accelerator)\n" :
+            "[dosbox-uwp] F10 ignored — core not loaded (accelerator)\n");
+        if (m_main->IsLoaded())
+            m_main->ToggleOSD();
+    }
 }
 
 // DisplayInformation event handlers.

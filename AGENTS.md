@@ -14,6 +14,7 @@ All documentation, code, comments, and commit messages MUST be in English.
 - **x64 only.** ARM64/ARM/x86 NOT supported (Xbox Series is x64).
 - **`CompileAsWinRT=false`** for legacy C (dosbox-pure source). `/ZW` for C++/CX files.
 - **Dynarec disabled** via `DISABLE_DYNAREC` for UWP compatibility (see `docs/DYNAREC_UWP.md`).
+- **InputTest workflow:** after editing `docs/tools/inputtest-better/inputtest.c` (or `hello.c`), regenerate `.exe` + `.dosz` in BOTH `docs/tools/inputtest-better/dist/` AND `E:\PC\DOSBoxPure\`. Open Watcom at `C:\Apps\OW`. Run `pwsh -NoProfile build.ps1` in that directory. Script does: wcc (compile) → wlink (link) → Compress-Archive (.dosz) → copy to `E:\PC\DOSBoxPure\`.
 
 ## Build
 ```powershell
@@ -67,10 +68,19 @@ Return 0 to force SW path. Returning 1 causes GL crash (no OpenGL context).
 ## Logging
 All `OutputDebugStringA` prepend `[dosbox-uwp]` for DebugView filtering.
 
+## LSP / clangd
+codedev MCP (clangd-based LSP) does NOT understand C++/CX (`^`, `ref new`, `Platform::`, `Windows::`).
+All LSP errors reported in tool results for `.cpp`/`.h` with C++/CX are **false positives**.
+Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
+
 ## References
 - dosbox-pure official docs: https://docs.libretro.com/library/dosbox_pure/
 - Upstream repo: https://github.com/schellingb/dosbox-pure
 - RetroArch UWP fork (VFS reference): https://github.com/XboxEmulationHub/RetroArch
+
+## Reference Projects (local only)
+- `F:\workspace\vs2022\dosbox-pure-unleashed` — ZillaLib-based dosbox-pure frontend (no UWP). Uses `SetFpsLimit(av.timing.fps)` for frame cap (default 70fps), `ZL_ApplicationUpdateTimingFps` for Sleep-based pacing + vsync matching. Main file: `main.cpp` (2147 lines).
+- `F:\workspace\vs2022\ZillaLib` — ZillaLib cross-platform game framework. WP8 UWP path uses D3D11 pure (no D2D), `Present(1,0)` with `BufferCount=1`, `DXGI_SWAP_EFFECT_DISCARD`, `SetMaximumFrameLatency(1)`. Source: `Source/ZL_PlatformWP.cpp`.
 
 ## Keyboard & Gamepad Bindings
 
