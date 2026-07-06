@@ -91,3 +91,4 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 - OSD fix: commented out DBP_STANDALONE separate-buffer path in GFX_EndUpdate. PUREMENU now renders directly onto framebuffer.
 - Dynarec disabled (see `docs/DYNAREC_UWP.md`)
 - Tested on Windows 11 via VS2022. Xbox Series deploy not tested.
+- Mouse input implemented: CoreWindow pointer events → SetMouseMove/SetPointer/SetMouseButton/SetMouseWheel → retro_input_state + DBPS_GetMouse. Cursor hidden on first click. Puremenu cursor works via DBPS_GetMouse.
