@@ -175,24 +175,51 @@ void dosbox_uwpMain::Update()
             m_retroCore->ToggleOSD();
         }
 
-        // Frame pacing: tight spin-wait to hit exact target FPS
-        // No SwitchToThread — scheduler granularity (1-2ms) causes jitter,
-        // accumulates audio deficit, drains SDL queue → crackle.
+        // Frame pacing: QPC-target accumulator, sleep coarse + spin fine.
+        // Self-corrects overshoot: if Sleep wakes late, next frame runs
+        // sooner (shorter/canceled wait), keeping average FPS = target.
+        // This keeps audio buffer balanced — no cumulative deficit.
         m_pacingEnabled = m_retroRunning && m_retroCore->IsLoaded();
         if (m_pacingEnabled)
         {
             double targetFps = m_retroCore->GetTargetFps();
-            if (targetFps > 0 && m_lastFrameTime.QuadPart != 0)
+            if (targetFps > 0)
             {
-                double targetMs = 1000.0 / targetFps;
-                LARGE_INTEGER _now;
-                do {
+                LONGLONG framePeriod = (LONGLONG)((double)m_qpcFreq.QuadPart / targetFps);
+
+                if (m_lastFrameTime.QuadPart != 0)
+                {
+                    // Advance accumulator by one frame period
+                    m_lastFrameTime.QuadPart += framePeriod;
+
+                    LARGE_INTEGER _now;
                     QueryPerformanceCounter(&_now);
-                    double elapsedMs = (double)(_now.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-                    if (elapsedMs >= targetMs) break;
-                } while (true);
+
+                    // Clamp: if accumulator drifted ahead >3 frames, reset
+                    if (m_lastFrameTime.QuadPart - _now.QuadPart > framePeriod * 3)
+                        m_lastFrameTime.QuadPart = _now.QuadPart + framePeriod;
+
+                    if (_now.QuadPart < m_lastFrameTime.QuadPart)
+                    {
+                        double remainingMs = (double)(m_lastFrameTime.QuadPart - _now.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+
+                        // Sleep coarse portion (>3ms) to free CPU
+                        if (remainingMs > 3.0)
+                            Sleep((DWORD)(remainingMs - 1.0));
+
+                        // Spin remainder for microsecond precision
+                        do {
+                            QueryPerformanceCounter(&_now);
+                        } while (_now.QuadPart < m_lastFrameTime.QuadPart);
+                    }
+                    // If already past accumulator time, RunFrame directly (no wait)
+                }
+                else
+                {
+                    // First frame: initialize accumulator
+                    QueryPerformanceCounter(&m_lastFrameTime);
+                }
             }
-            QueryPerformanceCounter(&m_lastFrameTime);
             m_retroCore->RunFrame();
             // Exit if core requested shutdown (e.g. Exit from PUREMENU)
             if (RetroCore::IsShutdownRequested())
@@ -210,14 +237,14 @@ void dosbox_uwpMain::Update()
             double targetFps = m_retroCore->IsLoaded() ? m_retroCore->GetTargetFps() : 60.0;
             double targetMs = 1000.0 / targetFps;
             static int pacingLogCounter = 0;
-            if ((++pacingLogCounter % 300) == 0)
+            if ((++pacingLogCounter % 60) == 0)
             {
                 bool skipped = !m_pacingEnabled && m_retroRunning && m_retroCore->IsLoaded();
                 Uint32 sdlQueued = 0;
                 if (m_sdlInput->IsAudioReady())
                     sdlQueued = SDL_GetQueuedAudioSize(m_sdlInput->GetAudioDevice());
                 char buf[256];
-                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms skip=%d audioQueued=%u\n",
+                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms sleep=y skip=%d audioQueued=%u\n",
                     targetFps, frameMs, skipped ? 1 : 0, sdlQueued);
                 OutputDebugStringA(buf);
             }
