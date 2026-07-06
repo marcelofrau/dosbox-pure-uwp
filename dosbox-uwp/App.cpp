@@ -116,6 +116,10 @@ void App::Run()
 	{
 		if (m_windowVisible)
 		{
+			// Sleep first (matching ZillaLib order) so events arrive fresh
+			// just before retro_run — no idle queue wait for keyboard input.
+			m_main->DoPacingSleep();
+
 			CoreWindow::GetForCurrentThread()->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
 
 			m_main->Update();
@@ -126,10 +130,7 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				// Adaptive vsync: if frame was late, skip vsync wait to catch up
-				int syncInterval = m_main->WasFrameLate() ? 0 : 1;
-				UINT flags = m_main->WasFrameLate() ? DXGI_PRESENT_DO_NOT_WAIT : 0;
-				m_deviceResources->Present(syncInterval, flags);
+				m_deviceResources->Present(0, 0);
 			}
 		}
 		else

@@ -17,6 +17,7 @@ namespace dosbox_uwp
         ~dosbox_uwpMain();
         void CreateWindowSizeDependentResources();
         void Update();
+        void DoPacingSleep();
         bool Render();
 
         virtual void OnDeviceLost();

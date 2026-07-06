@@ -137,6 +137,45 @@ void dosbox_uwpMain::CreateWindowSizeDependentResources()
     m_sceneRenderer->CreateWindowSizeDependentResources();
 }
 
+void dosbox_uwpMain::DoPacingSleep()
+{
+    if (!m_retroRunning || !m_retroCore->IsLoaded())
+        return;
+
+    double targetFps = m_retroCore->GetTargetFps();
+    if (targetFps <= 0)
+        return;
+
+    LONGLONG framePeriod = (LONGLONG)((double)m_qpcFreq.QuadPart / targetFps);
+
+    if (m_lastFrameTime.QuadPart != 0)
+    {
+        m_lastFrameTime.QuadPart += framePeriod;
+
+        LARGE_INTEGER _now;
+        QueryPerformanceCounter(&_now);
+
+        if (m_lastFrameTime.QuadPart - _now.QuadPart > framePeriod * 3)
+            m_lastFrameTime.QuadPart = _now.QuadPart + framePeriod;
+
+        if (_now.QuadPart < m_lastFrameTime.QuadPart)
+        {
+            double remainingMs = (double)(m_lastFrameTime.QuadPart - _now.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+
+            if (remainingMs > 3.0)
+                Sleep((DWORD)(remainingMs - 1.0));
+
+            do {
+                QueryPerformanceCounter(&_now);
+            } while (_now.QuadPart < m_lastFrameTime.QuadPart);
+        }
+    }
+    else
+    {
+        QueryPerformanceCounter(&m_lastFrameTime);
+    }
+}
+
 void dosbox_uwpMain::Update()
 {
     m_timer.Tick([&]()
@@ -175,53 +214,9 @@ void dosbox_uwpMain::Update()
             m_retroCore->ToggleOSD();
         }
 
-        // Frame pacing: QPC-target accumulator, sleep coarse + spin fine.
-        // Self-corrects overshoot: if Sleep wakes late, next frame runs
-        // sooner (shorter/canceled wait), keeping average FPS = target.
-        // This keeps audio buffer balanced — no cumulative deficit.
-        m_pacingEnabled = m_retroRunning && m_retroCore->IsLoaded();
-        if (m_pacingEnabled)
+        if (m_retroRunning && m_retroCore->IsLoaded())
         {
-            double targetFps = m_retroCore->GetTargetFps();
-            if (targetFps > 0)
-            {
-                LONGLONG framePeriod = (LONGLONG)((double)m_qpcFreq.QuadPart / targetFps);
-
-                if (m_lastFrameTime.QuadPart != 0)
-                {
-                    // Advance accumulator by one frame period
-                    m_lastFrameTime.QuadPart += framePeriod;
-
-                    LARGE_INTEGER _now;
-                    QueryPerformanceCounter(&_now);
-
-                    // Clamp: if accumulator drifted ahead >3 frames, reset
-                    if (m_lastFrameTime.QuadPart - _now.QuadPart > framePeriod * 3)
-                        m_lastFrameTime.QuadPart = _now.QuadPart + framePeriod;
-
-                    if (_now.QuadPart < m_lastFrameTime.QuadPart)
-                    {
-                        double remainingMs = (double)(m_lastFrameTime.QuadPart - _now.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-
-                        // Sleep coarse portion (>3ms) to free CPU
-                        if (remainingMs > 3.0)
-                            Sleep((DWORD)(remainingMs - 1.0));
-
-                        // Spin remainder for microsecond precision
-                        do {
-                            QueryPerformanceCounter(&_now);
-                        } while (_now.QuadPart < m_lastFrameTime.QuadPart);
-                    }
-                    // If already past accumulator time, RunFrame directly (no wait)
-                }
-                else
-                {
-                    // First frame: initialize accumulator
-                    QueryPerformanceCounter(&m_lastFrameTime);
-                }
-            }
             m_retroCore->RunFrame();
-            // Exit if core requested shutdown (e.g. Exit from PUREMENU)
             if (RetroCore::IsShutdownRequested())
             {
                 OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, exiting app\n");
