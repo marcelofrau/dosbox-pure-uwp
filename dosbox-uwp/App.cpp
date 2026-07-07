@@ -320,17 +320,27 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 	if (key == VirtualKey::F12)
 		args->Handled = true;
 
-	m_main->OnKeyEvent(key, true);
+	m_main->OnKeyEvent(key, true, (uint32_t)args->KeyStatus.ScanCode, args->KeyStatus.IsExtendedKey);
 }
 
 void App::OnKeyUp(CoreWindow^ sender, KeyEventArgs^ args)
 {
 	auto key = args->VirtualKey;
-	m_main->OnKeyEvent(key, false);
+	m_main->OnKeyEvent(key, false, (uint32_t)args->KeyStatus.ScanCode, args->KeyStatus.IsExtendedKey);
 }
 
 void App::OnAcceleratorKeyActivated(CoreDispatcher^ sender, AcceleratorKeyEventArgs^ args)
 {
+    // Alt (Menu) goes through accelerator path in UWP, never reaches OnKeyDown
+    if (args->VirtualKey == VirtualKey::Menu)
+    {
+        args->Handled = true;
+        bool down = (args->EventType == CoreAcceleratorKeyEventType::SystemKeyDown);
+        m_main->OnKeyEvent(VirtualKey::Menu, down,
+            (uint32_t)args->KeyStatus.ScanCode, args->KeyStatus.IsExtendedKey);
+        return;
+    }
+
     if (args->EventType == CoreAcceleratorKeyEventType::SystemKeyDown &&
         args->VirtualKey == VirtualKey::F10)
     {
@@ -340,6 +350,7 @@ void App::OnAcceleratorKeyActivated(CoreDispatcher^ sender, AcceleratorKeyEventA
             "[dosbox-uwp] F10 ignored — core not loaded (accelerator)\n");
         if (m_main->IsLoaded())
             m_main->ToggleOSD();
+        return;
     }
 }
 

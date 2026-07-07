@@ -464,7 +464,7 @@ void dosbox_uwpMain::ToggleOSD()
     m_retroCore->ToggleOSD();
 }
 
-void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
+void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint32_t scanCode, bool isExtended)
 {
     if (!m_retroCore)
         return;
@@ -474,6 +474,17 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
 
     switch (vk)
     {
+    // Modifiers — UWP VirtualKey enum (not Win32 VK_)
+    case 0x10:
+        retroKey = (scanCode == 0x36) ? RETROK_RSHIFT : RETROK_LSHIFT;
+        break;
+    case 0x11:
+        retroKey = isExtended ? RETROK_RCTRL : RETROK_LCTRL;
+        break;
+    case 0x12:
+        retroKey = isExtended ? RETROK_RALT : RETROK_LALT;
+        break;
+
     // Control chars — VirtualKey value matches RETROK_
     case 0x08: retroKey = RETROK_BACKSPACE; break;
     case 0x09: retroKey = RETROK_TAB;       break;

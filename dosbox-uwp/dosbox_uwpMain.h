@@ -23,7 +23,7 @@ namespace dosbox_uwp
 
         virtual void OnDeviceLost();
         virtual void OnDeviceRestored();
-		void OnKeyEvent(Windows::System::VirtualKey key, bool down);
+		void OnKeyEvent(Windows::System::VirtualKey key, bool down, uint32_t scanCode = 0, bool isExtended = false);
 #ifdef MOUSE_SUPPORT
 		void OnPointerMove(float nx, float ny, float px, float py);
 		void OnPointerDown(float nx, float ny, unsigned btn);
