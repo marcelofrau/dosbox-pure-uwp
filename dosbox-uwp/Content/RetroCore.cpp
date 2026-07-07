@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "RetroCore.h"
 #include "libretro.h"
+#include "XAudio2Output.h"
 #include <vfs/vfs.h>
 #include <vfs/vfs_implementation.h>
 
@@ -8,7 +9,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <string>
-#include <SDL.h>
+#include <vector>
 
 static retro_vfs_interface uwp_vfs_iface = {
     reinterpret_cast<retro_vfs_get_path_t>(retro_vfs_file_get_path_impl),
@@ -46,13 +47,19 @@ retro_keyboard_event_t RetroCore::s_keyboardCallback = nullptr;
 retro_log_printf_t RetroCore::s_logCallback = nullptr;
 int RetroCore::s_mouseRelX = 0;
 int RetroCore::s_mouseRelY = 0;
+#ifdef MOUSE_SUPPORT
+bool RetroCore::s_mouseBtnLeft = false;
+bool RetroCore::s_mouseBtnRight = false;
+bool RetroCore::s_mouseBtnMiddle = false;
+int RetroCore::s_mouseWheel = 0;
+#endif
 float RetroCore::s_ptrX = 0;
 float RetroCore::s_ptrY = 0;
 bool RetroCore::s_ptrDown = false;
 double RetroCore::s_targetFps = 60.0;
 bool RetroCore::s_shutdownRequested = false;
-
-static SDL_AudioDeviceID s_audioDevice = 0;
+bool RetroCore::s_joypadState[16] = {};
+XAudio2Output* RetroCore::s_audioOutput = nullptr;
 static const char* OVERRIDE_MENU_TIME = "-1";
 
 RetroCore::RetroCore() {}
@@ -143,7 +150,7 @@ void RetroCore::RunFrame()
     if (!m_loaded) return;
     static int frameCount = 0;
     frameCount++;
-    if ((frameCount % 300) == 0)
+    if ((frameCount % 600) == 0)
     {
         char buf[128];
         sprintf_s(buf, "[dosbox-uwp] RunFrame #%d\n", frameCount);
@@ -155,7 +162,15 @@ void RetroCore::RunFrame()
     QueryPerformanceCounter(&t1);
     retro_run();
     QueryPerformanceCounter(&t2);
-    if ((frameCount % 60) == 0)
+
+#ifdef MOUSE_SUPPORT
+    // Reset per-frame mouse state
+    s_mouseRelX = 0;
+    s_mouseRelY = 0;
+    s_mouseWheel = 0;
+#endif
+
+    if ((frameCount % 600) == 0)
     {
         double ms = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq.QuadPart;
         char buf[128];
@@ -169,8 +184,8 @@ void RetroCore::UnloadGame()
     if (!m_loaded) return;
     OutputDebugStringA("[dosbox-uwp] UnloadGame\n");
     m_loaded = false;
-    if (s_audioDevice)
-        SDL_ClearQueuedAudio(s_audioDevice);
+    if (s_audioOutput)
+        s_audioOutput->Flush();
     retro_unload_game();
 }
 
@@ -232,6 +247,12 @@ void RetroCore::SetKeyState(unsigned key, bool down)
     }
 }
 
+void RetroCore::SetJoypadButton(unsigned id, bool held)
+{
+    if (id < 16)
+        s_joypadState[id] = held;
+}
+
 void RetroCore::SetMouseMove(int relX, int relY)
 {
     s_mouseRelX += relX;
@@ -245,9 +266,32 @@ void RetroCore::SetPointer(float x, float y, bool down)
     s_ptrDown = down;
 }
 
-void RetroCore::SetAudioDevice(unsigned int device)
+#ifdef MOUSE_SUPPORT
+void RetroCore::SetMouseButton(unsigned btn, bool down)
 {
-    s_audioDevice = (SDL_AudioDeviceID)device;
+    switch (btn)
+    {
+    case 1: s_mouseBtnLeft = down; break;
+    case 2: s_mouseBtnRight = down; break;
+    case 3: s_mouseBtnMiddle = down; break;
+    }
+}
+
+void RetroCore::SetMouseWheel(int delta)
+{
+    s_mouseWheel += delta;
+}
+
+void RetroCore::GetPointer(short& mx, short& my)
+{
+    mx = (short)((s_ptrX * 2.0f - 1.0f) * 0x7fff);
+    my = (short)((s_ptrY * 2.0f - 1.0f) * 0x7fff);
+}
+#endif
+
+void RetroCore::SetAudioOutput(XAudio2Output* output)
+{
+    s_audioOutput = output;
 }
 
 int RetroCore::retro_env(unsigned cmd, void* data)
@@ -422,7 +466,7 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
     {
         static int rejectCount = 0;
         rejectCount++;
-        if ((rejectCount % 60) == 0)
+        if ((rejectCount % 600) == 0)
         {
             char buf[128];
             sprintf_s(buf, "[dosbox-uwp] retro_video REJECTED #%d: data=%p w=%u h=%u pitch=%zu\n",
@@ -457,21 +501,11 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
 
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
-    if (!data || frames == 0 || !s_audioDevice) return frames;
+    if (!data || frames == 0)
+        return frames;
 
-    // Always queue audio. Frame pacing is the flow control.
-    SDL_QueueAudio(s_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
-
-    // Pre-buffer: keep SDL paused until queue holds ~93ms of audio.
-    // This prevents the queue from hitting zero between SDL callback periods
-    // (23.2ms @ 1024 samples) and our frame periods (14.3ms @ 70fps).
-    static bool preBuffered = false;
-    if (!preBuffered && SDL_GetQueuedAudioSize(s_audioDevice) >= 16384)
-    {
-        SDL_PauseAudioDevice(s_audioDevice, 0);
-        preBuffered = true;
-        OutputDebugStringA("[dosbox-uwp] retro_audio: pre-buffer filled, unpausing SDL\n");
-    }
+    if (s_audioOutput)
+        s_audioOutput->Submit(data, (uint32_t)frames);
 
     return frames;
 }
@@ -491,9 +525,15 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
         return (id < RETROK_LAST && s_keyboardState[id]) ? 1 : 0;
     }
 
+    // WARNING: RETROK values (0-323) numerically overlap JOYPAD button IDs (0-15).
+    // Previously this branch read from s_keyboardState, causing keyboard presses
+    // to leak into JOYPAD queries. E.g. RETROK_RETURN=13 == RETRO_DEVICE_ID_JOYPAD_R2,
+    // so Enter also registered as R2, which dosbox-pure maps to KBD_4 ("4").
+    // Fixed by using a separate s_joypadState[] array — populated from physical
+    // gamepad state in dosbox_uwpMain::Update().
     if (device == RETRO_DEVICE_JOYPAD)
     {
-        if (id < RETROK_LAST && s_keyboardState[id])
+        if (id < 16 && s_joypadState[id])
             return 1;
         return 0;
     }
@@ -504,8 +544,16 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
         {
         case RETRO_DEVICE_ID_MOUSE_X: return s_mouseRelX;
         case RETRO_DEVICE_ID_MOUSE_Y: return s_mouseRelY;
+#ifdef MOUSE_SUPPORT
+        case RETRO_DEVICE_ID_MOUSE_LEFT: return s_mouseBtnLeft ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_RIGHT: return s_mouseBtnRight ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return s_mouseBtnMiddle ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_WHEELUP: return (s_mouseWheel > 0) ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_WHEELDOWN: return (s_mouseWheel < 0) ? 1 : 0;
+#else
         case RETRO_DEVICE_ID_MOUSE_LEFT: return 0;
         case RETRO_DEVICE_ID_MOUSE_RIGHT: return 0;
+#endif
         default: return 0;
         }
     }
@@ -514,8 +562,8 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
     {
         switch (id)
         {
-        case RETRO_DEVICE_ID_POINTER_X: return (int16_t)(s_ptrX * 0x7fff);
-        case RETRO_DEVICE_ID_POINTER_Y: return (int16_t)(s_ptrY * 0x7fff);
+        case RETRO_DEVICE_ID_POINTER_X: return (int16_t)((s_ptrX * 2.0f - 1.0f) * 0x7fff);
+        case RETRO_DEVICE_ID_POINTER_Y: return (int16_t)((s_ptrY * 2.0f - 1.0f) * 0x7fff);
         case RETRO_DEVICE_ID_POINTER_PRESSED: return s_ptrDown ? 1 : 0;
         default: return 0;
         }

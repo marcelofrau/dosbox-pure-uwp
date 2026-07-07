@@ -129,17 +129,19 @@ Legend: ✅ done  🏗️ partial  🔲 not started  ⏸️ blocked  ❌ broken
 
 ## Phase C — Audio (Change 6)
 **Goal: DOSBox sound plays through speaker**
-**Status: 🔲 NOT STARTED**
+**Status: ✅ DONE** (replaced SDL audio with native XAudio2)
 
 ### Change: `wire-audio`
-**Files:** `dosbox-uwp/dosbox_uwpMain.cpp`, `dosbox-uwp/Content/RetroCore.cpp`
+**Files:** `dosbox-uwp/Content/XAudio2Output.h/.cpp`, `dosbox-uwp/dosbox_uwpMain.cpp/.h`, `dosbox-uwp/Content/RetroCore.cpp/.h`, `dosbox-uwp/Content/SdlInput.cpp/.h`
 
-- [ ] Call `GrabAudio()` in `Update()` after `retro_run()`
-- [ ] Send samples to `SDL_QueueAudio(m_audioDevice, ...)`
-- [ ] Replace buffer replace → ring buffer (or double buffer) to avoid data loss
-- [ ] Thread safety with `s_audioMutex`
-- [ ] Verify sample rate (core 48000Hz stereo vs SDL 44100Hz mono)
-- [ ] **Result:** PC speaker, AdLib, Sound Blaster produce audio
+- [x] Removed SDL audio subsystem init from SdlInput
+- [x] Created `XAudio2Output` class: alloc-per-submit ring buffer, `OnBufferEnd` callback, file-scope `s_queuedFrames` counter
+- [x] Voice `Start(0)` called in `Initialize()` with zero buffers (no pre-buffer)
+- [x] `retro_audio()` calls `s_audioOutput->Submit()`
+- [x] HUD shows XA2 ready + `GetQueuedFrames()` instead of SDL audio stats
+- [x] Queue-depth cap: When `s_queuedFrames > MAX_QUEUE` (882 = 20ms), flush voice and restart with fresh audio — bounds max latency
+- [x] Frame pacing: `CreateWaitableTimerEx(HIGH_RESOLUTION)` replaces `Sleep()` for µs-precision timing, fixing QPC/Sleep granularity drift
+- [ ] **TODO (future):** Audio-driven pacing using `GetState().SamplesPlayed` to eliminate residual QPC drift entirely — see `docs/discoveries.md`
 
 ---
 

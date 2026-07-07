@@ -3633,7 +3633,7 @@ void retro_run(void)
 	if (av_info.timing.fps <= 0 || av_info.timing.sample_rate <= 0) {
 		numSamples = 0;
 		dbp_audio_remain = 0.0;
-		if ((dbp_framecount % 60) == 0)
+		if ((dbp_framecount % 600) == 0)
 			OutputDebugStringA("[dosbox-uwp] audio: skip (av_info not ready)\n");
 	} else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
 		numSamples = haveSamples;
@@ -3646,7 +3646,7 @@ void retro_run(void)
 	{
 		mixSamples = (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples);
 		dbp_audio_remain = ((numSamples <= mixSamples || numSamples > haveSamples) ? 0.0 : (numSamples - mixSamples));
-		if ((dbp_framecount % 60) == 0)
+		if ((dbp_framecount % 600) == 0)
 		{
 			char _dbg[256];
 			sprintf_s(_dbg, "[dosbox-uwp] audio: frame=%u need=%.1f have=%u mix=%u remain=%.1f\n",
@@ -3670,7 +3670,7 @@ void retro_run(void)
 	// submit audio
 	if (mixSamples)
 	{
-		if ((dbp_framecount % 60) == 0)
+		if ((dbp_framecount % 600) == 0)
 		{
 			char _dbg[256];
 			sprintf_s(_dbg, "[dosbox-uwp] audio_submit: frame=%u mix=%u remain=%.1f have=%u\n",

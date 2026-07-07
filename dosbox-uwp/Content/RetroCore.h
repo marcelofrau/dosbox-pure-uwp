@@ -9,6 +9,7 @@ struct retro_vfs_interface;
 
 namespace dosbox_uwp
 {
+    class XAudio2Output;
     class RetroCore
     {
     public:
@@ -35,13 +36,18 @@ namespace dosbox_uwp
 
         double GetTargetFps() const { return s_targetFps; }
 
-        static void SetAudioDevice(unsigned int device);
-
         static bool IsShutdownRequested() { return s_shutdownRequested; }
 
         static void SetKeyState(unsigned key, bool down);
+        static void SetJoypadButton(unsigned id, bool held);
+        static void SetAudioOutput(XAudio2Output* output);
         static void SetMouseMove(int relX, int relY);
         static void SetPointer(float x, float y, bool down);
+#ifdef MOUSE_SUPPORT
+        static void SetMouseButton(unsigned btn, bool down);
+        static void SetMouseWheel(int delta);
+        static void GetPointer(short& mx, short& my);
+#endif
 
     private:
         bool m_initialized = false;
@@ -57,12 +63,20 @@ namespace dosbox_uwp
         static bool s_keyboardState[RETROK_LAST];
         static retro_keyboard_event_t s_keyboardCallback;
         static retro_log_printf_t s_logCallback;
+        static bool s_joypadState[16];
         static int s_mouseRelX;
         static int s_mouseRelY;
+#ifdef MOUSE_SUPPORT
+        static bool s_mouseBtnLeft;
+        static bool s_mouseBtnRight;
+        static bool s_mouseBtnMiddle;
+        static int s_mouseWheel;
+#endif
         static float s_ptrX;
         static float s_ptrY;
         static bool s_ptrDown;
         static bool s_shutdownRequested;
+        static XAudio2Output* s_audioOutput;
 
     public:
         static int retro_env(unsigned cmd, void* data);

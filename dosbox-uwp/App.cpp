@@ -76,6 +76,17 @@ void App::SetWindow(CoreWindow^ window)
 	window->Dispatcher->AcceleratorKeyActivated +=
 		ref new TypedEventHandler<CoreDispatcher^, AcceleratorKeyEventArgs^>(this, &App::OnAcceleratorKeyActivated);
 
+#ifdef MOUSE_SUPPORT
+	window->PointerMoved +=
+		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerMoved);
+	window->PointerPressed +=
+		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerPressed);
+	window->PointerReleased +=
+		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerReleased);
+	window->PointerWheelChanged +=
+		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerWheelChanged);
+#endif
+
 	DisplayInformation^ currentDisplayInformation = DisplayInformation::GetForCurrentView();
 
 	currentDisplayInformation->DpiChanged +=
@@ -331,6 +342,76 @@ void App::OnAcceleratorKeyActivated(CoreDispatcher^ sender, AcceleratorKeyEventA
             m_main->ToggleOSD();
     }
 }
+
+#ifdef MOUSE_SUPPORT
+void App::OnPointerMoved(CoreWindow^ sender, PointerEventArgs^ args)
+{
+	auto pt = args->CurrentPoint->Position;
+	float normX = pt.X / sender->Bounds.Width;
+	float normY = pt.Y / sender->Bounds.Height;
+	if (normX < 0) normX = 0;
+	if (normX > 1) normX = 1;
+	if (normY < 0) normY = 0;
+	if (normY > 1) normY = 1;
+	if (m_main)
+	{
+		m_main->SetMousePointerId(args->CurrentPoint->PointerId);
+		m_main->OnPointerMove(normX, normY, pt.X, pt.Y);
+	}
+}
+
+void App::OnPointerPressed(CoreWindow^ sender, PointerEventArgs^ args)
+{
+	auto pt = args->CurrentPoint->Position;
+	auto props = args->CurrentPoint->Properties;
+	float normX = pt.X / sender->Bounds.Width;
+	float normY = pt.Y / sender->Bounds.Height;
+	if (normX < 0) normX = 0;
+	if (normX > 1) normX = 1;
+	if (normY < 0) normY = 0;
+	if (normY > 1) normY = 1;
+
+	if (m_main)
+	{
+		m_main->SetMousePointerId(args->CurrentPoint->PointerId);
+		if (props->IsLeftButtonPressed)  m_main->OnPointerDown(normX, normY, 1);
+		if (props->IsRightButtonPressed) m_main->OnPointerDown(normX, normY, 2);
+		if (props->IsMiddleButtonPressed) m_main->OnPointerDown(normX, normY, 3);
+	}
+
+	if (sender->PointerCursor != nullptr)
+	{
+		OutputDebugStringA("[dosbox-uwp] Mouse click — hiding cursor\n");
+		sender->PointerCursor = nullptr;
+	}
+}
+
+void App::OnPointerReleased(CoreWindow^ sender, PointerEventArgs^ args)
+{
+	unsigned btn = 0;
+	auto props = args->CurrentPoint->Properties;
+	switch (props->PointerUpdateKind)
+	{
+	case PointerUpdateKind::LeftButtonReleased:  btn = 1; break;
+	case PointerUpdateKind::RightButtonReleased: btn = 2; break;
+	case PointerUpdateKind::MiddleButtonReleased: btn = 3; break;
+	}
+
+	if (m_main)
+	{
+		m_main->SetMousePointerId(args->CurrentPoint->PointerId);
+		m_main->OnPointerUp(btn);
+		if (!props->IsLeftButtonPressed && !props->IsRightButtonPressed && !props->IsMiddleButtonPressed)
+			m_main->OnPointerRelease();
+	}
+}
+
+void App::OnPointerWheelChanged(CoreWindow^ sender, PointerEventArgs^ args)
+{
+	int delta = args->CurrentPoint->Properties->MouseWheelDelta;
+	if (m_main) m_main->OnPointerWheel(delta);
+}
+#endif
 
 // DisplayInformation event handlers.
 

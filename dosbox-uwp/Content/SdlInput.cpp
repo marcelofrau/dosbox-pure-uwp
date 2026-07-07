@@ -11,13 +11,10 @@ using namespace Windows::Foundation;
 
 SdlInput::SdlInput()
     : m_controller(nullptr)
-    , m_audioDevice(0)
     , m_uwpGamepad(nullptr)
     , m_controllerCount(0)
     , m_initialized(false)
     , m_hasController(false)
-    , m_audioReady(false)
-    , m_audioSampleRate(0)
 {
     memset(m_buttonHeld, 0, sizeof(m_buttonHeld));
     memset(m_buttonJustPressed, 0, sizeof(m_buttonJustPressed));
@@ -28,11 +25,6 @@ SdlInput::SdlInput()
 SdlInput::~SdlInput()
 {
     m_uwpGamepad = nullptr;
-    if (m_audioDevice > 0)
-    {
-        SDL_CloseAudioDevice(m_audioDevice);
-        m_audioDevice = 0;
-    }
     if (m_controller)
     {
         SDL_GameControllerClose(m_controller);
@@ -40,7 +32,7 @@ SdlInput::~SdlInput()
     }
     if (m_initialized)
     {
-        SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC | SDL_INIT_AUDIO);
+        SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC);
     }
 }
 
@@ -48,41 +40,12 @@ bool SdlInput::Initialize()
 {
     SDL_SetMainReady();
 
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC | SDL_INIT_AUDIO) < 0)
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) < 0)
     {
         OutputDebugStringA("SDL_Init FAILED\n");
         return false;
     }
     m_initialized = true;
-
-    // init SDL audio device at 44100Hz stereo (matches core output)
-    SDL_AudioSpec desired = {};
-    desired.freq = 44100;
-    desired.format = AUDIO_S16SYS;
-    desired.channels = 2;
-    desired.samples = 1024;
-
-    SDL_AudioSpec obtained = {};
-    m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
-    if (m_audioDevice > 0)
-    {
-        m_audioReady = true;
-        m_audioSampleRate = obtained.freq;
-        char buf[128];
-        sprintf_s(buf, "SDL audio: %dHz %dch %d samples/period\n",
-            obtained.freq, obtained.channels, obtained.samples);
-        OutputDebugStringA(buf);
-        if (obtained.freq != 44100 || obtained.channels != 2)
-            OutputDebugStringA("[dosbox-uwp] WARNING: SDL audio format mismatch (expected 44100Hz stereo)\n");
-        // Start paused — retro_audio will unpause after pre-buffer fills
-        SDL_PauseAudioDevice(m_audioDevice, 1);
-    }
-    else
-    {
-        char buf[128];
-        sprintf_s(buf, "SDL audio: FAILED (%s)\n", SDL_GetError());
-        OutputDebugStringA(buf);
-    }
 
     m_controllerCount = SDL_NumJoysticks();
     if (m_controllerCount > 0)
@@ -296,29 +259,4 @@ bool SdlInput::WasButtonJustPressed(int btn)
     return result;
 }
 
-void SdlInput::PlayBeep(float frequency, float duration, float volume)
-{
-    if (!m_audioReady) return;
 
-    unsigned numSamples = (unsigned)(m_audioSampleRate * duration);
-    if (numSamples < 1) numSamples = 1;
-
-    std::vector<int16_t> buffer(numSamples);
-    for (unsigned i = 0; i < numSamples; i++)
-    {
-        float t = (float)i / (float)m_audioSampleRate;
-        float sample = sinf(2.0f * 3.14159265f * frequency * t);
-        buffer[i] = (int16_t)(sample * volume * 32767.0f);
-    }
-
-    if (SDL_QueueAudio(m_audioDevice, buffer.data(), (Uint32)(buffer.size() * sizeof(int16_t))) == 0)
-    {
-        OutputDebugStringA("Beep (SDL)\n");
-    }
-    else
-    {
-        char buf[128];
-        sprintf_s(buf, "Beep SDL FAILED: %s\n", SDL_GetError());
-        OutputDebugStringA(buf);
-    }
-}

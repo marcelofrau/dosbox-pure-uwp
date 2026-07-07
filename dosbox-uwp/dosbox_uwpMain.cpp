@@ -13,13 +13,15 @@ using namespace Concurrency;
 
 dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& deviceResources)
     : m_deviceResources(deviceResources)
-    , m_clearColor(DirectX::Colors::CornflowerBlue)
-    , m_defaultClearColor(DirectX::Colors::CornflowerBlue)
+    , m_clearColor{ 0.1764705882f, 0.1764705882f, 0.1764705882f, 1.0f }
+    , m_defaultClearColor{ 0.1764705882f, 0.1764705882f, 0.1764705882f, 1.0f }
     , m_hasController(false)
     , m_eventText(L"")
     , m_eventTimer(0)
 {
     QueryPerformanceFrequency(&m_qpcFreq);
+    m_hFrameTimer = CreateWaitableTimerEx(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     m_deviceResources->RegisterDeviceNotify(this);
 
     m_sceneRenderer = std::unique_ptr<Sample3DSceneRenderer>(new Sample3DSceneRenderer(m_deviceResources));
@@ -29,20 +31,26 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 
     m_retroCore = std::unique_ptr<RetroCore>(new RetroCore());
 
+    m_xaudio2 = std::unique_ptr<XAudio2Output>(new XAudio2Output());
+    if (m_xaudio2->Initialize())
+    {
+        RetroCore::SetAudioOutput(m_xaudio2.get());
+        OutputDebugStringA("[dosbox-uwp] XAudio2: initialized\n");
+    }
+    else
+    {
+        OutputDebugStringA("[dosbox-uwp] XAudio2: FAILED to initialize\n");
+    }
+
     m_sdlInput = std::unique_ptr<SdlInput>(new SdlInput());
     if (m_sdlInput->Initialize())
     {
         m_hasController = m_sdlInput->HasController();
         char buf[128];
-        sprintf_s(buf, "SDL: controller=%s audio=%s dev=%u\n",
-            m_hasController ? "CONNECTED" : "NONE (SPACE=btnA)",
-            m_sdlInput->IsAudioReady() ? "OK" : "FAIL",
-            m_sdlInput->GetAudioDevice());
+        sprintf_s(buf, "SDL: controller=%s\n",
+            m_hasController ? "CONNECTED" : "NONE (SPACE=btnA)");
         OutputDebugStringA(buf);
     }
-
-    // Wire SDL audio device so retro_audio can queue directly
-    RetroCore::SetAudioDevice(m_sdlInput->GetAudioDevice());
 
     BootCore();
 }
@@ -52,6 +60,11 @@ dosbox_uwpMain::~dosbox_uwpMain()
     CleanupTempFile();
     m_retroCore->Shutdown();
     m_deviceResources->RegisterDeviceNotify(nullptr);
+    if (m_hFrameTimer)
+    {
+        CloseHandle(m_hFrameTimer);
+        m_hFrameTimer = nullptr;
+    }
 }
 
 void dosbox_uwpMain::BootCore()
@@ -162,8 +175,13 @@ void dosbox_uwpMain::DoPacingSleep()
         {
             double remainingMs = (double)(m_lastFrameTime.QuadPart - _now.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
 
-            if (remainingMs > 3.0)
-                Sleep((DWORD)(remainingMs - 1.0));
+            if (remainingMs > 2.0 && m_hFrameTimer)
+            {
+                LARGE_INTEGER dueTime;
+                dueTime.QuadPart = -(LONGLONG)((remainingMs - 1.0) * 10000.0);
+                SetWaitableTimer(m_hFrameTimer, &dueTime, 0, nullptr, nullptr, FALSE);
+                WaitForSingleObject(m_hFrameTimer, INFINITE);
+            }
 
             do {
                 QueryPerformanceCounter(&_now);
@@ -216,6 +234,21 @@ void dosbox_uwpMain::Update()
 
         if (m_retroRunning && m_retroCore->IsLoaded())
         {
+            PollMouseButtons();
+            PollKeyboard();
+            // Sync physical gamepad → libretro JOYPAD state.
+            // SdlInput button IDs (BUTTON_A=0..BUTTON_R3=11) don't match
+            // libretro RETRO_DEVICE_ID_JOYPAD_* (B=0, Y=1, SELECT=2, ... R3=15).
+            // Until full mapping table is wired, ClearJoypad ensures no stale state.
+            //
+            // TODO(gamepad): Once SdlInput is connected to a real controller,
+            // build a translation table here:
+            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B,   m_sdlInput->IsButtonHeld(BUTTON_A));
+            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_Y,   m_sdlInput->IsButtonHeld(BUTTON_X));
+            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_SELECT, m_sdlInput->IsButtonHeld(BUTTON_SELECT));
+            //   ... etc.
+            for (unsigned i = 0; i < 16; i++)
+                RetroCore::SetJoypadButton(i, false);
             m_retroCore->RunFrame();
             if (RetroCore::IsShutdownRequested())
             {
@@ -232,15 +265,14 @@ void dosbox_uwpMain::Update()
             double targetFps = m_retroCore->IsLoaded() ? m_retroCore->GetTargetFps() : 60.0;
             double targetMs = 1000.0 / targetFps;
             static int pacingLogCounter = 0;
-            if ((++pacingLogCounter % 60) == 0)
+            if ((++pacingLogCounter % 600) == 0)
             {
-                bool skipped = !m_pacingEnabled && m_retroRunning && m_retroCore->IsLoaded();
-                Uint32 sdlQueued = 0;
-                if (m_sdlInput->IsAudioReady())
-                    sdlQueued = SDL_GetQueuedAudioSize(m_sdlInput->GetAudioDevice());
+                uint32_t audioQueued = 0;
+                if (m_xaudio2 && m_xaudio2->IsStarted())
+                    audioQueued = m_xaudio2->GetQueuedFrames();
                 char buf[256];
-                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms sleep=y skip=%d audioQueued=%u\n",
-                    targetFps, frameMs, skipped ? 1 : 0, sdlQueued);
+                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u\n",
+                    targetFps, frameMs, audioQueued);
                 OutputDebugStringA(buf);
             }
         }
@@ -262,11 +294,6 @@ void dosbox_uwpMain::Update()
                 (m_retroCore->IsInitialized() ? L"CORE:READY" : L"CORE:OFF");
 
             std::wstring statusLine = (m_statusTimer > 0) ? m_statusText : L"";
-
-            // SDL audio buffer size
-            Uint32 sdlQueuedBytes = 0;
-            if (m_sdlInput->IsAudioReady())
-                sdlQueuedBytes = SDL_GetQueuedAudioSize(m_sdlInput->GetAudioDevice());
 
             // App memory usage (UWP API)
             unsigned long long memMB = 0;
@@ -306,20 +333,17 @@ void dosbox_uwpMain::Update()
             const wchar_t* loadLabel = loadStateNames[m_loadState];
 
             wchar_t buf[512];
-            swprintf_s(buf, L"%s  SDL:%s CTL:%s AUDIO:%s INP:%s FPS:%.0f LATE:%d\n"
-                L"CTLR:%hs SND:%dHz MEM:%lluMB SDLbuf:%u/%u %ls\n%ls",
+            swprintf_s(buf, L"%s  SDL:%s CTL:%s XA2:%s INP:%s FPS:%.0f LATE:%d\n"
+                L"CTLR:%hs MEM:%lluMB %ls\n%ls",
                 retroStatus.c_str(),
                 m_sdlInput->IsInitialized() ? L"OK" : L"FAIL",
                 m_hasController ? L"CONN" : L"NONE",
-                m_sdlInput->IsAudioReady() ? L"OK" : L"FAIL",
+                (m_xaudio2 && m_xaudio2->IsReady()) ? L"OK" : L"FAIL",
                 inputSrc,
                 currentFps,
                 m_lateFramesHud,
                 m_sdlInput->GetControllerName(),
-                m_sdlInput->GetAudioSampleRate(),
                 memMB,
-                sdlQueuedBytes,
-                m_sdlInput->GetAudioDevice(),
                 loadLabel,
                 (m_eventTimer > 0 || m_statusTimer > 0) ?
                     (m_statusTimer > 0 ? m_statusText.c_str() : m_eventText.c_str()) : L"");
@@ -336,7 +360,7 @@ void dosbox_uwpMain::Update()
         QueryPerformanceCounter(&_t3);
         {
             static unsigned _tc = 0;
-            if ((++_tc % 60) == 0)
+            if ((++_tc % 600) == 0)
             {
                 double poll_ms  = (double)(_t0.QuadPart) * 1000.0 / _freq.QuadPart;
                 double frame_ms = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
@@ -344,14 +368,16 @@ void dosbox_uwpMain::Update()
                 double scene_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
                 double total_ms = (double)(_t3.QuadPart) * 1000.0 / _freq.QuadPart;
                 float fps       = m_timer.GetFramesPerSecond();
-                Uint32 sdlBuf   = m_sdlInput->IsAudioReady() ? SDL_GetQueuedAudioSize(m_sdlInput->GetAudioDevice()) : 0;
+                uint32_t xa2Frames = 0;
+                if (m_xaudio2 && m_xaudio2->IsStarted())
+                    xa2Frames = m_xaudio2->GetQueuedFrames();
                 unsigned long long memBytes = 0;
                 try { memBytes = Windows::System::MemoryManager::AppMemoryUsage; } catch (...) { }
                 char _dbg[512];
                 sprintf_s(_dbg, "[dosbox-uwp] TICK #%u: frame=%.1fms hud=%.1f scene=%.1f fps=%.0f "
-                    "SDLbuf=%u MEM=%lluMB total=%.1f\n",
+                    "XA2frames=%u MEM=%lluMB total=%.1f\n",
                     _tc, frame_ms, hud_ms, scene_ms, fps,
-                    sdlBuf, memBytes / (1024*1024), total_ms);
+                    xa2Frames, memBytes / (1024*1024), total_ms);
                 OutputDebugStringA(_dbg);
             }
         }
@@ -382,7 +408,7 @@ bool dosbox_uwpMain::Render()
         renderCount++;
         bool haveFrame = m_retroCore->HasFrame();
 
-        if ((renderCount % 300) == 0)
+        if ((renderCount % 600) == 0)
         {
             char buf[128];
             sprintf_s(buf, "[dosbox-uwp] Render #%d: frame.valid=%d w=%u h=%u\n",
@@ -410,7 +436,7 @@ bool dosbox_uwpMain::Render()
         QueryPerformanceCounter(&_r1);
         {
             static unsigned _rc = 0;
-            if ((++_rc % 60) == 0)
+            if ((++_rc % 600) == 0)
             {
                 double r_ms = (double)(_r1.QuadPart - _r0.QuadPart) * 1000.0 / _rfreq.QuadPart;
                 char _dbg[256];
@@ -567,6 +593,9 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
     default: break;
     }
 
+    if (vk >= 0 && vk < 256)
+        m_activeVKeyState[vk] = down;
+
     if (retroKey != RETROK_UNKNOWN)
     {
         if (!m_retroCore->IsLoaded())
@@ -584,6 +613,99 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down)
         }
     }
 }
+
+void dosbox_uwpMain::PollKeyboard()
+{
+    if (!m_retroCore) return;
+    try
+    {
+        auto window = Windows::UI::Core::CoreWindow::GetForCurrentThread();
+        if (!window) return;
+        for (int vk = 0; vk < 256; vk++)
+        {
+            if (!m_activeVKeyState[vk]) continue;
+            auto state = window->GetKeyState(static_cast<Windows::System::VirtualKey>(vk));
+            bool stillDown = (state & Windows::UI::Core::CoreVirtualKeyStates::Down) != Windows::UI::Core::CoreVirtualKeyStates::None;
+            if (!stillDown)
+            {
+                m_activeVKeyState[vk] = false;
+                OnKeyEvent(static_cast<Windows::System::VirtualKey>(vk), false);
+            }
+        }
+    }
+    catch (Platform::Exception^) { }
+}
+
+#ifdef MOUSE_SUPPORT
+void dosbox_uwpMain::OnPointerMove(float nx, float ny, float px, float py)
+{
+    if (!m_retroCore) return;
+
+    m_pointerX = nx;
+    m_pointerY = ny;
+
+    int relX = (int)(px - m_lastPointerPX);
+    int relY = (int)(py - m_lastPointerPY);
+    m_lastPointerPX = px;
+    m_lastPointerPY = py;
+
+    m_retroCore->SetMouseMove(relX, relY);
+    m_retroCore->SetPointer(nx, ny, m_pointerDown);
+}
+
+void dosbox_uwpMain::OnPointerDown(float nx, float ny, unsigned btn)
+{
+    if (!m_retroCore) return;
+
+    m_pointerX = nx;
+    m_pointerY = ny;
+    m_lastPointerX = nx;
+    m_lastPointerY = ny;
+    m_pointerDown = true;
+
+    m_retroCore->SetPointer(nx, ny, true);
+    m_retroCore->SetMouseButton(btn, true);
+}
+
+void dosbox_uwpMain::OnPointerUp(unsigned btn)
+{
+    if (!m_retroCore) return;
+    m_retroCore->SetMouseButton(btn, false);
+}
+
+void dosbox_uwpMain::OnPointerRelease()
+{
+    if (!m_retroCore) return;
+    m_pointerDown = false;
+    m_retroCore->SetPointer(m_pointerX, m_pointerY, false);
+}
+
+void dosbox_uwpMain::OnPointerWheel(int delta)
+{
+    if (!m_retroCore) return;
+    m_retroCore->SetMouseWheel(delta);
+}
+
+void dosbox_uwpMain::SetMousePointerId(uint32_t id)
+{
+    m_mousePointerId = id;
+}
+
+void dosbox_uwpMain::PollMouseButtons()
+{
+    if (m_mousePointerId == 0 || !m_retroCore) return;
+    try
+    {
+        auto pt = Windows::UI::Input::PointerPoint::GetCurrentPoint(m_mousePointerId);
+        if (!pt) return;
+        auto props = pt->Properties;
+        m_retroCore->SetMouseButton(1, props->IsLeftButtonPressed);
+        m_retroCore->SetMouseButton(2, props->IsRightButtonPressed);
+        m_retroCore->SetMouseButton(3, props->IsMiddleButtonPressed);
+    }
+    catch (Platform::Exception^) { }
+}
+#endif
 
 void dosbox_uwpMain::OnDeviceLost()
 {

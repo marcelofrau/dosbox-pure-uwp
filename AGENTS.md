@@ -13,7 +13,7 @@ All documentation, code, comments, and commit messages MUST be in English.
 - **Build via .sln** not .vcxproj. `$(SolutionDir)` needed for `uwp-dep.props` SDL paths.
 - **x64 only.** ARM64/ARM/x86 NOT supported (Xbox Series is x64).
 - **`CompileAsWinRT=false`** for legacy C (dosbox-pure source). `/ZW` for C++/CX files.
-- **Dynarec disabled** via `DISABLE_DYNAREC` for UWP compatibility (see `docs/DYNAREC_UWP.md`).
+- **Dynarec enabled** via patched `dyn_cache.h` (`VirtualAllocFromApp` + W^X fix, see `docs/DYNAREC_UWP.md`).
 - **InputTest workflow:** after editing `docs/tools/inputtest-better/inputtest.c` (or `hello.c`), regenerate `.exe` + `.dosz` in BOTH `docs/tools/inputtest-better/dist/` AND `E:\PC\DOSBoxPure\`. Open Watcom at `C:\Apps\OW`. Run `pwsh -NoProfile build.ps1` in that directory. Script does: wcc (compile) → wlink (link) → Compress-Archive (.dosz) → copy to `E:\PC\DOSBoxPure\`.
 
 ## Build
@@ -28,7 +28,8 @@ Current: 0 errors, ~1500 warnings C4244 (cosmetic).
 |------|---------|
 | `dosbox-uwp/Content/RetroCore.cpp/.h` | libretro bridge: init, load, run, callbacks, retro_env, VFS |
 | `dosbox-uwp/Content/RetroScreenRenderer.cpp/.h` | D2D bitmap render + letterbox |
-| `dosbox-uwp/dosbox_uwpMain.cpp/.h` | Main loop, Update/Render, input routing |
+| `dosbox-uwp/Content/XAudio2Output.cpp/.h` | XAudio2 audio output: ring buffer, OnBufferEnd, pre-buffer |
+| `dosbox-uwp/dosbox_uwpMain.cpp/.h` | Main loop, Update/Render, input routing, audio init |
 | `dosbox-uwp/App.cpp` | Entry point, Ctrl+Alt+F2 → FileOpenPicker → async file read → LoadRom |
 | `dosbox-uwp/dosbox_pure_sta.cpp` | DBPS_* stubs (10 no-ops) |
 | `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp` | Patched core (copied from submodule) |
@@ -62,8 +63,15 @@ Return 0 to force SW path. Returning 1 causes GL crash (no OpenGL context).
 
 **Fix:** In `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp`, comment out `#ifdef DBP_STANDALONE` block in `GFX_EndUpdate()` so OSD draws directly onto `buf.video` (non-standalone path).
 
+### 9. Audio queue grows unbounded — QPC vs audio clock skew
+`DoPacingSleep()` uses QPC + Sleep to target 70fps. Default Sleep granularity (~15.6ms) > framePeriod (14.3ms), causing cumulative drift → actual fps ~71-72 → audio queue grows ~630 frames/sec. Even after fixing timer resolution with `CreateWaitableTimerEx(HIGH_RESOLUTION)`, residual drift (~0.5fps) from variable processing time causes slow queue accumulation.
+
+**Fix (current):** Queue-depth cap in `XAudio2Output::Submit()`. When `s_queuedFrames > 882` (~20ms), `Stop()` + `FlushSourceBuffers()` + resubmit fresh + `Start(0)`.
+
+**Fix (future):** Audio-driven pacing using `GetState().SamplesPlayed` instead of QPC — see `docs/discoveries.md`.
+
 ## Defines
-`__LIBRETRO__`, `DBP_STANDALONE`, `_CRT_SECURE_NO_WARNINGS`, `_CRT_NONSTDC_NO_DEPRECATE`, `DISABLE_DYNAREC`
+`__LIBRETRO__`, `DBP_STANDALONE`, `_CRT_SECURE_NO_WARNINGS`, `_CRT_NONSTDC_NO_DEPRECATE`
 
 ## Logging
 All `OutputDebugStringA` prepend `[dosbox-uwp]` for DebugView filtering.
@@ -87,8 +95,9 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 ## Status
 - Phase 0-3 done (scaffold, core compiles, libretro frontend, video pipeline)
 - Phase 4 complete (keyboard callback, GET_LOG_INTERFACE)
-- Phase 5 blocked (audio buffer exists, not routed to output)
+- Phase 5 complete (XAudio2 output replaces SDL audio: alloc-per-submit ring buffer, OnBufferEnd callback, voice starts in Initialize, queue-depth cap at 882 frames/20ms)
 - OSD fix: commented out DBP_STANDALONE separate-buffer path in GFX_EndUpdate. PUREMENU now renders directly onto framebuffer.
-- Dynarec disabled (see `docs/DYNAREC_UWP.md`)
+- Dynarec enabled (patched `dyn_cache.h` with `VirtualAllocFromApp`, see `docs/DYNAREC_UWP.md`)
 - Tested on Windows 11 via VS2022. Xbox Series deploy not tested.
 - Mouse input implemented: CoreWindow pointer events → SetMouseMove/SetPointer/SetMouseButton/SetMouseWheel → retro_input_state + DBPS_GetMouse. Cursor hidden on first click. Puremenu cursor works via DBPS_GetMouse.
+- Keyboard→joypad state leak fixed: JOYPAD reads `s_joypadState[16]` instead of `s_keyboardState[]`.

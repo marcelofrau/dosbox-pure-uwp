@@ -7,6 +7,7 @@
 #include "Content\SdlInput.h"
 #include "Content\RetroCore.h"
 #include "Content\RetroScreenRenderer.h"
+#include "Content\XAudio2Output.h"
 
 namespace dosbox_uwp
 {
@@ -22,7 +23,16 @@ namespace dosbox_uwp
 
         virtual void OnDeviceLost();
         virtual void OnDeviceRestored();
-        void OnKeyEvent(Windows::System::VirtualKey key, bool down);
+		void OnKeyEvent(Windows::System::VirtualKey key, bool down);
+#ifdef MOUSE_SUPPORT
+		void OnPointerMove(float nx, float ny, float px, float py);
+		void OnPointerDown(float nx, float ny, unsigned btn);
+		void OnPointerUp(unsigned btn);
+		void OnPointerRelease();
+		void OnPointerWheel(int delta);
+		void SetMousePointerId(uint32_t id);
+		void PollMouseButtons();
+#endif
         void ToggleOSD();
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);
         enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
@@ -35,6 +45,7 @@ namespace dosbox_uwp
 
     private:
         void BootCore();
+        void PollKeyboard();
 
         std::shared_ptr<DX::DeviceResources> m_deviceResources;
 
@@ -43,6 +54,7 @@ namespace dosbox_uwp
         std::unique_ptr<SdlInput> m_sdlInput;
         std::unique_ptr<RetroCore> m_retroCore;
         std::unique_ptr<RetroScreenRenderer> m_retroScreen;
+        std::unique_ptr<XAudio2Output> m_xaudio2;
 
         DX::StepTimer m_timer;
 
@@ -66,12 +78,25 @@ namespace dosbox_uwp
         LoadState m_loadState = LOAD_IDLE;
         int m_loadTimer = 0;
 
+#ifdef MOUSE_SUPPORT
+        float m_pointerX = 0.5f;
+        float m_pointerY = 0.5f;
+        bool m_pointerDown = false;
+        float m_lastPointerX = 0.5f;
+        float m_lastPointerY = 0.5f;
+        float m_lastPointerPX = 0.0f;
+        float m_lastPointerPY = 0.0f;
+        uint32_t m_mousePointerId = 0;
+#endif
+
+        bool m_activeVKeyState[256] = {};
+
         // Frame pacing tracking
         bool m_frameLate = false;
         int m_lateFrameCount = 0;
         int m_lateFramesHud = 0;
-        bool m_pacingEnabled = false;
         LARGE_INTEGER m_lastFrameTime = {};
         LARGE_INTEGER m_qpcFreq = {};
+        HANDLE m_hFrameTimer = nullptr;
     };
 }
