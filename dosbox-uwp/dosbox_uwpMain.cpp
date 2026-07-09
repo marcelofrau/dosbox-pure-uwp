@@ -101,6 +101,13 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         }
         xb::Xray::set_log_path(logPath.c_str());
         xb::Xray::start("DOSBox-Pure");
+        {
+            auto family = Windows::System::Profile::AnalyticsInfo::VersionInfo->DeviceFamily;
+            std::wstring fw(family->Data());
+            char buf[64];
+            WideCharToMultiByte(CP_UTF8, 0, fw.c_str(), -1, buf, sizeof(buf), nullptr, nullptr);
+            xb::Xray::set_device_family(buf);
+        }
         xb::Xray::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
         xb::Xray::bind("fps", &s_debug_fps);
         xb::Xray::bind("target_fps", &s_debug_target_fps);
