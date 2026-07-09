@@ -9,6 +9,14 @@
 #ifdef XB_INSPECTOR_ENABLED
 #include <xray/inspector.hpp>
 // File-scope variables expostas ao Lua REPL do XB-Inspector
+struct PerfStats {
+    double frame_ms, poll_ms, hud_ms, render_ms, total_ms;
+    double target_fps;
+    float fps;
+    int audio_queued;
+    char rom_name[256];
+};
+static PerfStats s_perf{};
 static float s_debug_fps = 0.0f;
 static double s_debug_target_fps = 60.0;
 static double s_debug_frame_ms = 0.0;
@@ -101,6 +109,21 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         xb::Inspector::bind("render_ms", &s_debug_render_ms);
         xb::Inspector::bind("total_ms", &s_debug_total_ms);
         xb::Inspector::bind_string("rom_name", s_rom_name, sizeof(s_rom_name));
+
+        // Grouped struct — demonstrates bind_struct API
+        static constexpr xb::struct_field perf_fields[] = {
+            xb::field("frame_ms",     &PerfStats::frame_ms),
+            xb::field("poll_ms",      &PerfStats::poll_ms),
+            xb::field("hud_ms",       &PerfStats::hud_ms),
+            xb::field("render_ms",    &PerfStats::render_ms),
+            xb::field("total_ms",     &PerfStats::total_ms),
+            xb::field("target_fps",   &PerfStats::target_fps),
+            xb::field("fps",          &PerfStats::fps),
+            xb::field("audio_queued", &PerfStats::audio_queued),
+            xb::field("rom_name",     &PerfStats::rom_name),
+        };
+        xb::Inspector::bind_struct("perf", &s_perf, perf_fields,
+            sizeof(perf_fields) / sizeof(perf_fields[0]));
         xb::Inspector::set_on_terminate([]() {
             Windows::ApplicationModel::Core::CoreApplication::Exit();
         });
@@ -183,6 +206,8 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         std::string fname = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
         strncpy_s(s_rom_name, fname.c_str(), sizeof(s_rom_name) - 1);
         s_rom_name[sizeof(s_rom_name) - 1] = '\0';
+        strncpy_s(s_perf.rom_name, fname.c_str(), sizeof(s_perf.rom_name) - 1);
+        s_perf.rom_name[sizeof(s_perf.rom_name) - 1] = '\0';
     }
 
     CleanupTempFile();
@@ -347,6 +372,10 @@ void dosbox_uwpMain::Update()
             s_debug_fps = m_timer.GetFramesPerSecond();
             s_debug_target_fps = targetFps;
             s_debug_frame_ms = frameMs;
+            s_perf.fps = s_debug_fps;
+            s_perf.target_fps = s_debug_target_fps;
+            s_perf.frame_ms = s_debug_frame_ms;
+            s_perf.audio_queued = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
 #endif
             static int pacingLogCounter = 0;
             if ((++pacingLogCounter % 600) == 0)
@@ -447,6 +476,10 @@ void dosbox_uwpMain::Update()
         s_debug_hud_ms = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
         s_debug_render_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
         s_debug_total_ms = (double)(_t3.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_perf.poll_ms = s_debug_poll_ms;
+        s_perf.hud_ms = s_debug_hud_ms;
+        s_perf.render_ms = s_debug_render_ms;
+        s_perf.total_ms = s_debug_total_ms;
 #endif
         {
             static unsigned _tc = 0;
