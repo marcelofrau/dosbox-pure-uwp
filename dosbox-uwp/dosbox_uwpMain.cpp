@@ -25,6 +25,7 @@ static double s_debug_hud_ms = 0.0;
 static double s_debug_render_ms = 0.0;
 static double s_debug_total_ms = 0.0;
 static char s_rom_name[256] = "(none)";
+static std::atomic<bool> s_paused{false};
 #endif
 
 using namespace dosbox_uwp;
@@ -126,6 +127,12 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             sizeof(perf_fields) / sizeof(perf_fields[0]));
         xb::Xray::set_on_terminate([]() {
             Windows::ApplicationModel::Core::CoreApplication::Exit();
+        });
+        xb::Xray::set_on_pause([]() {
+            s_paused = true;
+        });
+        xb::Xray::set_on_continue([]() {
+            s_paused = false;
         });
         spdlog::info("{}", "--- XB-Inspector ---");
         spdlog::info("File log dir: {}", logPath.empty() ? "(none)" : logPath);
@@ -353,7 +360,12 @@ void dosbox_uwpMain::Update()
             //   ... etc.
             for (unsigned i = 0; i < 16; i++)
                 RetroCore::SetJoypadButton(i, false);
+#ifndef XB_INSPECTOR_ENABLED
             m_retroCore->RunFrame();
+#else
+            if (!s_paused)
+                m_retroCore->RunFrame();
+#endif
             if (RetroCore::IsShutdownRequested())
             {
                 OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, exiting app\n");
