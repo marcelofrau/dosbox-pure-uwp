@@ -60,6 +60,8 @@ double RetroCore::s_targetFps = 60.0;
 bool RetroCore::s_shutdownRequested = false;
 bool RetroCore::s_joypadState[16] = {};
 XAudio2Output* RetroCore::s_audioOutput = nullptr;
+std::map<std::string, std::string> RetroCore::s_optionValues;
+bool RetroCore::s_optionValuesChanged = false;
 static const char* OVERRIDE_MENU_TIME = "-1";
 
 RetroCore::RetroCore() {}
@@ -233,6 +235,13 @@ static const char* retro_env_name(unsigned cmd)
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE: return "GET_THROTTLE_STATE";
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: return "GET_LOG_INTERFACE";
     case RETRO_ENVIRONMENT_SHUTDOWN: return "SHUTDOWN";
+    case RETRO_ENVIRONMENT_SET_VARIABLE: return "SET_VARIABLE";
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: return "SET_CORE_OPTIONS_V2";
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS: return "SET_CORE_OPTIONS";
+    case RETRO_ENVIRONMENT_SET_VARIABLES: return "SET_VARIABLES";
+    case RETRO_ENVIRONMENT_GET_VARIABLE: return "GET_VARIABLE";
+    case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: return "GET_VARIABLE_UPDATE";
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK: return "SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK";
     default: return "UNKNOWN";
     }
 }
@@ -292,6 +301,15 @@ void RetroCore::GetPointer(short& mx, short& my)
 void RetroCore::SetAudioOutput(XAudio2Output* output)
 {
     s_audioOutput = output;
+}
+
+void RetroCore::SetOptionValue(const char* key, const char* value)
+{
+    if (key)
+    {
+        s_optionValues[key] = (value ? value : "");
+        s_optionValuesChanged = true;
+    }
 }
 
 int RetroCore::retro_env(unsigned cmd, void* data)
@@ -397,6 +415,21 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         OutputDebugStringA("[dosbox-pure] SHUTDOWN requested\n");
         s_shutdownRequested = true;
         return 1;
+    case RETRO_ENVIRONMENT_SET_VARIABLE:
+    {
+        auto* var = static_cast<const retro_variable*>(data);
+        if (var && var->key)
+        {
+            const char* val = var->value ? var->value : "(default)";
+            char kbuf[512];
+            sprintf_s(kbuf, "[dosbox-uwp]   SET_VARIABLE: %s = %s\n", var->key, val);
+            OutputDebugStringA(kbuf);
+            s_optionValues[var->key] = (var->value ? var->value : "");
+            s_optionValuesChanged = true;
+            return 1;
+        }
+        return 0;
+    }
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
         return 1;
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
@@ -414,6 +447,22 @@ int RetroCore::retro_env(unsigned cmd, void* data)
                 OutputDebugStringA("[dosbox-uwp]   GET_VARIABLE(menu_time) = -1\n");
                 return 1;
             }
+
+            auto it = s_optionValues.find(var->key);
+            if (it != s_optionValues.end())
+            {
+                if (!it->second.empty())
+                {
+                    var->value = it->second.c_str();
+#ifdef FRAME_TRACE
+                    char kbuf[256];
+                    sprintf_s(kbuf, "[dosbox-uwp]   GET_VARIABLE(%s) = %s\n", var->key, it->second.c_str());
+                    OutputDebugStringA(kbuf);
+#endif
+                    return 1;
+                }
+                // Empty value means "use default" — fall through to return 0
+            }
 #ifdef FRAME_TRACE
             char kbuf[256];
             sprintf_s(kbuf, "[dosbox-uwp]   GET_VARIABLE(%s) = NOT FOUND\n", var->key);
@@ -425,7 +474,11 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
     {
         bool* changed = static_cast<bool*>(data);
-        if (changed) *changed = false;
+        if (changed)
+        {
+            *changed = s_optionValuesChanged;
+            s_optionValuesChanged = false;
+        }
         return 1;
     }
     case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:

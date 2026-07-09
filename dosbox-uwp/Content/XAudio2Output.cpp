@@ -191,3 +191,8 @@ uint32_t XAudio2Output::GetQueuedFrames() const
 {
     return (uint32_t)s_queuedFrames;
 }
+
+volatile long* XAudio2Output::QueuedFramesPtr()
+{
+    return &s_queuedFrames;
+}

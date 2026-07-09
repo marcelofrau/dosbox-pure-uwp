@@ -39,6 +39,7 @@ App::App() :
 void App::Initialize(CoreApplicationView^ applicationView)
 {
 	OutputDebugStringA("[dosbox-uwp] App::Initialize\n");
+	LogInit();
 
 	applicationView->Activated +=
 		ref new TypedEventHandler<CoreApplicationView^, IActivatedEventArgs^>(this, &App::OnActivated);
@@ -210,6 +211,7 @@ void App::OnVisibilityChanged(CoreWindow^ sender, VisibilityChangedEventArgs^ ar
 
 void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 {
+	LogShutdown();
 	m_windowClosed = true;
 }
 

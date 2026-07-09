@@ -13,3 +13,6 @@
 #include <memory>
 #include <agile.h>
 #include <concrt.h>
+
+// Replaces OutputDebugStringA with LogPrint (debug output + file)
+#include "LogHelper.h"

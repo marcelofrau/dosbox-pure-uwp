@@ -27,6 +27,9 @@ namespace dosbox_uwp
         bool IsReady() const { return m_initialized; }
         bool IsStarted() const { return m_started; }
         uint32_t GetQueuedFrames() const;
+        static volatile long* QueuedFramesPtr();
+
+    private:
         uint32_t GetSampleRate() const { return 44100; }
 
     private:

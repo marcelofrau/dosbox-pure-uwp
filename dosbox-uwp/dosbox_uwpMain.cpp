@@ -6,6 +6,18 @@
 #include <sstream>
 #include <SDL.h>
 
+#ifdef XB_INSPECTOR_ENABLED
+#include <xray/inspector.hpp>
+// File-scope variables expostas ao Lua REPL do XB-Inspector
+static float s_debug_fps = 0.0f;
+static double s_debug_target_fps = 60.0;
+static double s_debug_frame_ms = 0.0;
+static double s_debug_poll_ms = 0.0;
+static double s_debug_hud_ms = 0.0;
+static double s_debug_render_ms = 0.0;
+static double s_debug_total_ms = 0.0;
+#endif
+
 using namespace dosbox_uwp;
 using namespace Windows::Foundation;
 using namespace Windows::System::Threading;
@@ -53,10 +65,22 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
     }
 
     BootCore();
+
+#ifdef XB_INSPECTOR_ENABLED
+    xb::Inspector::start("DOSBox-Pure");
+    xb::Inspector::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
+    xb::Inspector::bind("fps", &s_debug_fps);
+    xb::Inspector::bind("target_fps", &s_debug_target_fps);
+    xb::Inspector::bind("frame_ms", &s_debug_frame_ms);
+    xb::Inspector::log_info("xray", "XB-Inspector started (port %u)", xb::Inspector::bound_port());
+#endif
 }
 
 dosbox_uwpMain::~dosbox_uwpMain()
 {
+#ifdef XB_INSPECTOR_ENABLED
+    xb::Inspector::stop();
+#endif
     CleanupTempFile();
     m_retroCore->Shutdown();
     m_deviceResources->RegisterDeviceNotify(nullptr);
@@ -196,6 +220,10 @@ void dosbox_uwpMain::DoPacingSleep()
 
 void dosbox_uwpMain::Update()
 {
+#ifdef XB_INSPECTOR_ENABLED
+    xb::Inspector::update();
+#endif
+
     m_timer.Tick([&]()
     {
         LARGE_INTEGER _t0, _t1, _t2, _t3, _freq;
@@ -264,6 +292,11 @@ void dosbox_uwpMain::Update()
             double frameMs = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
             double targetFps = m_retroCore->IsLoaded() ? m_retroCore->GetTargetFps() : 60.0;
             double targetMs = 1000.0 / targetFps;
+#ifdef XB_INSPECTOR_ENABLED
+            s_debug_fps = m_timer.GetFramesPerSecond();
+            s_debug_target_fps = targetFps;
+            s_debug_frame_ms = frameMs;
+#endif
             static int pacingLogCounter = 0;
             if ((++pacingLogCounter % 600) == 0)
             {
@@ -358,6 +391,12 @@ void dosbox_uwpMain::Update()
         m_fpsTextRenderer->Update(m_timer);
 
         QueryPerformanceCounter(&_t3);
+#ifdef XB_INSPECTOR_ENABLED
+        s_debug_poll_ms = (double)(_t0.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_debug_hud_ms = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_debug_render_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_debug_total_ms = (double)(_t3.QuadPart) * 1000.0 / _freq.QuadPart;
+#endif
         {
             static unsigned _tc = 0;
             if ((++_tc % 600) == 0)
