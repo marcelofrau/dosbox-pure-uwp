@@ -16,11 +16,13 @@ static double s_debug_poll_ms = 0.0;
 static double s_debug_hud_ms = 0.0;
 static double s_debug_render_ms = 0.0;
 static double s_debug_total_ms = 0.0;
+static char s_rom_name[256] = "(none)";
 #endif
 
 using namespace dosbox_uwp;
 using namespace Windows::Foundation;
 using namespace Windows::System::Threading;
+using namespace Windows::System::Profile;
 using namespace Concurrency;
 
 dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& deviceResources)
@@ -64,16 +66,59 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         OutputDebugStringA(buf);
     }
 
-    BootCore();
-
 #ifdef XB_INSPECTOR_ENABLED
-    xb::Inspector::start("DOSBox-Pure");
-    xb::Inspector::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
-    xb::Inspector::bind("fps", &s_debug_fps);
-    xb::Inspector::bind("target_fps", &s_debug_target_fps);
-    xb::Inspector::bind("frame_ms", &s_debug_frame_ms);
-    xb::Inspector::log_info("xray", "XB-Inspector started (port %u)", xb::Inspector::bound_port());
+    {
+        std::string logPath;
+        auto family = AnalyticsInfo::VersionInfo->DeviceFamily;
+        std::wstring fw(family->Data());
+        if (fw == L"Windows.Xbox")
+        {
+            CreateDirectoryA("E:\\dosbox", NULL);
+            CreateDirectoryA("E:\\dosbox\\logs", NULL);
+            logPath = "E:\\dosbox\\logs\\";
+        }
+        else
+        {
+            char tmp[MAX_PATH];
+            if (GetTempPathA(MAX_PATH, tmp) != 0)
+            {
+                std::string dir(tmp);
+                if (!dir.empty() && dir.back() == '\\')
+                    dir.pop_back();
+                CreateDirectoryA((dir + "\\dosbox-pure").c_str(), NULL);
+                CreateDirectoryA((dir + "\\dosbox-pure\\logs").c_str(), NULL);
+                logPath = dir + "\\dosbox-pure\\logs\\";
+            }
+        }
+        xb::Inspector::set_log_path(logPath.c_str());
+        xb::Inspector::start("DOSBox-Pure");
+        xb::Inspector::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
+        xb::Inspector::bind("fps", &s_debug_fps);
+        xb::Inspector::bind("target_fps", &s_debug_target_fps);
+        xb::Inspector::bind("frame_ms", &s_debug_frame_ms);
+        xb::Inspector::bind("poll_ms", &s_debug_poll_ms);
+        xb::Inspector::bind("hud_ms", &s_debug_hud_ms);
+        xb::Inspector::bind("render_ms", &s_debug_render_ms);
+        xb::Inspector::bind("total_ms", &s_debug_total_ms);
+        xb::Inspector::bind_string("rom_name", s_rom_name, sizeof(s_rom_name));
+        xb::Inspector::set_on_terminate([]() {
+            Windows::ApplicationModel::Core::CoreApplication::Exit();
+        });
+        spdlog::info("{}", "--- XB-Inspector ---");
+        spdlog::info("File log dir: {}", logPath.empty() ? "(none)" : logPath);
+        uint16_t bp = xb::Inspector::bound_port();
+        spdlog::info("ODS: ON  |  TCP port: {} ({})  |  REPL: ON", bp, bp ? "OK" : "BIND FAILED");
+
+        if (bp == 0) {
+            spdlog::error("[xray] TCP bind failed, continuing without inspector");
+        }
+        else {
+            spdlog::info("[xray] TCP port {} bound", bp);
+        }
+    }
 #endif
+
+    BootCore();
 }
 
 dosbox_uwpMain::~dosbox_uwpMain()
@@ -132,6 +177,12 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
         sprintf_s(buf, "[dosbox-uwp] LoadRom path=%s data=%zu\n", pathUtf8.c_str(), romData.size());
         OutputDebugStringA(buf);
+
+        // Extract filename for xray binding
+        auto slash = pathUtf8.find_last_of("/\\");
+        std::string fname = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
+        strncpy_s(s_rom_name, fname.c_str(), sizeof(s_rom_name) - 1);
+        s_rom_name[sizeof(s_rom_name) - 1] = '\0';
     }
 
     CleanupTempFile();

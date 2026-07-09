@@ -6,12 +6,12 @@
 
   <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(UwpXrayDepotBase)\x64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(UwpXrayDepotBase)\x64\include;$(UwpXrayDepotBase)\src\xb-inspector;$(UwpXrayDepotBase)\external\spdlog\include;$(UwpXrayDepotBase)\external\json\single_include;$(UwpXrayDepotBase)\external\lua;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>XB_INSPECTOR_ENABLED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(UwpXrayDepotBase)\x64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>xray-sock.lib;lua5.4.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>lua5.4.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 </Project>

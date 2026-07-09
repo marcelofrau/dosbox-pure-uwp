@@ -16,6 +16,8 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
+#include "dbp_log.h"
+
 #ifdef VITA
 #include <psp2/kernel/sysmem.h>
 static int sceBlock;
@@ -44,12 +46,12 @@ static inline void *nxmmap(void *addr, size_t len)
 		jit_len = dynarec_jit.size;
 		jit_rw_addr = jitGetRwAddr(&dynarec_jit);
 		jit_rx_addr = jitGetRxAddr(&dynarec_jit);
-		printf("Jit Initialized: RX %p, RW %p\n", jit_rx_addr, jit_rw_addr);
+		{ char _b[256]; snprintf(_b, sizeof(_b), "Jit Initialized: RX %p, RW %p", jit_rx_addr, jit_rw_addr); dbp_log_info(_b); }
 		jitTransitionToExecutable(&dynarec_jit);
 		jit_is_executable = true;
 		return jit_rx_addr;
 	}
-	printf("Jit failed!\n");
+	dbp_log_info("Jit failed!");
 	return (void*)-1;
 }
 static inline int nxmunmap(void *addr, size_t)

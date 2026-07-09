@@ -211,14 +211,17 @@ void RetroCore::ToggleOSD()
 
 static void RETRO_CALLCONV uwp_log(enum retro_log_level level, const char* fmt, ...)
 {
-    (void)level;
     char buf[512];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    OutputDebugStringA("[dosbox-pure] ");
+#ifdef XB_INSPECTOR_ENABLED
+    auto lv = static_cast<spdlog::level::level_enum>(level);
+    spdlog::log(lv, "{}", buf);
+#else
     OutputDebugStringA(buf);
+#endif
 }
 
 static const char* retro_env_name(unsigned cmd)

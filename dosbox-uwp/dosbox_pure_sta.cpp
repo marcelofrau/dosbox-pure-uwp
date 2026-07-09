@@ -2,6 +2,18 @@
 #include "libretro.h"
 #include "dosbox_pure_sta.h"
 #include "LogHelper.h"
+#include "dbp_log.h"
+#include <string>
+
+extern "C" void dbp_log_info(const char* msg)
+{
+#ifdef XB_INSPECTOR_ENABLED
+    std::string s(msg);
+    if (!s.empty() && s.back() == '\n')
+        s.pop_back();
+    spdlog::info("{}", s);
+#endif
+}
 #ifdef MOUSE_SUPPORT
 #include "Content/RetroCore.h"
 using namespace dosbox_uwp;

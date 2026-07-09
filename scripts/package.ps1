@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
+    [ValidateSet('Debug','Release')][string]$Configuration = 'Debug',
     [ValidateSet('x64')][string]$Platform = 'x64',
     [switch]$SkipBuild
 )

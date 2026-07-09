@@ -932,6 +932,13 @@
       <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</CompileAsWinRT>
       <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</CompileAsWinRT>
     </ClCompile>
+    <ClCompile Include="$(UwpXrayDepotBase)\src\xb-inspector\inspector.cpp" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAsWinRT>false</CompileAsWinRT>
+    </ClCompile>
+    <ClCompile Include="$(UwpXrayDepotBase)\src\xray-sock\tcp_listener.cpp" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

@@ -41,6 +41,7 @@
 #include "libretro-common/include/retro_timers.h"
 #include <string>
 #include <sstream>
+#include "dbp_log.h"
 
 // UWP: always compile audio pipeline even with DBP_STANDALONE
 #define DBP_STANDALONE_AUDIO 1
@@ -225,7 +226,7 @@ static void retro_fallback_log(enum retro_log_level level, const char *fmt, ...)
 	(void)level;
 	va_list va;
 	va_start(va, fmt);
-	vfprintf(stderr, fmt, va);
+	{ char _b[2048]; vsnprintf(_b, sizeof(_b), fmt, va); dbp_log_info(_b); }
 	va_end(va);
 }
 #else
