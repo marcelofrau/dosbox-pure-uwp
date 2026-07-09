@@ -98,17 +98,17 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
                 logPath = dir + "\\dosbox-pure\\logs\\";
             }
         }
-        xb::Inspector::set_log_path(logPath.c_str());
-        xb::Inspector::start("DOSBox-Pure");
-        xb::Inspector::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
-        xb::Inspector::bind("fps", &s_debug_fps);
-        xb::Inspector::bind("target_fps", &s_debug_target_fps);
-        xb::Inspector::bind("frame_ms", &s_debug_frame_ms);
-        xb::Inspector::bind("poll_ms", &s_debug_poll_ms);
-        xb::Inspector::bind("hud_ms", &s_debug_hud_ms);
-        xb::Inspector::bind("render_ms", &s_debug_render_ms);
-        xb::Inspector::bind("total_ms", &s_debug_total_ms);
-        xb::Inspector::bind_string("rom_name", s_rom_name, sizeof(s_rom_name));
+        xb::Xray::set_log_path(logPath.c_str());
+        xb::Xray::start("DOSBox-Pure");
+        xb::Xray::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
+        xb::Xray::bind("fps", &s_debug_fps);
+        xb::Xray::bind("target_fps", &s_debug_target_fps);
+        xb::Xray::bind("frame_ms", &s_debug_frame_ms);
+        xb::Xray::bind("poll_ms", &s_debug_poll_ms);
+        xb::Xray::bind("hud_ms", &s_debug_hud_ms);
+        xb::Xray::bind("render_ms", &s_debug_render_ms);
+        xb::Xray::bind("total_ms", &s_debug_total_ms);
+        xb::Xray::bind_string("rom_name", s_rom_name, sizeof(s_rom_name));
 
         // Grouped struct — demonstrates bind_struct API
         static constexpr xb::struct_field perf_fields[] = {
@@ -122,14 +122,14 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             xb::field("audio_queued", &PerfStats::audio_queued),
             xb::field("rom_name",     &PerfStats::rom_name),
         };
-        xb::Inspector::bind_struct("perf", &s_perf, perf_fields,
+        xb::Xray::bind_struct("perf", &s_perf, perf_fields,
             sizeof(perf_fields) / sizeof(perf_fields[0]));
-        xb::Inspector::set_on_terminate([]() {
+        xb::Xray::set_on_terminate([]() {
             Windows::ApplicationModel::Core::CoreApplication::Exit();
         });
         spdlog::info("{}", "--- XB-Inspector ---");
         spdlog::info("File log dir: {}", logPath.empty() ? "(none)" : logPath);
-        uint16_t bp = xb::Inspector::bound_port();
+        uint16_t bp = xb::Xray::bound_port();
         spdlog::info("ODS: ON  |  TCP port: {} ({})  |  REPL: ON", bp, bp ? "OK" : "BIND FAILED");
 
         if (bp == 0) {
@@ -147,7 +147,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 dosbox_uwpMain::~dosbox_uwpMain()
 {
 #ifdef XB_INSPECTOR_ENABLED
-    xb::Inspector::stop();
+    xb::Xray::stop();
 #endif
     CleanupTempFile();
     m_retroCore->Shutdown();
@@ -297,7 +297,7 @@ void dosbox_uwpMain::DoPacingSleep()
 void dosbox_uwpMain::Update()
 {
 #ifdef XB_INSPECTOR_ENABLED
-    xb::Inspector::update();
+    xb::Xray::update();
 #endif
 
     m_timer.Tick([&]()

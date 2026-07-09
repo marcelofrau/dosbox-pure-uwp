@@ -34,8 +34,8 @@ Current: 0 errors, ~1500 warnings C4244 (cosmetic).
 | `dosbox-uwp/dosbox_pure_sta.cpp` | DBPS_* stubs (12 no-ops, 1 real: DBPS_SubmitOSDFrame, DBPS_GetMouse) |
 | `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp` | Patched core (copied from submodule) |
 | `extern/libretro-common/vfs/vfs_implementation_uwp.cpp` | UWP VFS via CreateFile2FromAppW |
-| `dosbox-uwp/uwp-xray-depot.props` | XB-Inspector include/libs/defines (Debug only) |
-| `extern/uwp-xray-depot` | XB-Inspector submodule: TCP diagnostics + Lua REPL |
+| `dosbox-uwp/uwp-xray-depot.props` | xb-xray include/libs/defines (Debug only) |
+| `extern/uwp-xray-depot` | xb-xray submodule: TCP diagnostics + Lua REPL |
 
 ## Known Bugs & Pitfalls
 
@@ -84,7 +84,7 @@ PUREMENU changes now propagate: user changes option → stored in map → displa
 
 **Remaining:** `DBPS_ApplyConfigOverrides` (FRONTEND.DBP per-game JSON override) still stub. Need JSON parser for full config-override persistence.
 
-### 11. XB-Inspector (TCP diagnostics + Lua REPL)
+### 11. xb-xray (TCP diagnostics + Lua REPL)
 Integrated via `extern/uwp-xray-depot` submodule + `uwp-xray-depot.props` (Debug only). `#define XB_INSPECTOR_ENABLED` guards all inspector code. Binds:
 - `audio_queued` (long) — XAudio2 queue depth
 - `fps` (float) — measured FPS
@@ -99,7 +99,7 @@ Connect: `nc <ip> 9000` or use [XB Homebrew Vault](https://github.com/marcelofra
 
 ## Logging
 All `OutputDebugStringA` prepend `[dosbox-uwp]` for DebugView filtering.
-XB-Inspector additionally streams logs over TCP (port 9000-9009) when connected.
+xb-xray additionally streams logs over TCP (port 9000-9009) when connected.
 
 ## LSP / clangd
 codedev MCP (clangd-based LSP) does NOT understand C++/CX (`^`, `ref new`, `Platform::`, `Windows::`).
@@ -127,4 +127,4 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 - Mouse input implemented: CoreWindow pointer events → SetMouseMove/SetPointer/SetMouseButton/SetMouseWheel → retro_input_state + DBPS_GetMouse. Cursor hidden on first click. Puremenu cursor works via DBPS_GetMouse.
 - Keyboard→joypad state leak fixed: JOYPAD reads `s_joypadState[16]` instead of `s_keyboardState[]`.
 - register-core-options: SET_VARIABLE/GET_VARIABLE/GET_VARIABLE_UPDATE all implemented: PUREMENU changes now propagate to core and persist. Tested: option displays updated value, core applies via check_variables() on next frame. DBPS_ApplyConfigOverrides (FRONTEND.DBP) still stub.
-- XB-Inspector integrated: submodule + props + start/stop/update + binds (audio_queued, fps, target_fps, frame timing). Debug-only. Connect via `nc <ip> 9000`.
+- xb-xray integrated: submodule + props + start/stop/update + binds (audio_queued, fps, target_fps, frame timing). Debug-only. Connect via `nc <ip> 9000`.
