@@ -111,7 +111,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         xb::Xray::bind_string("rom_name", s_rom_name, sizeof(s_rom_name));
 
         // Grouped struct — demonstrates bind_struct API
-        static constexpr xb::struct_field perf_fields[] = {
+        static const xb::struct_field perf_fields[] = {
             xb::field("frame_ms",     &PerfStats::frame_ms),
             xb::field("poll_ms",      &PerfStats::poll_ms),
             xb::field("hud_ms",       &PerfStats::hud_ms),
