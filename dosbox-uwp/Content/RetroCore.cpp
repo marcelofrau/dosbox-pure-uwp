@@ -189,6 +189,12 @@ void RetroCore::UnloadGame()
     if (s_audioOutput)
         s_audioOutput->Flush();
     retro_unload_game();
+    // Reset all per-game state so next load starts clean
+    s_shutdownRequested = false;
+    memset(s_keyboardState, 0, sizeof(s_keyboardState));
+    memset(s_joypadState, 0, sizeof(s_joypadState));
+    s_optionValues.clear();
+    s_optionValuesChanged = false;
 }
 
 void RetroCore::Shutdown()

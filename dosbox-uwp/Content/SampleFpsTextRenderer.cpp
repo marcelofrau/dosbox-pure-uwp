@@ -88,7 +88,6 @@ void SampleFpsTextRenderer::Render()
 	Windows::Foundation::Size logicalSize = m_deviceResources->GetLogicalSize();
 
 	context->SaveDrawingState(m_stateBlock.Get());
-	context->BeginDraw();
 
 	// Position on the bottom right corner
 	D2D1::Matrix3x2F screenTranslation = D2D1::Matrix3x2F::Translation(
@@ -107,14 +106,6 @@ void SampleFpsTextRenderer::Render()
 		m_textLayout.Get(),
 		m_whiteBrush.Get()
 		);
-
-	// Ignore D2DERR_RECREATE_TARGET here. This error indicates that the device
-	// is lost. It will be handled during the next call to Present.
-	HRESULT hr = context->EndDraw();
-	if (hr != D2DERR_RECREATE_TARGET)
-	{
-		DX::ThrowIfFailed(hr);
-	}
 
 	context->RestoreDrawingState(m_stateBlock.Get());
 }

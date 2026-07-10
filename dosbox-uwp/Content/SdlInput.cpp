@@ -74,6 +74,12 @@ void SdlInput::PollEvents()
     // clear edge-triggered flags
     memset(m_buttonJustPressed, 0, sizeof(m_buttonJustPressed));
 
+    // reset analog sticks + triggers — set by whichever path reads them below
+    m_leftStickX = 0.0f;
+    m_leftStickY = 0.0f;
+    m_triggerL = 0.0f;
+    m_triggerR = 0.0f;
+
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
@@ -166,6 +172,13 @@ void SdlInput::PollEvents()
             { SDL_CONTROLLER_BUTTON_LEFTSTICK, BUTTON_L3 },
             { SDL_CONTROLLER_BUTTON_RIGHTSTICK, BUTTON_R3 },
             { SDL_CONTROLLER_BUTTON_BACK, BUTTON_SELECT },
+            { SDL_CONTROLLER_BUTTON_START, BUTTON_START },
+            { SDL_CONTROLLER_BUTTON_DPAD_UP, BUTTON_DPAD_UP },
+            { SDL_CONTROLLER_BUTTON_DPAD_DOWN, BUTTON_DPAD_DOWN },
+            { SDL_CONTROLLER_BUTTON_DPAD_LEFT, BUTTON_DPAD_LEFT },
+            { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, BUTTON_DPAD_RIGHT },
+            { SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BUTTON_L },
+            { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, BUTTON_R },
         };
         for (auto& m : map)
         {
@@ -174,7 +187,21 @@ void SdlInput::PollEvents()
                 m_buttonJustPressed[m.local] = true;
             m_buttonHeld[m.local] = held;
         }
+
+        // Read SDL analog axes + triggers
+        m_leftStickX = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
+        m_leftStickY = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
+        m_triggerL = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) / 32767.0f;
+        m_triggerR = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0f;
     }
+
+    // Update L2/R2 trigger buttons (axes → digital)
+    bool triggerL = m_triggerL > 0.5f;
+    bool triggerR = m_triggerR > 0.5f;
+    if (triggerL && !m_buttonHeld[BUTTON_L2]) { m_buttonHeld[BUTTON_L2] = true; m_buttonJustPressed[BUTTON_L2] = true; }
+    else if (!triggerL && m_buttonHeld[BUTTON_L2]) m_buttonHeld[BUTTON_L2] = false;
+    if (triggerR && !m_buttonHeld[BUTTON_R2]) { m_buttonHeld[BUTTON_R2] = true; m_buttonJustPressed[BUTTON_R2] = true; }
+    else if (!triggerR && m_buttonHeld[BUTTON_R2]) m_buttonHeld[BUTTON_R2] = false;
 
     // UWP Gamepad API: works on Xbox where SDL joystick API is unavailable
     // only used when SDL controller is not connected
@@ -217,6 +244,11 @@ void SdlInput::PollUwpGamepad()
     {
         auto reading = m_uwpGamepad->GetCurrentReading();
 
+        m_leftStickX = reading.LeftThumbstickX;
+        m_leftStickY = reading.LeftThumbstickY;
+        m_triggerL = reading.LeftTrigger;
+        m_triggerR = reading.RightTrigger;
+
         struct { GamepadButtons flag; int btn; const char* name; } map[] = {
             { GamepadButtons::A, BUTTON_A, "A" },
             { GamepadButtons::B, BUTTON_B, "B" },
@@ -225,6 +257,13 @@ void SdlInput::PollUwpGamepad()
             { GamepadButtons::LeftThumbstick, BUTTON_L3, "L3" },
             { GamepadButtons::RightThumbstick, BUTTON_R3, "R3" },
             { GamepadButtons::View, BUTTON_SELECT, "Select" },
+            { GamepadButtons::Menu, BUTTON_START, "Start" },
+            { GamepadButtons::LeftShoulder, BUTTON_L, "L" },
+            { GamepadButtons::RightShoulder, BUTTON_R, "R" },
+            { GamepadButtons::DPadUp, BUTTON_DPAD_UP, "DPadUp" },
+            { GamepadButtons::DPadDown, BUTTON_DPAD_DOWN, "DPadDown" },
+            { GamepadButtons::DPadLeft, BUTTON_DPAD_LEFT, "DPadLeft" },
+            { GamepadButtons::DPadRight, BUTTON_DPAD_RIGHT, "DPadRight" },
         };
 
         for (auto& m : map)
@@ -242,6 +281,13 @@ void SdlInput::PollUwpGamepad()
                 sprintf_s(m_lastEventStr, "UWP:%s UP", m.name);
             }
         }
+    }
+    else
+    {
+        m_leftStickX = 0.0f;
+        m_leftStickY = 0.0f;
+        m_triggerL = 0.0f;
+        m_triggerR = 0.0f;
     }
 }
 

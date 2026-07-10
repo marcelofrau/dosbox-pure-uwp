@@ -6,7 +6,9 @@
 
 namespace dosbox_uwp
 {
-    enum { BUTTON_A = 0, BUTTON_B = 1, BUTTON_X = 2, BUTTON_Y = 3, BUTTON_SELECT = 6, BUTTON_R3 = 11, BUTTON_L3 = 12 };
+    enum { BUTTON_A = 0, BUTTON_B = 1, BUTTON_X = 2, BUTTON_Y = 3, BUTTON_L = 17, BUTTON_R = 18, BUTTON_L2 = 19, BUTTON_R2 = 20,
+           BUTTON_START = 7, BUTTON_SELECT = 6, BUTTON_R3 = 11, BUTTON_L3 = 12,
+           BUTTON_DPAD_UP = 13, BUTTON_DPAD_DOWN = 14, BUTTON_DPAD_LEFT = 15, BUTTON_DPAD_RIGHT = 16 };
 
     class SdlInput
     {
@@ -27,6 +29,7 @@ namespace dosbox_uwp
         const char* GetControllerName() const { return m_controllerName; }
         const char* GetLastEventText() const { return m_lastEventStr; }
         void SetKeyboardButton(int btn, bool held);
+        void GetLeftStick(float& x, float& y) const { x = m_leftStickX; y = m_leftStickY; }
 
     private:
         static const int MAX_BUTTONS = 32;
@@ -41,5 +44,9 @@ namespace dosbox_uwp
         bool m_hasController;
         char m_lastEventStr[64];
         char m_controllerName[128];
+        float m_leftStickX = 0.0f;
+        float m_leftStickY = 0.0f;
+        float m_triggerL = 0.0f;
+        float m_triggerR = 0.0f;
     };
 }

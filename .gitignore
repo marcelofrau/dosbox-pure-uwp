@@ -70,3 +70,5 @@ build/
 
 # Run output
 .run-output/
+
+session.txt

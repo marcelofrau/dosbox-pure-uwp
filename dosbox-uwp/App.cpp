@@ -86,6 +86,10 @@ void App::SetWindow(CoreWindow^ window)
 		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerReleased);
 	window->PointerWheelChanged +=
 		ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(this, &App::OnPointerWheelChanged);
+
+	// Xbox + Windows: cursor hidden from start — DOS apps + PUREMENU render own cursor
+	window->PointerCursor = nullptr;
+	OutputDebugStringA("[dosbox-uwp] CoreCursor(nullptr)\n");
 #endif
 
 	DisplayInformation^ currentDisplayInformation = DisplayInformation::GetForCurrentView();
@@ -128,10 +132,6 @@ void App::Run()
 	{
 		if (m_windowVisible)
 		{
-			// Sleep first (matching ZillaLib order) so events arrive fresh
-			// just before retro_run — no idle queue wait for keyboard input.
-			m_main->DoPacingSleep();
-
 			CoreWindow::GetForCurrentThread()->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
 
 			m_main->Update();
@@ -144,6 +144,8 @@ void App::Run()
 			{
 				m_deviceResources->Present(0, 0);
 			}
+
+			m_main->ProcessPendingLoad();
 		}
 		else
 		{
@@ -244,6 +246,7 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 		}
 
 		m_main->SetLoadState(dosbox_uwpMain::LOAD_READING);
+		m_main->ActivateLoadingScreen(); // show loading spinner before I/O
 
 		char buf[256];
 		sprintf_s(buf, "[dosbox-uwp] Picked: %ls\n", file->Name->Data());
@@ -282,8 +285,7 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 						sprintf_s(buf, "[dosbox-uwp] Local temp: %s\n", utf8Path.c_str());
 						OutputDebugStringA(buf);
 
-						m_main->LoadRom(localPath, {});
-						m_main->SetLoadState(m_main->IsLoaded() ? dosbox_uwpMain::LOAD_DONE : dosbox_uwpMain::LOAD_FAILED);
+						m_main->QueueLoadRom(localPath, {});
 					});
 				});
 			});
@@ -293,8 +295,9 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 
 void App::OnBackRequested(Platform::Object^ sender, Windows::UI::Core::BackRequestedEventArgs^ args)
 {
-	OutputDebugStringA("[dosbox-uwp] BackRequested — suppressed\n");
+	OutputDebugStringA("[dosbox-uwp] BackRequested — toggle menu\n");
 	args->Handled = true;
+	if (m_main) m_main->ToggleMenu();
 }
 
 void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
@@ -303,19 +306,14 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 
 	if (key == VirtualKey::F10)
 	{
+		// F10 is visual-only on BIOS screen (FrontendMenu shows "F10 = Menu")
+		// When game loaded, pass to core for PUREMENU
 		args->Handled = true;
-		OutputDebugStringA(m_main->IsLoaded() ?
-			"[dosbox-uwp] F10 -> ToggleOSD\n" :
-			"[dosbox-uwp] F10 ignored — core not loaded\n");
-		if (m_main->IsLoaded())
-			m_main->ToggleOSD();
-		return;
-	}
-
-	if (key == VirtualKey::F11)
-	{
-		args->Handled = true;
-		OpenFilePicker();
+		if (m_main && m_main->IsLoaded())
+		{
+			m_main->OnKeyEvent(VirtualKey::F10, true, 0, false);
+			m_main->OnKeyEvent(VirtualKey::F10, false, 0, false);
+		}
 		return;
 	}
 
@@ -343,17 +341,17 @@ void App::OnAcceleratorKeyActivated(CoreDispatcher^ sender, AcceleratorKeyEventA
         return;
     }
 
-    if (args->EventType == CoreAcceleratorKeyEventType::SystemKeyDown &&
-        args->VirtualKey == VirtualKey::F10)
-    {
-        args->Handled = true;
-        OutputDebugStringA(m_main->IsLoaded() ?
-            "[dosbox-uwp] F10 -> ToggleOSD (accelerator)\n" :
-            "[dosbox-uwp] F10 ignored — core not loaded (accelerator)\n");
-        if (m_main->IsLoaded())
-            m_main->ToggleOSD();
-        return;
-    }
+	if (args->EventType == CoreAcceleratorKeyEventType::SystemKeyDown &&
+		args->VirtualKey == VirtualKey::F10)
+	{
+		args->Handled = true;
+		if (m_main && m_main->IsLoaded())
+		{
+			m_main->OnKeyEvent(VirtualKey::F10, true, 0, false);
+			m_main->OnKeyEvent(VirtualKey::F10, false, 0, false);
+		}
+		return;
+	}
 }
 
 #ifdef MOUSE_SUPPORT
@@ -392,11 +390,9 @@ void App::OnPointerPressed(CoreWindow^ sender, PointerEventArgs^ args)
 		if (props->IsMiddleButtonPressed) m_main->OnPointerDown(normX, normY, 3);
 	}
 
-	if (sender->PointerCursor != nullptr)
-	{
-		OutputDebugStringA("[dosbox-uwp] Mouse click — hiding cursor\n");
-		sender->PointerCursor = nullptr;
-	}
+	// Hide native cursor — DOS apps + PUREMENU render their own
+	sender->PointerCursor = nullptr;
+	OutputDebugStringA("[dosbox-uwp] PtrPress — cursor hidden\n");
 }
 
 void App::OnPointerReleased(CoreWindow^ sender, PointerEventArgs^ args)

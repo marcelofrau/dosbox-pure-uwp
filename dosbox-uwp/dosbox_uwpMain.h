@@ -1,13 +1,14 @@
 ﻿#pragma once
 
+#include <d2d1_1.h>
+#include <wrl/client.h>
 #include "Common\StepTimer.h"
 #include "Common\DeviceResources.h"
-#include "Content\Sample3DSceneRenderer.h"
-#include "Content\SampleFpsTextRenderer.h"
 #include "Content\SdlInput.h"
 #include "Content\RetroCore.h"
 #include "Content\RetroScreenRenderer.h"
 #include "Content\XAudio2Output.h"
+#include "Content\FrontendMenu.h"
 
 namespace dosbox_uwp
 {
@@ -18,7 +19,6 @@ namespace dosbox_uwp
         ~dosbox_uwpMain();
         void CreateWindowSizeDependentResources();
         void Update();
-        void DoPacingSleep();
         bool Render();
 
         virtual void OnDeviceLost();
@@ -34,14 +34,27 @@ namespace dosbox_uwp
 		void PollMouseButtons();
 #endif
         void ToggleOSD();
+        void ToggleMenu() { m_menu.Toggle(); }
+        bool IsMenuVisible() const { return m_menu.IsVisible(); }
+        FrontendMenu& GetMenu() { return m_menu; }
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);
+        void QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData);
+        void ProcessPendingLoad();
+        void RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize);
+        void EnsureLoadingDisc();
         enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
         bool WasFilePickerRequested() { bool r = m_requestFilePicker; m_requestFilePicker = false; return r; }
-        bool WasFrameLate() const { return m_frameLate; }
-        int GetLateFrameCount() const { return m_lateFrameCount; }
         LoadState GetLoadState() const { return m_loadState; }
         void SetLoadState(LoadState s) { m_loadState = s; }
         bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
+        void ActivateLoadingScreen() {
+            m_loadState = LOAD_BOOTING;
+            m_loadingActive = true;
+            m_loadingAngle = 0.0f;
+            m_loadingDots = 0;
+            m_loadingFrame = 0;
+            QueryPerformanceCounter(&m_loadingStart);
+        }
 
     private:
         void BootCore();
@@ -49,34 +62,40 @@ namespace dosbox_uwp
 
         std::shared_ptr<DX::DeviceResources> m_deviceResources;
 
-        std::unique_ptr<Sample3DSceneRenderer> m_sceneRenderer;
-        std::unique_ptr<SampleFpsTextRenderer> m_fpsTextRenderer;
         std::unique_ptr<SdlInput> m_sdlInput;
         std::unique_ptr<RetroCore> m_retroCore;
         std::unique_ptr<RetroScreenRenderer> m_retroScreen;
         std::unique_ptr<XAudio2Output> m_xaudio2;
+        FrontendMenu m_menu;
 
         DX::StepTimer m_timer;
 
         DirectX::XMVECTORF32 m_clearColor;
-        DirectX::XMVECTORF32 m_defaultClearColor;
         bool m_requestFilePicker = false;
         bool m_spaceHeld = false;
         bool m_hasController;
 
-        std::wstring m_eventText;
-        int m_eventTimer;
-
         bool m_retroRunning = false;
-        std::wstring m_statusText;
-        int m_statusTimer = 0;
 
         std::wstring m_currentTempPath;
         void CleanupTempFile();
 
-        // Load state tracking (for hang detection)
+        // Load state tracking (for hang detection + loading screen)
         LoadState m_loadState = LOAD_IDLE;
         int m_loadTimer = 0;
+        struct PendingLoad {
+            std::wstring path;
+            std::vector<uint8_t> data;
+        };
+        std::unique_ptr<PendingLoad> m_pendingLoad;
+
+        // Loading screen state
+        bool m_loadingActive = false;
+        float m_loadingAngle = 0.0f;
+        int m_loadingDots = 0;
+        int m_loadingFrame = 0;
+        LARGE_INTEGER m_loadingStart = {};
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> m_loadingDisc;
 
 #ifdef MOUSE_SUPPORT
         float m_pointerX = 0.5f;
@@ -87,6 +106,11 @@ namespace dosbox_uwp
         float m_lastPointerPX = 0.0f;
         float m_lastPointerPY = 0.0f;
         uint32_t m_mousePointerId = 0;
+
+        // Virtual cursor for gamepad→PUREMENU (Phase 3)
+        float m_virtualCursorX = 0.5f;
+        float m_virtualCursorY = 0.5f;
+        LARGE_INTEGER m_lastPointerTime = {};
 #endif
 
         bool m_activeVKeyState[256] = {};
@@ -94,9 +118,16 @@ namespace dosbox_uwp
         // Frame pacing tracking
         bool m_frameLate = false;
         int m_lateFrameCount = 0;
-        int m_lateFramesHud = 0;
-        LARGE_INTEGER m_lastFrameTime = {};
         LARGE_INTEGER m_qpcFreq = {};
-        HANDLE m_hFrameTimer = nullptr;
+
+        // Audio-driven frame pacing state
+        LARGE_INTEGER m_audioLastTick = {};
+        double m_audioTimeAccumulator = 0.0;
+        int m_lastRetroRuns = 0;
+
+#ifdef MOUSE_SUPPORT
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_cursorBrush;
+#endif
+
     };
 }

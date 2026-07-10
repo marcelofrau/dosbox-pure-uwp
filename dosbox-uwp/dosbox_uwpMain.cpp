@@ -1,9 +1,12 @@
 ﻿#include "pch.h"
 #include "dosbox_uwpMain.h"
 #include "libretro.h"
+#include "dosbox_pure_sta.h"
 #include "Common\DirectXHelper.h"
 #include <cmath>
 #include <sstream>
+#include <wincodec.h>
+#include <wrl/client.h>
 #include <SDL.h>
 
 #ifdef XB_INSPECTOR_ENABLED
@@ -13,7 +16,8 @@ struct PerfStats {
     double frame_ms, poll_ms, hud_ms, render_ms, total_ms;
     double target_fps;
     float fps;
-    int audio_queued;
+    int audio_queued, audio_underruns;
+    long long audio_produced, audio_consumed;
     char rom_name[256];
 };
 static PerfStats s_perf{};
@@ -32,23 +36,17 @@ using namespace dosbox_uwp;
 using namespace Windows::Foundation;
 using namespace Windows::System::Threading;
 using namespace Windows::System::Profile;
+using namespace Windows::ApplicationModel::Core;
 using namespace Concurrency;
 
 dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& deviceResources)
     : m_deviceResources(deviceResources)
-    , m_clearColor{ 0.1764705882f, 0.1764705882f, 0.1764705882f, 1.0f }
-    , m_defaultClearColor{ 0.1764705882f, 0.1764705882f, 0.1764705882f, 1.0f }
+    , m_clearColor{ 0.0f, 0.0f, 0.0f, 1.0f }
     , m_hasController(false)
-    , m_eventText(L"")
-    , m_eventTimer(0)
 {
     QueryPerformanceFrequency(&m_qpcFreq);
-    m_hFrameTimer = CreateWaitableTimerEx(nullptr, nullptr,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     m_deviceResources->RegisterDeviceNotify(this);
 
-    m_sceneRenderer = std::unique_ptr<Sample3DSceneRenderer>(new Sample3DSceneRenderer(m_deviceResources));
-    m_fpsTextRenderer = std::unique_ptr<SampleFpsTextRenderer>(new SampleFpsTextRenderer(m_deviceResources));
     m_retroScreen = std::unique_ptr<RetroScreenRenderer>(new RetroScreenRenderer(m_deviceResources));
     m_retroScreen->CreateDeviceDependentResources();
 
@@ -100,7 +98,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             }
         }
         xb::Xray::set_log_path(logPath.c_str());
-        xb::Xray::start("DOSBox-Pure");
+        xb::Xray::start("dosbox-uwp");
         {
             auto family = Windows::System::Profile::AnalyticsInfo::VersionInfo->DeviceFamily;
             std::wstring fw(family->Data());
@@ -109,6 +107,8 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             xb::Xray::set_device_family(buf);
         }
         xb::Xray::bind("audio_queued", (long*)XAudio2Output::QueuedFramesPtr());
+        xb::Xray::bind("audio_produced", (long*)XAudio2Output::TotalProducedPtr());
+        xb::Xray::bind("audio_consumed", (long*)XAudio2Output::TotalConsumedPtr());
         xb::Xray::bind("fps", &s_debug_fps);
         xb::Xray::bind("target_fps", &s_debug_target_fps);
         xb::Xray::bind("frame_ms", &s_debug_frame_ms);
@@ -127,8 +127,11 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             xb::field("total_ms",     &PerfStats::total_ms),
             xb::field("target_fps",   &PerfStats::target_fps),
             xb::field("fps",          &PerfStats::fps),
-            xb::field("audio_queued", &PerfStats::audio_queued),
-            xb::field("rom_name",     &PerfStats::rom_name),
+            xb::field("audio_queued",   &PerfStats::audio_queued),
+            xb::field("audio_underruns",&PerfStats::audio_underruns),
+            xb::field("audio_produced", &PerfStats::audio_produced),
+            xb::field("audio_consumed", &PerfStats::audio_consumed),
+            xb::field("rom_name",       &PerfStats::rom_name),
         };
         xb::Xray::bind_struct("perf", &s_perf, perf_fields,
             sizeof(perf_fields) / sizeof(perf_fields[0]));
@@ -137,6 +140,10 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         });
         xb::Xray::set_on_pause([]() {
             s_paused = true;
+            while (s_paused) {
+                Sleep(100);
+                xb::Xray::update();
+            }
         });
         xb::Xray::set_on_continue([]() {
             s_paused = false;
@@ -155,6 +162,37 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
     }
 #endif
 
+    // Wire FrontendMenu callbacks
+    m_menu.onOpenFile = [this]() { m_requestFilePicker = true; };
+    m_menu.onOpenPuremenu = [this]() {
+        if (m_retroCore && m_retroCore->IsLoaded()) {
+            m_menu.Hide();
+            m_retroCore->ToggleOSD();
+        }
+    };
+    m_menu.onExit = []() {
+        CoreApplication::Exit();
+    };
+    m_menu.onBeep = [this]() {
+        // Realistic 90s PC POST beep: 1kHz square wave, 120ms, envelope
+        const int sampleRate = 44100;
+        const int numFrames = (int)(sampleRate * 0.12f);
+        std::vector<int16_t> samples((size_t)numFrames * 2);
+        const int halfPeriod = sampleRate / (1000 * 2);
+        for (int i = 0; i < numFrames; i++)
+        {
+            float t = (float)i / sampleRate;
+            int16_t v = ((i % (halfPeriod * 2)) < halfPeriod) ? 16000 : -16000;
+            float env = 1.0f;
+            if (t < 0.002f) env = t / 0.002f;
+            else if (t > 0.115f) env = (0.12f - t) / 0.005f;
+            v = (int16_t)(v * env);
+            samples[i * 2] = v;
+            samples[i * 2 + 1] = v;
+        }
+        m_xaudio2->Submit(samples.data(), numFrames);
+    };
+
     BootCore();
 }
 
@@ -166,19 +204,13 @@ dosbox_uwpMain::~dosbox_uwpMain()
     CleanupTempFile();
     m_retroCore->Shutdown();
     m_deviceResources->RegisterDeviceNotify(nullptr);
-    if (m_hFrameTimer)
-    {
-        CloseHandle(m_hFrameTimer);
-        m_hFrameTimer = nullptr;
-    }
+    // DoPacingSleep removed — visual frame rate (Present) handles timing; audio pacing via DRC
 }
 
 void dosbox_uwpMain::BootCore()
 {
     if (!m_retroCore->Init())
     {
-        m_statusText = L"Core init FAILED";
-        m_statusTimer = 300;
         OutputDebugStringA("[dosbox-uwp] retro_init FAILED\n");
         return;
     }
@@ -193,18 +225,23 @@ void dosbox_uwpMain::BootCore()
     OutputDebugStringA("[dosbox-uwp] Core initialized OK\n");
     OutputDebugStringA("[dosbox-uwp] Keyboard mapping active: VirtualKey->RETROK_\n");
 
-    m_statusText = L"Core ready. Press F11 to load a game. F10 = Puremenu.";
-    m_statusTimer = 300;
     m_retroRunning = true;
 }
 
 void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romData)
 {
-    if (!m_retroCore->Init())
+    m_audioTimeAccumulator = 0.0;
+    if (!m_retroCore->IsInitialized())
     {
-        m_statusText = L"Core init FAILED";
-        m_statusTimer = 120;
-        return;
+        if (!m_retroCore->Init())
+        {
+            OutputDebugStringA("[dosbox-uwp] retro_init FAILED\n");
+            return;
+        }
+    }
+    else
+    {
+        OutputDebugStringA("[dosbox-uwp] LoadRom: core already initialized, skipping retro_init\n");
     }
 
     {
@@ -218,10 +255,12 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         // Extract filename for xray binding
         auto slash = pathUtf8.find_last_of("/\\");
         std::string fname = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
+#ifdef XB_INSPECTOR_ENABLED
         strncpy_s(s_rom_name, fname.c_str(), sizeof(s_rom_name) - 1);
         s_rom_name[sizeof(s_rom_name) - 1] = '\0';
         strncpy_s(s_perf.rom_name, fname.c_str(), sizeof(s_perf.rom_name) - 1);
         s_perf.rom_name[sizeof(s_perf.rom_name) - 1] = '\0';
+#endif
     }
 
     CleanupTempFile();
@@ -229,18 +268,22 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
 
     if (m_retroCore->LoadGame(path, romData))
     {
-        m_statusText = L"Game loaded!";
-        m_statusTimer = 120;
         OutputDebugStringA("[dosbox-uwp] Game loaded OK\n");
         m_retroRunning = true;
-        m_defaultClearColor = DirectX::Colors::Black;
+        m_clearColor = DirectX::Colors::Black;
+        m_menu.Hide();
     }
     else
     {
-        m_statusText = L"Load FAILED";
-        m_statusTimer = 120;
         OutputDebugStringA("[dosbox-uwp] retro_load_game FAILED\n");
     }
+}
+
+void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData)
+{
+    m_pendingLoad = std::make_unique<PendingLoad>();
+    m_pendingLoad->path = path;
+    m_pendingLoad->data = std::move(romData);
 }
 
 void dosbox_uwpMain::CleanupTempFile()
@@ -261,55 +304,16 @@ void dosbox_uwpMain::CleanupTempFile()
 
 void dosbox_uwpMain::CreateWindowSizeDependentResources()
 {
-    m_sceneRenderer->CreateWindowSizeDependentResources();
-}
-
-void dosbox_uwpMain::DoPacingSleep()
-{
-    if (!m_retroRunning || !m_retroCore->IsLoaded())
-        return;
-
-    double targetFps = m_retroCore->GetTargetFps();
-    if (targetFps <= 0)
-        return;
-
-    LONGLONG framePeriod = (LONGLONG)((double)m_qpcFreq.QuadPart / targetFps);
-
-    if (m_lastFrameTime.QuadPart != 0)
-    {
-        m_lastFrameTime.QuadPart += framePeriod;
-
-        LARGE_INTEGER _now;
-        QueryPerformanceCounter(&_now);
-
-        if (m_lastFrameTime.QuadPart - _now.QuadPart > framePeriod * 3)
-            m_lastFrameTime.QuadPart = _now.QuadPart + framePeriod;
-
-        if (_now.QuadPart < m_lastFrameTime.QuadPart)
-        {
-            double remainingMs = (double)(m_lastFrameTime.QuadPart - _now.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-
-            if (remainingMs > 2.0 && m_hFrameTimer)
-            {
-                LARGE_INTEGER dueTime;
-                dueTime.QuadPart = -(LONGLONG)((remainingMs - 1.0) * 10000.0);
-                SetWaitableTimer(m_hFrameTimer, &dueTime, 0, nullptr, nullptr, FALSE);
-                WaitForSingleObject(m_hFrameTimer, INFINITE);
-            }
-
-            do {
-                QueryPerformanceCounter(&_now);
-            } while (_now.QuadPart < m_lastFrameTime.QuadPart);
-        }
-    }
-    else
-    {
-        QueryPerformanceCounter(&m_lastFrameTime);
-    }
 }
 
 void dosbox_uwpMain::Update()
 {
+    // Process queued load — set flag so Render() shows loading screen, defer actual load
+    // Loading screen already activated in OpenFilePicker before I/O; this guards
+    // edge cases like programmatic QueueLoadRom without picker path
+    if (m_pendingLoad && !m_loadingActive)
+        ActivateLoadingScreen();
+
 #ifdef XB_INSPECTOR_ENABLED
     xb::Xray::update();
 #endif
@@ -323,61 +327,241 @@ void dosbox_uwpMain::Update()
         m_sdlInput->PollEvents();
         QueryPerformanceCounter(&_t0);
 
-        if (m_spaceHeld) {
-            m_clearColor = DirectX::Colors::Orange;
-        } else if (m_sdlInput->IsButtonHeld(BUTTON_Y)) {
-            m_clearColor = DirectX::Colors::Gold;
-        } else if (m_sdlInput->IsButtonHeld(BUTTON_X)) {
-            m_clearColor = DirectX::Colors::RoyalBlue;
-        } else if (m_sdlInput->IsButtonHeld(BUTTON_B)) {
-            m_clearColor = DirectX::Colors::Crimson;
-        } else if (m_sdlInput->IsButtonHeld(BUTTON_A)) {
-            m_clearColor = DirectX::Colors::ForestGreen;
-        } else {
-            m_clearColor = m_defaultClearColor;
+        // Stop audio when core idle — prevents underrun on splash screen
+        // Skip during boot animation (beep needs to play)
+        if (!m_retroCore->IsLoaded() && !m_retroRunning && m_xaudio2 && m_xaudio2->IsStarted())
+        {
+            m_xaudio2->Flush();
         }
 
-        if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) || m_sdlInput->WasButtonJustPressed(BUTTON_SELECT)) {
-            m_requestFilePicker = true;
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_R3))
-                OutputDebugStringA("[dosbox-uwp] R3 -> file picker\n");
-            else
-                OutputDebugStringA("[dosbox-uwp] Select -> file picker\n");
+        // Read gamepad analog stick always — used for splash cursor + in-game
+        float sx = 0.0f, sy = 0.0f;
+        m_sdlInput->GetLeftStick(sx, sy);
+        const float GAMEPAD_DEADZONE = 0.15f;
+        if (fabs(sx) < GAMEPAD_DEADZONE) sx = 0.0f;
+        if (fabs(sy) < GAMEPAD_DEADZONE) sy = 0.0f;
+
+        // Update frontend menu core-loaded state
+        m_menu.SetCoreLoaded(m_retroCore && m_retroCore->IsLoaded());
+
+        // Menu navigation (absorbs gamepad input while visible)
+        if (m_menu.IsVisible())
+        {
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_DPAD_UP))
+                m_menu.OnDPad(true);
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_DPAD_DOWN))
+                m_menu.OnDPad(false);
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_A))
+                m_menu.OnConfirm();
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
+                m_menu.OnBack();
         }
 
-        if (m_sdlInput->WasButtonJustPressed(BUTTON_L3) && m_retroCore && m_retroCore->IsLoaded()) {
-            OutputDebugStringA("[dosbox-uwp] L3 -> toggle PUREMENU\n");
+        // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) && m_retroCore && m_retroCore->IsLoaded()) {
+            spdlog::info("[input] R3 -> toggle PUREMENU");
             m_retroCore->ToggleOSD();
         }
 
-        if (m_retroRunning && m_retroCore->IsLoaded())
+        // Log every gamepad button press (after all handlers consume their events)
+        struct { int btn; const char* name; } btns[] = {
+            { BUTTON_A, "A" }, { BUTTON_B, "B" }, { BUTTON_X, "X" }, { BUTTON_Y, "Y" },
+            { BUTTON_L, "L" }, { BUTTON_R, "R" }, { BUTTON_L2, "L2" }, { BUTTON_R2, "R2" },
+            { BUTTON_START, "START" }, { BUTTON_SELECT, "SELECT" },
+            { BUTTON_L3, "L3" }, { BUTTON_R3, "R3" },
+            { BUTTON_DPAD_UP, "DPAD_UP" }, { BUTTON_DPAD_DOWN, "DPAD_DOWN" },
+            { BUTTON_DPAD_LEFT, "DPAD_LEFT" }, { BUTTON_DPAD_RIGHT, "DPAD_RIGHT" },
+        };
+        for (auto& b : btns)
+            if (m_sdlInput->WasButtonJustPressed(b.btn))
+                spdlog::info("[input] {} pressed", b.name);
+
+#ifdef MOUSE_SUPPORT
+        // Splash screen + menu: gamepad moves D2D cursor directly
+        float dtSec = (float)m_timer.GetElapsedSeconds();
+        if (!m_retroCore->IsLoaded() || m_menu.IsVisible())
+        {
+            m_pointerX += sx * 1.34f * dtSec;
+            m_pointerY += sy * 1.34f * dtSec;
+            if (m_pointerX < 0.0f) m_pointerX = 0.0f;
+            if (m_pointerX > 1.0f) m_pointerX = 1.0f;
+            if (m_pointerY < 0.0f) m_pointerY = 0.0f;
+            if (m_pointerY > 1.0f) m_pointerY = 1.0f;
+        }
+#endif
+
+        // Gamepad → RetroPad (GENERICKEYBOARD preset) for core to translate to DOS keys
+        if (!m_menu.IsVisible() && m_retroRunning && m_retroCore->IsLoaded())
         {
             PollMouseButtons();
             PollKeyboard();
-            // Sync physical gamepad → libretro JOYPAD state.
-            // SdlInput button IDs (BUTTON_A=0..BUTTON_R3=11) don't match
-            // libretro RETRO_DEVICE_ID_JOYPAD_* (B=0, Y=1, SELECT=2, ... R3=15).
-            // Until full mapping table is wired, ClearJoypad ensures no stale state.
-            //
-            // TODO(gamepad): Once SdlInput is connected to a real controller,
-            // build a translation table here:
-            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B,   m_sdlInput->IsButtonHeld(BUTTON_A));
-            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_Y,   m_sdlInput->IsButtonHeld(BUTTON_X));
-            //   RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_SELECT, m_sdlInput->IsButtonHeld(BUTTON_SELECT));
-            //   ... etc.
             for (unsigned i = 0; i < 16; i++)
                 RetroCore::SetJoypadButton(i, false);
-#ifndef XB_INSPECTOR_ENABLED
-            m_retroCore->RunFrame();
-#else
-            if (!s_paused)
-                m_retroCore->RunFrame();
+
+            // Generic keyboard preset: gamepad buttons → RetroPad IDs
+            struct { int btn; unsigned retroId; } padMap[] = {
+                { BUTTON_DPAD_UP,    RETRO_DEVICE_ID_JOYPAD_UP },
+                { BUTTON_DPAD_DOWN,  RETRO_DEVICE_ID_JOYPAD_DOWN },
+                { BUTTON_DPAD_LEFT,  RETRO_DEVICE_ID_JOYPAD_LEFT },
+                { BUTTON_DPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT },
+                { BUTTON_A,          RETRO_DEVICE_ID_JOYPAD_A },
+                { BUTTON_B,          RETRO_DEVICE_ID_JOYPAD_B },
+                { BUTTON_X,          RETRO_DEVICE_ID_JOYPAD_X },
+                { BUTTON_Y,          RETRO_DEVICE_ID_JOYPAD_Y },
+                { BUTTON_SELECT,     RETRO_DEVICE_ID_JOYPAD_SELECT },
+                { BUTTON_START,      RETRO_DEVICE_ID_JOYPAD_START },
+                { BUTTON_L,          RETRO_DEVICE_ID_JOYPAD_L },
+                { BUTTON_R,          RETRO_DEVICE_ID_JOYPAD_R },
+                { BUTTON_L2,         RETRO_DEVICE_ID_JOYPAD_L2 },
+                { BUTTON_R2,         RETRO_DEVICE_ID_JOYPAD_R2 },
+                { BUTTON_L3,         RETRO_DEVICE_ID_JOYPAD_L3 },
+                { BUTTON_R3,         RETRO_DEVICE_ID_JOYPAD_R3 },
+            };
+            for (auto& m : padMap)
+                RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
+
+#ifdef MOUSE_SUPPORT
+            // Phase 2: Gamepad left stick → relative mouse
+            if (sx != 0.0f || sy != 0.0f)
+            {
+                float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
+                float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
+                float inPixelsPerSec = 800.0f;
+                int dx = (int)(curveX * inPixelsPerSec * dtSec);
+                int dy = (int)(curveY * inPixelsPerSec * dtSec);
+                if (dx == 0 && sx != 0) dx = (sx > 0 ? 1 : -1);
+                if (dy == 0 && sy != 0) dy = (sy > 0 ? 1 : -1);
+                m_retroCore->SetMouseMove(dx, dy);
+            }
+
+            // Gamepad buttons → PUREMENU keyboard (A=Enter, B=Escape)
+            // Only when OSD visible and menu NOT visible — prevents spurious input in DOS
+            if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
+            {
+                static bool prevA = false, prevB = false;
+                bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
+                bool nowB = m_sdlInput->IsButtonHeld(BUTTON_B);
+                if (nowA != prevA) { RetroCore::SetKeyState(RETROK_RETURN, nowA); prevA = nowA; }
+                if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
+            }
+
+            // Phase 3: Gamepad → absolute pointer for PUREMENU
+            LARGE_INTEGER _gmnow;
+            QueryPerformanceCounter(&_gmnow);
+            double mouseIdleMs = 0.0;
+            if (m_lastPointerTime.QuadPart != 0)
+                mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
+                              * 1000.0 / m_qpcFreq.QuadPart;
+            if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
+            {
+                float cursorDx = sx * 0.80f * dtSec;
+                float cursorDy = sy * 0.80f * dtSec;
+                m_virtualCursorX += cursorDx;
+                m_virtualCursorY += cursorDy;
+                if (m_virtualCursorX < 0.0f) m_virtualCursorX = 0.0f;
+                if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
+                if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
+                if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
+                m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
+            }
 #endif
+
+            double targetFps = m_retroCore->GetTargetFps();
+            if (targetFps <= 0) targetFps = 60.0;
+            double audioPeriodMs = 1000.0 / targetFps;
+
+            LARGE_INTEGER _now;
+            QueryPerformanceCounter(&_now);
+            if (m_audioLastTick.QuadPart != 0)
+            {
+                double deltaMs = (double)(_now.QuadPart - m_audioLastTick.QuadPart)
+                                 * 1000.0 / m_qpcFreq.QuadPart;
+                m_audioTimeAccumulator += deltaMs;
+                if (m_audioTimeAccumulator > audioPeriodMs * 60)
+                    m_audioTimeAccumulator = audioPeriodMs;
+
+                int retroRuns = 0;
+                int maxRetroRuns = 60;
+                if (m_xaudio2 && m_xaudio2->IsStarted())
+                {
+                    long q = m_xaudio2->GetQueuedFrames();
+                    if (q > 11025)           // >250ms: drain first
+                        maxRetroRuns = 1;
+                    else if (q > 6615)       // >150ms: moderate
+                        maxRetroRuns = 3;
+                }
+                while (m_audioTimeAccumulator >= audioPeriodMs && retroRuns < maxRetroRuns)
+                {
+#ifndef XB_INSPECTOR_ENABLED
+                    m_retroCore->RunFrame();
+#else
+                    if (!s_paused)
+                        m_retroCore->RunFrame();
+#endif
+                    m_audioTimeAccumulator -= audioPeriodMs;
+                    retroRuns++;
+                    if (RetroCore::IsShutdownRequested())
+                        break;
+                }
+                if (retroRuns == maxRetroRuns && m_audioTimeAccumulator > audioPeriodMs * maxRetroRuns)
+                    m_audioTimeAccumulator = audioPeriodMs * maxRetroRuns;
+                m_lastRetroRuns = retroRuns;
+
+                // Queue-based accumulator scaling (DRC-free feedback)
+                if (m_xaudio2 && m_xaudio2->IsStarted())
+                {
+                    const long targetQ = XAudio2Output::TARGET_FRAMES;
+                    long q = m_xaudio2->GetQueuedFrames();
+                    if (q > 0)
+                    {
+                        float scale = (float)targetQ / (float)(targetQ + (q - targetQ) * 0.25f);
+                        if (scale < 0.25f) scale = 0.25f;
+                        if (scale > 2.0f) scale = 2.0f;
+                        m_audioTimeAccumulator *= scale;
+                    }
+
+                    // Emergency catch-up: if queue critically low after heavy frame, refill immediately
+                    if (q < 500)
+                    {
+                        int catchupRuns = 0;
+                        while (catchupRuns < 30 && m_xaudio2->GetQueuedFrames() < targetQ && !RetroCore::IsShutdownRequested())
+                        {
+#ifndef XB_INSPECTOR_ENABLED
+                            m_retroCore->RunFrame();
+#else
+                            if (!s_paused)
+                                m_retroCore->RunFrame();
+#endif
+                            catchupRuns++;
+                        }
+                        if (catchupRuns > 0)
+                        {
+                            char _dbg[128];
+                            sprintf_s(_dbg, "[dosbox-uwp] CATCH-UP: %d extra frames after heavy frame (queue was %ld)\n", catchupRuns, q);
+                            OutputDebugStringA(_dbg);
+                        }
+                    }
+                }
+            }
+            else
+            {
+#ifndef XB_INSPECTOR_ENABLED
+                m_retroCore->RunFrame();
+#else
+                if (!s_paused)
+                    m_retroCore->RunFrame();
+#endif
+            }
+            m_audioLastTick = _now;
+
             if (RetroCore::IsShutdownRequested())
             {
-                OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, exiting app\n");
-                Windows::ApplicationModel::Core::CoreApplication::Exit();
-                return;
+                OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, unloading game\n");
+                m_retroCore->UnloadGame();
+                m_retroRunning = false;
+                m_clearColor = DirectX::Colors::Black;
+                m_menu.Show();
+                return; // return from Tick lambda, render will show menu
             }
         }
         QueryPerformanceCounter(&_t1);
@@ -395,6 +579,9 @@ void dosbox_uwpMain::Update()
             s_perf.target_fps = s_debug_target_fps;
             s_perf.frame_ms = s_debug_frame_ms;
             s_perf.audio_queued = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+            s_perf.audio_underruns = 0; // per-frame reset, not yet wired from XA2
+            s_perf.audio_produced = *XAudio2Output::TotalProducedPtr();
+            s_perf.audio_consumed = *XAudio2Output::TotalConsumedPtr();
 #endif
             static int pacingLogCounter = 0;
             if ((++pacingLogCounter % 600) == 0)
@@ -403,46 +590,13 @@ void dosbox_uwpMain::Update()
                 if (m_xaudio2 && m_xaudio2->IsStarted())
                     audioQueued = m_xaudio2->GetQueuedFrames();
                 char buf[256];
-                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u\n",
-                    targetFps, frameMs, audioQueued);
+                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u retroRuns=%d acc=%.2f\n",
+                    targetFps, frameMs, audioQueued, m_lastRetroRuns, m_audioTimeAccumulator);
                 OutputDebugStringA(buf);
             }
         }
 
         {
-            const char* lastEvent = m_sdlInput->GetLastEventText();
-            if (lastEvent && lastEvent[0])
-            {
-                m_eventText = L"";
-                for (const char* p = lastEvent; *p; p++)
-                    m_eventText += (wchar_t)*p;
-                m_eventTimer = 60;
-            }
-
-            const wchar_t* inputSrc = m_sdlInput->HasControllerSDL() ? L"SDL" :
-                m_sdlInput->HasControllerUWP() ? L"UWP" : L"KB";
-
-            std::wstring retroStatus = m_retroCore->IsLoaded() ? L"CORE:RUNNING" :
-                (m_retroCore->IsInitialized() ? L"CORE:READY" : L"CORE:OFF");
-
-            std::wstring statusLine = (m_statusTimer > 0) ? m_statusText : L"";
-
-            // App memory usage (UWP API)
-            unsigned long long memMB = 0;
-            try {
-                auto memUsage = Windows::System::MemoryManager::AppMemoryUsage;
-                memMB = memUsage / (1024 * 1024);
-            } catch (...) { }
-
-            float currentFps = m_timer.GetFramesPerSecond();
-
-            // Rolling late-frame rate for HUD
-            {
-                static int hudCounter = 0;
-                if (m_frameLate) m_lateFramesHud++;
-                if ((++hudCounter % 60) == 0) { m_lateFramesHud = 0; }
-            }
-
             // Load state watchdog: if stuck in BOOTING >5s, log warning
             if (m_loadState == LOAD_BOOTING)
             {
@@ -458,36 +612,19 @@ void dosbox_uwpMain::Update()
             {
                 m_loadTimer = 0;
             }
-
-            static const wchar_t* loadStateNames[] = {
-                L"", L"PICKING...", L"READING...", L"BOOTING...", L"", L"FAILED!"
-            };
-            const wchar_t* loadLabel = loadStateNames[m_loadState];
-
-            wchar_t buf[512];
-            swprintf_s(buf, L"%s  SDL:%s CTL:%s XA2:%s INP:%s FPS:%.0f LATE:%d\n"
-                L"CTLR:%hs MEM:%lluMB %ls\n%ls",
-                retroStatus.c_str(),
-                m_sdlInput->IsInitialized() ? L"OK" : L"FAIL",
-                m_hasController ? L"CONN" : L"NONE",
-                (m_xaudio2 && m_xaudio2->IsReady()) ? L"OK" : L"FAIL",
-                inputSrc,
-                currentFps,
-                m_lateFramesHud,
-                m_sdlInput->GetControllerName(),
-                memMB,
-                loadLabel,
-                (m_eventTimer > 0 || m_statusTimer > 0) ?
-                    (m_statusTimer > 0 ? m_statusText.c_str() : m_eventText.c_str()) : L"");
-
-            if (m_eventTimer > 0) m_eventTimer--;
-            if (m_statusTimer > 0) m_statusTimer--;
-            m_fpsTextRenderer->SetDebugText(buf);
         }
         QueryPerformanceCounter(&_t2);
 
-        m_sceneRenderer->Update(m_timer);
-        m_fpsTextRenderer->Update(m_timer);
+        // loading screen animation (time-based, not frame-based)
+        if (m_loadingActive)
+        {
+            LARGE_INTEGER _animNow;
+            QueryPerformanceCounter(&_animNow);
+            double animElapsed = (double)(_animNow.QuadPart - m_loadingStart.QuadPart)
+                                 * 1000.0 / m_qpcFreq.QuadPart;
+            m_loadingAngle = fmod((float)(animElapsed * 0.36f), 360.0f);
+            m_loadingDots = ((int)(animElapsed / 200.0)) % 4;
+        }
 
         QueryPerformanceCounter(&_t3);
 #ifdef XB_INSPECTOR_ENABLED
@@ -529,40 +666,17 @@ void dosbox_uwpMain::Update()
 bool dosbox_uwpMain::Render()
 {
     if (m_timer.GetFrameCount() == 0)
-    {
         return false;
-    }
 
     auto context = m_deviceResources->GetD3DDeviceContext();
-
-    auto viewport = m_deviceResources->GetScreenViewport();
-    context->RSSetViewports(1, &viewport);
-
     ID3D11RenderTargetView *const targets[1] = { m_deviceResources->GetBackBufferRenderTargetView() };
     context->OMSetRenderTargets(1, targets, m_deviceResources->GetDepthStencilView());
-
     context->ClearRenderTargetView(m_deviceResources->GetBackBufferRenderTargetView(), m_clearColor);
     context->ClearDepthStencilView(m_deviceResources->GetDepthStencilView(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
     if (m_retroCore && m_retroCore->IsLoaded())
     {
-        static int renderCount = 0;
-        renderCount++;
         bool haveFrame = m_retroCore->HasFrame();
-
-        if ((renderCount % 600) == 0)
-        {
-            char buf[128];
-            sprintf_s(buf, "[dosbox-uwp] Render #%d: frame.valid=%d w=%u h=%u\n",
-                renderCount, haveFrame,
-                m_retroCore->GetFrameWidth(), m_retroCore->GetFrameHeight());
-            OutputDebugStringA(buf);
-        }
-
-        LARGE_INTEGER _r0, _r1, _rfreq;
-        QueryPerformanceFrequency(&_rfreq);
-        QueryPerformanceCounter(&_r0);
-
         if (haveFrame)
         {
             m_retroScreen->UpdateVideoFrame(
@@ -572,29 +686,57 @@ bool dosbox_uwpMain::Render()
                 m_retroCore->GetFramePitch());
             m_retroCore->ClearFrame();
         }
-
         m_retroScreen->Render();
+    }
 
-        QueryPerformanceCounter(&_r1);
-        {
-            static unsigned _rc = 0;
-            if ((++_rc % 600) == 0)
-            {
-                double r_ms = (double)(_r1.QuadPart - _r0.QuadPart) * 1000.0 / _rfreq.QuadPart;
-                char _dbg[256];
-                sprintf_s(_dbg, "[dosbox-uwp] RENDER #%u: %.1fms  valid=%d %ux%u\n",
-                    _rc, r_ms, haveFrame,
-                    m_retroCore->GetFrameWidth(), m_retroCore->GetFrameHeight());
-                OutputDebugStringA(_dbg);
-            }
-        }
+    // D2D rendering: single BeginDraw/EndDraw for all overlays
+    auto d2dContext = m_deviceResources->GetD2DDeviceContext();
+    auto logicalSize = m_deviceResources->GetLogicalSize();
+    auto dwrite = m_deviceResources->GetDWriteFactory();
+    d2dContext->BeginDraw();
+
+    // Loading screen (full black, spinning disc + Loading...)
+    if (m_loadingActive)
+    {
+        RenderLoadingScreen(d2dContext, dwrite, D2D1::SizeF(logicalSize.Width, logicalSize.Height));
     }
     else
     {
-        m_sceneRenderer->Render();
-    }
+        // Full-screen FrontendMenu (DOS style)
+        if (m_menu.IsVisible())
+        {
+            m_menu.RenderFullScreen(d2dContext, dwrite, logicalSize.Width, logicalSize.Height);
+        }
 
-    m_fpsTextRenderer->Render();
+#ifdef MOUSE_SUPPORT
+        // Draw simple cursor overlay when menu visible or on splash screen
+        if (m_menu.IsVisible() || !m_retroCore->IsLoaded())
+    {
+        if (!m_cursorBrush)
+        {
+            d2dContext->CreateSolidColorBrush(
+                D2D1::ColorF(D2D1::ColorF::White, 0.85f), &m_cursorBrush);
+        }
+
+        float cx = m_pointerX * logicalSize.Width;
+        float cy = m_pointerY * logicalSize.Height;
+        const float CS = 10.0f;
+
+        d2dContext->DrawLine(
+            D2D1::Point2F(cx - CS, cy), D2D1::Point2F(cx + CS, cy),
+            m_cursorBrush.Get(), 1.5f);
+        d2dContext->DrawLine(
+            D2D1::Point2F(cx, cy - CS), D2D1::Point2F(cx, cy + CS),
+            m_cursorBrush.Get(), 1.5f);
+    }
+#endif
+    } // end else (not loading)
+
+    HRESULT hr = d2dContext->EndDraw();
+    if (hr == D2DERR_RECREATE_TARGET)
+    {
+        m_cursorBrush.Reset();
+    }
 
     return true;
 }
@@ -610,6 +752,23 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
 {
     if (!m_retroCore)
         return;
+
+    // Route keys to FrontendMenu when visible
+    if (m_menu.IsVisible())
+    {
+        if (down)
+        {
+            switch ((int)key)
+            {
+            case 0x26: m_menu.OnDPad(true); return;  // Up
+            case 0x28: m_menu.OnDPad(false); return; // Down
+            case 0x0D: m_menu.OnConfirm(); return;   // Enter
+            case 0x1B: m_menu.OnBack();  return;     // Escape
+            case 0x4C: m_requestFilePicker = true; spdlog::info("[dosbox-uwp] L -> FilePicker"); return; // L = Open Game
+            }
+        }
+        return; // absorb all keyboard while menu is visible
+    }
 
     int vk = (int)key;
     unsigned retroKey = RETROK_UNKNOWN;
@@ -759,9 +918,11 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
         }
         else
         {
+#ifdef DEBUG_KEYBOARD
             char buf[128];
             sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X down=%d retroKey=%u\n", vk, down, retroKey);
             OutputDebugStringA(buf);
+#endif
             RetroCore::SetKeyState(retroKey, down);
         }
     }
@@ -797,10 +958,20 @@ void dosbox_uwpMain::OnPointerMove(float nx, float ny, float px, float py)
     m_pointerX = nx;
     m_pointerY = ny;
 
+    // Route to FrontendMenu when visible
+    if (m_menu.IsVisible())
+    {
+        auto logicalSize = m_deviceResources->GetLogicalSize();
+        m_menu.HandlePointerMove(nx * logicalSize.Width, ny * logicalSize.Height);
+        return;
+    }
+
     int relX = (int)(px - m_lastPointerPX);
     int relY = (int)(py - m_lastPointerPY);
     m_lastPointerPX = px;
     m_lastPointerPY = py;
+
+    QueryPerformanceCounter(&m_lastPointerTime);
 
     m_retroCore->SetMouseMove(relX, relY);
     m_retroCore->SetPointer(nx, ny, m_pointerDown);
@@ -809,6 +980,22 @@ void dosbox_uwpMain::OnPointerMove(float nx, float ny, float px, float py)
 void dosbox_uwpMain::OnPointerDown(float nx, float ny, unsigned btn)
 {
     if (!m_retroCore) return;
+
+    // Route to FrontendMenu when visible
+    if (m_menu.IsVisible())
+    {
+        if (btn == 1)
+        {
+            auto logicalSize = m_deviceResources->GetLogicalSize();
+            int idx = m_menu.HitTest(nx * logicalSize.Width, ny * logicalSize.Height);
+            if (idx >= 0)
+            {
+                m_menu.SelectItem(idx);
+                m_menu.OnConfirm();
+            }
+        }
+        return;
+    }
 
     m_pointerX = nx;
     m_pointerY = ny;
@@ -862,15 +1049,178 @@ void dosbox_uwpMain::PollMouseButtons()
 
 void dosbox_uwpMain::OnDeviceLost()
 {
-    m_sceneRenderer->ReleaseDeviceDependentResources();
-    m_fpsTextRenderer->ReleaseDeviceDependentResources();
     m_retroScreen->ReleaseDeviceDependentResources();
+    m_loadingDisc.Reset();
+}
+
+void dosbox_uwpMain::EnsureLoadingDisc()
+{
+    if (m_loadingDisc) return;
+    auto d2d = m_deviceResources->GetD2DDeviceContext();
+    if (!d2d) return;
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&wic));
+    if (FAILED(hr)) return;
+
+    wchar_t imgPath[MAX_PATH];
+    // Path 1: InstalledLocation (AppX)
+    auto installPath = Windows::ApplicationModel::Package::Current->InstalledLocation->Path;
+    wcscpy_s(imgPath, installPath->Data());
+    size_t plen = wcslen(imgPath);
+    if (plen + 30 >= MAX_PATH) return;
+    if (imgPath[plen - 1] != L'\\') { imgPath[plen] = L'\\'; plen++; }
+    wcscpy_s(imgPath + plen, MAX_PATH - plen, L"Assets\\disc.png");
+
+    for (int attempt = 0; attempt < 2; attempt++)
+    {
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+        hr = wic->CreateDecoderFromFilename(imgPath, nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad, &decoder);
+        if (SUCCEEDED(hr))
+        {
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+            hr = decoder->GetFrame(0, &frame);
+            if (SUCCEEDED(hr))
+            {
+                Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+                hr = wic->CreateFormatConverter(&conv);
+                if (SUCCEEDED(hr))
+                {
+                    hr = conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                        WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut);
+                    if (FAILED(hr))
+                        hr = conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA,
+                            WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut);
+                    if (SUCCEEDED(hr))
+                    {
+                        Microsoft::WRL::ComPtr<ID2D1Bitmap1> bmp;
+                        hr = d2d->CreateBitmapFromWicBitmap(conv.Get(), &bmp);
+                        if (SUCCEEDED(hr) && bmp)
+                        {
+                            m_loadingDisc = bmp.Get();
+                            spdlog::info("Disc loaded");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        // Path 2: parent of InstalledLocation (dev build)
+        if (attempt == 0)
+        {
+            wchar_t* ls = wcsrchr(imgPath, L'\\');
+            if (!ls) break;
+            *ls = L'\0';
+            ls = wcsrchr(imgPath, L'\\');
+            if (!ls) break;
+            *ls = L'\0';
+            plen = wcslen(imgPath);
+            if (plen + 30 >= MAX_PATH) break;
+            if (imgPath[plen - 1] != L'\\') { imgPath[plen] = L'\\'; plen++; }
+            wcscpy_s(imgPath + plen, MAX_PATH - plen, L"Assets\\disc.png");
+        }
+    }
+    spdlog::warn("Disc: failed to load disc.png");
 }
 
 void dosbox_uwpMain::OnDeviceRestored()
 {
-    m_sceneRenderer->CreateDeviceDependentResources();
-    m_fpsTextRenderer->CreateDeviceDependentResources();
     m_retroScreen->CreateDeviceDependentResources();
     CreateWindowSizeDependentResources();
+    // disc loaded lazily in RenderLoadingScreen via EnsureLoadingDisc()
+}
+
+void dosbox_uwpMain::ProcessPendingLoad()
+{
+    if (!m_pendingLoad) return;
+    // Debug delay: 10 seconds so loading screen visible for testing
+    LARGE_INTEGER _now;
+    QueryPerformanceCounter(&_now);
+    double elapsedMs = (double)(_now.QuadPart - m_loadingStart.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+    if (elapsedMs < 2000.0) return;
+    LoadRom(m_pendingLoad->path, std::move(m_pendingLoad->data));
+    m_pendingLoad.reset();
+    m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
+
+    // Force-start XAudio2 voice after load — bypass auto-start which needs 3307 queued frames
+    // Fast SSD loads (<50ms) produce too few catch-up retro runs to reach threshold
+    if (m_xaudio2)
+    {
+        m_xaudio2->Flush();
+        // Submit 2 frames of silence to pre-fill, then start immediately
+        static const int16_t silence[4] = {0, 0, 0, 0};
+        m_xaudio2->Submit(silence, 2);
+        m_xaudio2->Start();
+        // Boost accumulator so next Tick catches up ~30 frames fast
+        double targetFps = m_retroCore ? m_retroCore->GetTargetFps() : 70.0;
+        if (targetFps <= 0) targetFps = 60.0;
+        m_audioTimeAccumulator = (1000.0 / targetFps) * 30.0;
+        spdlog::info("[dosbox-uwp] XA2 force-started after load, acc boosted to {}",
+            m_audioTimeAccumulator);
+    }
+    m_loadingActive = false;
+}
+
+void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize)
+{
+    d2d->Clear(D2D1::ColorF(0x000000));
+    EnsureLoadingDisc();
+
+    float w = logicalSize.width;
+    float h = logicalSize.height;
+
+    static const wchar_t* dotStates[] = { L".", L"..", L"...", L"" };
+
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+    dwrite->CreateTextFormat(L"VCR OSD Mono", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 22.0f, L"en-US", &fmt);
+    if (!fmt) return;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> grayBrush;
+    d2d->CreateSolidColorBrush(D2D1::ColorF(0xcccccc), &grayBrush);
+
+    float margin = 20.0f;
+    float loadingY = h - margin - 28.0f;
+
+    // Layout at fixed width = "Loading..." so text never shifts
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> maxTl;
+    dwrite->CreateTextLayout(L"Loading...", 10, fmt.Get(), 300.0f, 30.0f, &maxTl);
+    DWRITE_TEXT_METRICS maxTm;
+    maxTl->GetMetrics(&maxTm);
+    float textX = w - margin - maxTm.width;
+
+    wchar_t loadingText[64];
+    swprintf_s(loadingText, L"Loading%s", dotStates[m_loadingDots]);
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
+    dwrite->CreateTextLayout(loadingText, (UINT32)wcslen(loadingText), fmt.Get(),
+        maxTm.width, 30.0f, &tl);
+    if (tl && grayBrush)
+        d2d->DrawTextLayout(D2D1::Point2F(textX, loadingY), tl.Get(), grayBrush.Get());
+
+    // Spinning disc above loading text
+    float discSize = 64.0f;
+    float discX = w - margin - discSize - 40.0f;
+    float discY = loadingY - discSize - 12.0f;
+    float discCenterX = discX + discSize * 0.5f;
+    float discCenterY = discY + discSize * 0.5f;
+    D2D1_RECT_F discRect = { discX, discY, discX + discSize, discY + discSize };
+
+    if (m_loadingDisc)
+    {
+        d2d->SetTransform(D2D1::Matrix3x2F::Rotation(m_loadingAngle,
+            D2D1::Point2F(discCenterX, discCenterY)));
+        d2d->DrawBitmap(m_loadingDisc.Get(), discRect, 1.0f);
+        d2d->SetTransform(D2D1::Matrix3x2F::Identity());
+    }
+    else
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> orangeBrush;
+        d2d->CreateSolidColorBrush(D2D1::ColorF(0xff8800), &orangeBrush);
+        if (orangeBrush)
+            d2d->FillEllipse(D2D1::Ellipse(D2D1::Point2F(discCenterX, discCenterY),
+                discSize * 0.5f, discSize * 0.5f), orangeBrush.Get());
+    }
 }

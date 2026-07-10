@@ -38,6 +38,46 @@ When connecting a physical gamepad, wire SdlInput button state to `RetroCore::Se
 ## SDL Space→BUTTON_A Mapping
 SdlInput maps keyboard Space to `BUTTON_A` (line 178-191 of SdlInput.cpp). This means pressing Space triggers both `RETROK_SPACE` (via CoreWindow key event) and `BUTTON_A` (via SDL event). Currently BUTTON_A is not forwarded to JOYPAD state, so this only affects the SdlInput button-held color feedback in the HUD. If gamepad wiring is added later, consider removing or guarding the SDL keyboard→button mapping to avoid double-triggering.
 
+## XAudio2 DRC Removal & Queue Feedback via Accumulator Scaling (Jul 2026)
+
+### Symptom
+Permanent audio pitch wow/flutter from `SetFrequencyRatio` DRC. Queue had no feedback mechanism after DRC removed — stabilized at 9449-10079 frames instead of target 4410. Underruns during heavy frames (CDA loading, resolution change): queue 10079→0 in 1.9s gap.
+
+### Root Cause: Catch-up always one frame behind
+Heavy processing (CDA load) happens INSIDE `RunFrame()` which runs at START of Update. After RunFrame returns (200ms later), queue is already drained. But the retro_run loop already finished — catch-up waits until NEXT frame's accumulator delta to fire more runs. Always one frame behind.
+
+### Fix 1: Remove SetFrequencyRatio DRC (no pitch artifacts)
+`XAudio2Output.cpp`: removed `updateDrc()`, `m_currentRatio`, `SetFrequencyRatio()` calls. Ratio fixed at 1.0.
+
+### Fix 2: Reduce TARGET_QUEUE 7560→4410→3307
+Three stages:
+- 7560 (171ms) → 4410 (100ms) — original reduction
+- 4410 (100ms) → 3307 (75ms) — current, safe with catch-up protection
+
+### Fix 3: Queue-based accumulator scaling (Replaces DRC feedback)
+In `dosbox_uwpMain.cpp` after retro_run loop:
+```
+scale = targetQ / (targetQ + (q - targetQ) * 0.25f)
+m_audioTimeAccumulator *= scale
+```
+Clamped [0.25, 2.0]. When queue > target → scale < 1 → accumulator shrinks → fewer retro_runs next frame. When queue < target → scale > 1 → more retro_runs. No pitch change (no SetFrequencyRatio).
+
+### Fix 4: Emergency catch-up after heavy frame
+In `dosbox_uwpMain.cpp` after retro_run loop + accumulator scaling:
+- If queue < 500 frames (~11ms), run up to 30 extra `RunFrame()` immediately
+- Loop checks `GetQueuedFrames()` each iteration — stops when queue reaches target
+- Guards: XB_INSPECTOR_ENABLED s_paused check, shutdown check, 30-frame cap
+
+### Files Changed
+- `dosbox-uwp/Content/XAudio2Output.h` — added `static const long TARGET_FRAMES = 3307` (public)
+- `dosbox-uwp/Content/XAudio2Output.cpp` — `TARGET_QUEUE` 4410→3307, DRC/SetFrequencyRatio removed
+- `dosbox-uwp/dosbox_uwpMain.cpp` — added accumulator scaling + emergency catch-up after retro_run loop
+
+### Future Refinements
+- **Present-based catch-up**: run catch-up at END of Render() instead of after retro_run loop, to use vsync wait time for audio production
+- **Audio-driven pacing**: `GetState().SamplesPlayed` as primary clock instead of QPC (see section below)
+- **Trend-based prediction**: use rolling queue trend (already computed in `XAudio2Output::Submit()`) to pre-adjust accumulator before queue deviates
+
 ## XAudio2 Audio Latency — Queue Depth & Frame Pacing (Jul 2026)
 
 ### Symptom
@@ -82,3 +122,150 @@ This couples the emulation clock to the audio clock, eliminating drift entirely.
 - **Audio-driven pacing using `GetState().SamplesPlayed`** is the correct long-term solution to eliminate residual drift. Current QPC-based pacing works but settles at ~20ms queue depth with periodic flushes. Implement when latency is critical (music/rhythm games).
 - **`CreateWaitableTimerEx` with `HIGH_RESOLUTION` flag** requires Windows 10 1803+. Acceptable for Xbox Series and modern Windows, but legacy Windows support would need fallback.
 - **Queue flush in `Submit()`** is a band-aid. The Stop/Flush/Start cycle produces a sub-millisecond audio gap on each flush. Not audible at current thresholds, but accumulated over long sessions could cause perceptible timing shifts in audio-reactive games.
+
+## Audio Rate Mismatch: 60fps Visual × 70fps Core — Crackling Root Cause (Jul 2026)
+
+### Symptom
+Constant audio crackling on Xbox. XAudio2 underruns (~66-67 per 100-submit window). Queue stuck at 1-2 buffers (629-1259 frames). Log showed `consumption=~37700Hz` instead of 44100Hz, with net drift ~-240ms.
+
+### Root Cause
+DosBox Pure core targets 70fps internally (`av.timing.fps = 70.09`). Each `retro_run()` produces ~630 stereo frames of audio (one frame's worth at 44100Hz). On Xbox, `Present(0,0)` on the swap chain blocks for ~16.7ms (60Hz display rate), limiting the main loop to 60fps.
+
+At 60fps × 630 frames/call = **37,800 Hz** production. XAudio2 voice consumes at **44,100 Hz**. Net deficit of ~6,300 Hz/sec. Queue always drains regardless of pre-buffer depth — headroom only delays inevitable starvation.
+
+`DoPacingSleep()` in `dosbox_uwpMain.cpp:275` was designed to target 70fps via QPC + high-res waitable timer, but it never sleeps because the rest of the loop (ProcessEvents + Update + Render + Present) already consumes 16.7ms — longer than the 14.3ms frame period. The variable `m_lastFrameTime` keeps advancing by 14.3ms per iteration while real QPC advances by 16.7ms, so the check `_now < m_lastFrameTime` is always false. See `dosbox_uwpMain.cpp:296`.
+
+### Fix: Multi-retro_run Per Visual Frame (Option A)
+
+Instead of fighting the 60fvs visual cap, accumulate real QPC time and call `retro_run()` multiple times per visual frame to produce the correct aggregate audio rate.
+
+```cpp
+// In Update(), inside m_timer.Tick() lambda:
+LARGE_INTEGER _now;
+QueryPerformanceCounter(&_now);
+double deltaMs = (_now - m_audioLastTick) * 1000.0 / qpcFreq;
+m_audioTimeAccumulator += deltaMs;
+while (m_audioTimeAccumulator >= audioPeriodMs)  // 14.3ms @ 70fps
+{
+    m_retroCore->RunFrame();
+    m_audioTimeAccumulator -= audioPeriodMs;
+}
+m_audioLastTick = _now;
+```
+
+Average: 1.1667 retro_run calls per visual frame → 7 calls per 6 frames → 70fps aggregate. Audio production = 70 × 630 = 44,100 Hz. Deficit zero.
+
+**Files changed:**
+- `dosbox-uwp/dosbox_uwpMain.h` — added `m_audioLastTick` (LARGE_INTEGER), `m_audioTimeAccumulator` (double)
+- `dosbox-uwp/dosbox_uwpMain.cpp` — replaced single `m_retroCore->RunFrame()` with the multi-call loop (line ~378)
+- Clamp: accumulator capped at `audioPeriodMs × 15` to prevent spiral-of-death after long stalls (file picker, loading)
+
+**Log evidence:**
+```
+XA2 submit #200: queue=5034 (114ms) consumption=43954Hz underruns=0
+XA2 submit #300: queue=5034 (114ms) consumption=44158Hz underruns=0
+XA2 submit #400: queue=4404 (100ms) consumption=44261Hz underruns=0
+XA2 submit #500: queue=5033 (114ms) consumption=44160Hz underruns=0
+...
+XA2 submit #3300: queue=5034 (114ms) consumption=43955Hz underruns=0
+```
+
+- **Queue stable at ~5034 frames (~114ms)** — never starved
+- **consumption = ~44,100 Hz** — matches expected hardware rate
+- **underruns = 0** — no crackling throughout session
+- `fps=60` in TICK log but queue never drains — confirms fix decouples audio from visual rate
+
+### Future: Option B — RetroArch-Style Resampler + DRC
+
+While Option A works, it has limitations:
+1. **Not usable if retro_run is expensive** (complex games). Currently `frame=0.0ms` (near-instant), but a heavier game might not sustain 1.17× retro_run per visual frame.
+2. **Cannot decouple audio/video timing** independently. If retro_run ever needs >16.7ms, the loop falls behind and audio starves.
+3. **Visual FPS stays at 60** — the audio pacing is hidden but doesn't improve visual smoothness.
+
+RetroArch solves this with a **software resampler + Dynamic Rate Control (DRC)** loop. Full investigation at `F:\workspace\RetroArch\audio\audio_driver.c`.
+
+#### RetroArch Architecture
+
+```
+Core calls audio_batch_cb(samples, count)
+         │
+         ▼
+audio_driver_flush()
+         │
+         ├── write_raw available? ──YES──▶ Driver gets rate_adjust directly
+         │                                (CoreAudio only — adjusts hardware clock)
+         │
+         ├── int16 sinc fastpath? ─YES──▶ src_ratio_curr = src_ratio_orig × adjust
+         │                                → resampler_int16_process(ratio)
+         │                                → audio->write()
+         │
+         └── float path ─────────────▶ src_ratio_curr = src_ratio_orig × adjust
+                                       → resampler->process(ratio)
+                                       → audio->write()
+```
+
+#### DRC Algorithm (`audio_driver_compute_rate_adjust()`)
+
+```c
+int avail = audio->write_avail(context);         // How much FIFO can accept
+int half_size = buffer_size / 2;                  // 50% midpoint target
+double direction = (avail - half_size) / half_size;  // -1.0..+1.0
+double rate_adjust = 1.0 + effective_delta * direction;  // ~±0.001 of 1.0
+```
+
+Proportional controller:
+- Buffer > 50% full → `rate_adjust > 1.0` → resampler speeds up → drains buffer faster
+- Buffer < 50% full → `rate_adjust < 1.0` → resampler slows down → fills buffer
+- `effective_delta` scaled inversely with `src_ratio_orig` to prevent oscillation at high sample rates (96kHz+)
+
+#### XAudio2 Driver in RetroArch (`audio/drivers/xaudio.c`)
+
+- **16 ring buffers** of size `bufsize = latency × rate / 1000` (e.g. 384 frames for 8ms @ 48kHz)
+- `xa_write()`: copies audio into current buffer slot; when slot fills, submits via `IXAudio2SourceVoice_SubmitSourceBuffer()`
+- **`SetFrequencyRatio()` NEVER called** — driver relies entirely on software resampler to adjust rate
+- `OnBufferEnd()` callback uses `InterlockedDecrement` + `SetEvent` to unblock `xa_write()`
+- **Key point:** Neither XAudio2 nor WASAPI drivers in RetroArch implement `write_raw`. Both route through the software resampler.
+
+#### WASAPI Driver (`audio/drivers/wasapi.c`)
+
+- Exclusive mode: `buffer_duration = latency × 10000.0`, FIFO + `GetBuffer/ReleaseBuffer` cycle
+- Shared mode: `GetCurrentPadding()` to query consumed frames
+- `write_raw = NULL` — same resampler-dependent path as XAudio2
+
+#### Why SetFrequencyRatio Alone Won't Work
+
+A naïve approach — set `SetFrequencyRatio(37800/44100 = 0.857)` to match the 37.7kHz production rate — would work numerically but **changes pitch by -14%**. The audio would play in slow-motion with deep voice (chipmunk effect in reverse). This is because `SetFrequencyRatio` changes both **playback speed AND pitch**. For small corrections (±0.1%) the pitch shift is inaudible, but for the 14% mismatch here it's extremely noticeable.
+
+RetroArch's resampler changes **only speed** — pitch is preserved via sample-rate conversion (sinc-windowed, nearest, or CC resamplers). The resampler produces the correct number of output samples regardless of input rate, using interpolation.
+
+#### Implementation Plan for Option B
+
+If Option A becomes insufficient (e.g., a complex DOS game makes retro_run too slow for 1.17× calls per frame):
+
+1. **Integrate libretro's resampler** — `libretro-common/audio/resampler/` has `sinc` and `nearest` drivers. The core's `audio_batch_cb` output goes through the resampler before reaching `XAudio2Output::Submit()`.
+2. **Insert Resampler in RetroCore.cpp** — intercept `audio_sample_batch_cb` → resample from core rate (44100) to output rate (44100 or 48000) at a ratio adjusted by DRC.
+3. **Implement DRC loop** — every N submits, query XAudio2 buffer occupancy (`GetState().BuffersQueued` or `s_queuedFrames`) and compute `rate_adjust`. Modify resampler ratio by ±0.05% steps.
+4. **Cap adjustments** — RetroArch uses `rate_control_delta` (default ~0.005) scaled by buffer deviation. The total adjustment range must be within ±5% to avoid audible artifacts (`audio_max_timing_skew`).
+5. **Remove multi-retro_run** — Switch back to single `retro_run()` per visual frame. The resampler handles the rate conversion instead of producing extra frames.
+
+See also: `C:\Users\marcelo\workspace\RetroArch\audio\audio_driver.c` lines 548-575 (DRC compute), `audio\drivers\xaudio.c` (buffer management, 667 lines), `audio\drivers\wasapi.c` (1553 lines). All `write_raw` paths are NULL for XAudio2/WASAPI — resampler path is mandatory.
+
+## Logging: OutputDebugStringA → spdlog Tech Debt (Jul 2026)
+
+### Current State
+`LogHelper.h` defines `#define OutputDebugStringA(msg) LogPrint(msg)` when `XB_INSPECTOR_ENABLED`, which routes all `OutputDebugStringA()` calls through `spdlog::info()`. This works but has issues:
+
+1. **Double-tag** — many callsites include `[dosbox-uwp]` prefix in the string, which duplicates spdlog's logger-name tag
+2. **Temp buffer** — `sprintf_s(buf, ...) + OutputDebugStringA(buf)` pattern creates unnecessary stack buffers
+3. **Inconsistent** — some new code uses `spdlog::info` directly (preferred), others use macro
+
+### Future
+Convert all `OutputDebugStringA` callsites to `spdlog::info("fmt", args...)` directly:
+- `dosbox-uwp/App.cpp` — ~17 calls
+- `dosbox-uwp/dosbox_uwpMain.cpp` — ~22 calls
+- `dosbox-uwp/Content/RetroCore.cpp` — ~40 calls
+- `dosbox-uwp/Content/SdlInput.cpp` — ~6 calls
+- `dosbox-uwp/dosbox_pure_sta.cpp` — ~2 calls
+
+When done, remove macro from `LogHelper.h` and include `<spdlog/spdlog.h>` directly.
+New code: always use `spdlog::info()` directly, never `OutputDebugStringA`.

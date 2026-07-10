@@ -73,5 +73,17 @@
     <Content Include="Assets\beep.wav">
       <Filter>Assets</Filter>
     </Content>
+    <Content Include="Assets\logo.bmp">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\EPA_logo.png">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\fluentui-optical-disk-100.bmp">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\VCR_OSD_MONO_1.001.ttf">
+      <Filter>Assets</Filter>
+    </Content>
   </ItemGroup>
 </Project>

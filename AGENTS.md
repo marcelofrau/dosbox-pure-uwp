@@ -10,6 +10,7 @@ All documentation, code, comments, and commit messages MUST be in English.
 ## Critical Rules
 - **NEVER commit or push** without explicit user request. Stage changes only. Wait for "commit", "push", "faz o commit", etc.
 - **NEVER commit to submodule** `extern/dosbox-pure/`. Patches go in `dosbox-uwp/local/dosbox-pure/` mirroring same directory structure.
+- **CAN commit to `extern/uwp-xray-depot/`** — same author/owner as parent repo. Push separately when asked.
 - **Build via .sln** not .vcxproj. `$(SolutionDir)` needed for `uwp-dep.props` SDL paths.
 - **x64 only.** ARM64/ARM/x86 NOT supported (Xbox Series is x64).
 - **`CompileAsWinRT=false`** for legacy C (dosbox-pure source). `/ZW` for C++/CX files.
@@ -98,8 +99,10 @@ Connect: `nc <ip> 9000` or use [XB Homebrew Vault](https://github.com/marcelofra
 `__LIBRETRO__`, `DBP_STANDALONE`, `XB_INSPECTOR_ENABLED` (Debug only), `_CRT_SECURE_NO_WARNINGS`, `_CRT_NONSTDC_NO_DEPRECATE`
 
 ## Logging
-All `OutputDebugStringA` prepend `[dosbox-uwp]` for DebugView filtering.
-xb-xray additionally streams logs over TCP (port 9000-9009) when connected.
+- **New code:** always use `spdlog::info("fmt", args...)` directly. NEVER `OutputDebugStringA`.
+- **Existing code:** `LogHelper.h` macro redirects `OutputDebugStringA` → `LogPrint` → `spdlog::info`. Legacy temp-buffer pattern (`sprintf_s(buf)` + `OutputDebugStringA(buf)`) tolerated but not for new code.
+- xb-xray streams logs over TCP (port 9000-9009) when connected.
+- Tech debt: migrate all callsites to direct `spdlog::info` (see `docs/discoveries.md`).
 
 ## LSP / clangd
 codedev MCP (clangd-based LSP) does NOT understand C++/CX (`^`, `ref new`, `Platform::`, `Windows::`).

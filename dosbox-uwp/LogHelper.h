@@ -1,8 +1,13 @@
 #pragma once
 
-#ifdef XB_INSPECTOR_ENABLED
-
 #include <spdlog/spdlog.h>
+
+// Save real OutputDebugStringA before any macro override, so msvc_sink uses the Win32 API
+#pragma push_macro("OutputDebugStringA")
+#undef OutputDebugStringA
+#include <spdlog/sinks/msvc_sink.h>
+#pragma pop_macro("OutputDebugStringA")
+
 #include <string>
 
 inline void LogPrint(const char* msg)
@@ -15,11 +20,15 @@ inline void LogPrint(const char* msg)
 
 #define OutputDebugStringA(msg) LogPrint(msg)
 
-#else
+inline void LogInit()
+{
+    auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("dbp", sink);
+    spdlog::set_default_logger(logger);
+    OutputDebugStringA("LogInit: msvc_sink registered");
+}
 
-__declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
-
-#endif
-
-inline void LogInit() {}
-inline void LogShutdown() {}
+inline void LogShutdown()
+{
+    spdlog::shutdown();
+}

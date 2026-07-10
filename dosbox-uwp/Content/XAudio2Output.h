@@ -24,15 +24,19 @@ namespace dosbox_uwp
         bool Initialize();
         void Submit(const int16_t* data, uint32_t frames);
         void Flush();
+        void Start();
+        void Stop();
         bool IsReady() const { return m_initialized; }
         bool IsStarted() const { return m_started; }
         uint32_t GetQueuedFrames() const;
+        static const long TARGET_FRAMES = 3307; // ~75ms @44100Hz
         static volatile long* QueuedFramesPtr();
+        static volatile long long* TotalProducedPtr();
+        static volatile long long* TotalConsumedPtr();
 
     private:
         uint32_t GetSampleRate() const { return 44100; }
 
-    private:
         IXAudio2* m_pXAudio2;
         IXAudio2MasteringVoice* m_pMasterVoice;
         IXAudio2SourceVoice* m_pSourceVoice;
