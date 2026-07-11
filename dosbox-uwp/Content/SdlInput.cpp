@@ -124,23 +124,12 @@ void SdlInput::PollEvents()
         }
         case SDL_CONTROLLERBUTTONDOWN:
         {
-            int btn = event.cbutton.button;
-            if (btn >= 0 && btn < MAX_BUTTONS)
-            {
-                m_buttonHeld[btn] = true;
-                m_buttonJustPressed[btn] = true;
-                sprintf_s(m_lastEventStr, "CTL:btn%d DOWN", btn);
-            }
+            sprintf_s(m_lastEventStr, "CTL:btn%d DOWN", event.cbutton.button);
             break;
         }
         case SDL_CONTROLLERBUTTONUP:
         {
-            int btn = event.cbutton.button;
-            if (btn >= 0 && btn < MAX_BUTTONS)
-            {
-                m_buttonHeld[btn] = false;
-                sprintf_s(m_lastEventStr, "CTL:btn%d UP", btn);
-            }
+            sprintf_s(m_lastEventStr, "CTL:btn%d UP", event.cbutton.button);
             break;
         }
         case SDL_KEYDOWN:

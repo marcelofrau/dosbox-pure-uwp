@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag (e.g. v0.0.0.1). Leave empty to skip tagging.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content 'version.txt' -Raw).Trim()
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "Release version: $v"
+
+      - name: Patch appxmanifest
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $mf = 'dosbox-uwp\Package.appxmanifest'
+          $c = Get-Content $mf -Raw
+          $c = $c -replace '(<Identity[^>]+Version=")[^"]*(")', "`${1}$ver`${2}"
+          Set-Content $mf $c -NoNewline
+          echo "Patched appxmanifest: $ver"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          msbuild "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64 /nowarn:MSB4011 /m /nologo
+
+      - name: Package & Create Distributable
+        id: package
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $platform = "x64"
+          $pkgRoot = "AppPackages\dosbox-uwp"
+
+          # Find MSIX
+          $msix = $null
+          $pkgDir = $null
+          $dirs = @(
+            "dosbox-uwp_${ver}_${platform}_Release_Test",
+            "dosbox-uwp_${ver}_${platform}_Test",
+            "dosbox-uwp_${ver}_${platform}_Release"
+          )
+          foreach ($d in $dirs) {
+            $candidate = Join-Path $pkgRoot $d
+            if (Test-Path $candidate) {
+              $f = Get-ChildItem $candidate -Filter "*.msix" | Select-Object -First 1
+              if ($f) { $msix = $f.FullName; $pkgDir = $candidate; break }
+            }
+          }
+          if (-not $msix) {
+            $candidate = "x64\Release\dosbox-uwp\dosbox-uwp.msix"
+            if (Test-Path $candidate) { $msix = (Resolve-Path $candidate).Path; $pkgDir = Split-Path $msix }
+          }
+          if (-not $msix) { Write-Error "MSIX not found"; exit 1 }
+          Write-Host "MSIX: $msix"
+
+          # Create distribute folder
+          $dist = "distribute"
+          if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+          # Copy MSIX
+          Copy-Item $msix (Join-Path $dist (Split-Path $msix -Leaf))
+
+          # Copy x64 dependencies only
+          $depDir = Join-Path $pkgDir 'Dependencies\x64'
+          if (Test-Path $depDir) {
+            $dest = Join-Path $dist 'Dependencies\x64'
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Get-ChildItem $depDir -Filter "*.appx" | Copy-Item -Destination $dest
+          }
+
+          # Copy Install.ps1 (patched with version)
+          if (Test-Path 'scripts\install.ps1') {
+            $ic = Get-Content 'scripts\install.ps1' -Raw
+            $ic = $ic -replace '_1\.0\.0\.0\.', "_${ver}."
+            Set-Content (Join-Path $dist 'Install.ps1') $ic -NoNewline
+          }
+
+          # Copy cert
+          if (Test-Path 'certs\dosbox-uwp.cer') {
+            Copy-Item 'certs\dosbox-uwp.cer' (Join-Path $dist 'dosbox-uwp.cer')
+          }
+
+          # Create zip
+          $zipName = "dosbox-uwp_${ver}_x64.zip"
+          Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zipName -Force
+          $zipSize = [math]::Round((Get-Item $zipName).Length / 1MB, 2)
+          Write-Host "Zip: $zipName ($zipSize MB)"
+          echo "zip=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dosbox-uwp-${{ steps.version.outputs.version }}
+          path: ${{ steps.package.outputs.zip }}
+          compression-level: 0
+
+      - name: Create GitHub Release
+        if: inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "DOSBox Pure Unleashed ${{ steps.version.outputs.version }}"
+          tag_name: ${{ inputs.tag }}
+          files: ${{ steps.package.outputs.zip }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+
+      - name: Bump version for next snapshot
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $parts = $v -split '\.'
+          $parts[3] = [int]$parts[3] + 1
+          $next = $parts -join '.'
+          Set-Content 'version.txt' "$next`n" -NoNewline
+          echo "Bumped: $v -> $next"

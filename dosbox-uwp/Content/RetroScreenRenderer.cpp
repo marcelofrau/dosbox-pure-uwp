@@ -106,7 +106,7 @@ void RetroScreenRenderer::Render()
         m_videoBitmap.Get(),
         destRect,
         1.0f,
-        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        m_interpolationMode,
         nullptr
     );
 

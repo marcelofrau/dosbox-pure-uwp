@@ -23,6 +23,8 @@ namespace DX
 		void RegisterDeviceNotify(IDeviceNotify* deviceNotify);
 		void Trim();
 		void Present(int syncInterval = 1, UINT flags = 0);
+		void SetVSync(bool enabled) { m_syncInterval = enabled ? 1 : 0; }
+		int GetSyncInterval() const { return m_syncInterval; }
 
 		// The size of the render target, in pixels.
 		Windows::Foundation::Size	GetOutputSize() const					{ return m_outputSize; }
@@ -98,5 +100,8 @@ namespace DX
 
 		// The IDeviceNotify can be held directly as it owns the DeviceResources.
 		IDeviceNotify* m_deviceNotify;
+
+		// VSync: 1 = enabled (sync to vblank), 0 = disabled (immediate present)
+		int m_syncInterval = 1;
 	};
 }

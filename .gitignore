@@ -71,4 +71,8 @@ build/
 # Run output
 .run-output/
 
+# Release distributable output
+distribute/
+dosbox-uwp_*_x64.zip
+
 session.txt

@@ -6,6 +6,11 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 
+# Read version from version.txt
+$versionFile = Join-Path $root 'version.txt'
+if (-not (Test-Path $versionFile)) { Write-Error "version.txt not found"; exit 1 }
+$version = (Get-Content $versionFile -Raw).Trim()
+
 # ensure signing certificate
 $pfx = Join-Path $root 'certs\dosbox-uwp.pfx'
 $cerPath = Join-Path $root 'certs\dosbox-uwp.cer'
@@ -33,15 +38,15 @@ if (-not $SkipBuild) {
 # locate msix
 $pkgRoot = Join-Path $root "AppPackages\dosbox-uwp"
 $msixDirs = @(
-    "dosbox-uwp_1.0.0.0_${Platform}_${Configuration}_Test",
-    "dosbox-uwp_1.0.0.0_${Platform}_Test",
-    "dosbox-uwp_1.0.0.0_${Platform}_${Configuration}"
+    "dosbox-uwp_${version}_${Platform}_${Configuration}_Test",
+    "dosbox-uwp_${version}_${Platform}_Test",
+    "dosbox-uwp_${version}_${Platform}_${Configuration}"
 )
 $msix = $null
 foreach ($d in $msixDirs) {
-    $candidate = Join-Path $pkgRoot "$d\dosbox-uwp_1.0.0.0_${Platform}.msix"
+    $candidate = Join-Path $pkgRoot "$d\dosbox-uwp_${version}_${Platform}.msix"
     if (Test-Path $candidate) { $msix = $candidate; $pkgDir = Join-Path $pkgRoot $d; break }
-    $candidate2 = Join-Path $pkgRoot "$d\dosbox-uwp_1.0.0.0_${Platform}_${Configuration}.msix"
+    $candidate2 = Join-Path $pkgRoot "$d\dosbox-uwp_${version}_${Platform}_${Configuration}.msix"
     if (Test-Path $candidate2) { $msix = $candidate2; $pkgDir = Join-Path $pkgRoot $d; break }
 }
 if (-not $msix) {

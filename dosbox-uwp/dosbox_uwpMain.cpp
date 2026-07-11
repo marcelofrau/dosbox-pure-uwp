@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "dosbox_uwpMain.h"
+#include "Content/SettingsManager.h"
 #include "libretro.h"
 #include "dosbox_pure_sta.h"
 #include "Common\DirectXHelper.h"
@@ -71,6 +72,32 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         sprintf_s(buf, "SDL: controller=%s\n",
             m_hasController ? "CONNECTED" : "NONE (SPACE=btnA)");
         OutputDebugStringA(buf);
+    }
+
+    // Initialize settings manager (loads dosbox-pure-settings.json)
+    {
+        std::string settingsDir;
+        auto family = AnalyticsInfo::VersionInfo->DeviceFamily;
+        std::wstring fw(family->Data());
+        if (fw == L"Windows.Xbox")
+        {
+            CreateDirectoryA("E:\\dosbox", NULL);
+            settingsDir = "E:\\dosbox";
+        }
+        else
+        {
+            char tmp[MAX_PATH];
+            if (GetTempPathA(MAX_PATH, tmp) != 0)
+            {
+                std::string dir(tmp);
+                if (!dir.empty() && dir.back() == '\\')
+                    dir.pop_back();
+                CreateDirectoryA((dir + "\\dosbox-pure").c_str(), NULL);
+                settingsDir = dir + "\\dosbox-pure";
+            }
+        }
+        if (!settingsDir.empty())
+            SettingsManager::Initialize(settingsDir + "\\dosbox-pure-settings.json");
     }
 
 #ifdef XB_INSPECTOR_ENABLED
@@ -169,34 +196,64 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         m_menu.m_fileBrowser.Close();
         ActivateLoadingScreen();
 
-        // Replicate old picker flow: copy to LocalFolder/temp/ then load from there.
-        // Core needs a writable app-local path for config/saves.
+        // Read source file via Win32 API synchronously (works for arbitrary paths incl. Xbox drives).
+        // Then async: create temp folder, write buffer, load ROM.
+        HANDLE hFile = CreateFile2FromAppW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+            OPEN_EXISTING, nullptr);
+        if (hFile == INVALID_HANDLE_VALUE)
+        {
+            spdlog::error("[FileBrowser] CreateFile2FromAppW failed for '{}', error={}",
+                std::string(path.begin(), path.end()), GetLastError());
+            m_requestFilePicker = true;
+            return;
+        }
+        LARGE_INTEGER liSize = {};
+        GetFileSizeEx(hFile, &liSize);
+        DWORD fileSize = (DWORD)liSize.LowPart;
+        if (fileSize == 0)
+        {
+            CloseHandle(hFile);
+            spdlog::error("[FileBrowser] Empty file '{}'", std::string(path.begin(), path.end()));
+            m_requestFilePicker = true;
+            return;
+        }
+        auto fileData = ref new Platform::Array<uint8_t>(fileSize);
+        DWORD bytesRead = 0;
+        BOOL ok = ReadFile(hFile, fileData->Data, fileSize, &bytesRead, nullptr);
+        CloseHandle(hFile);
+        if (!ok || bytesRead != fileSize)
+        {
+            spdlog::error("[FileBrowser] ReadFile failed for '{}', read={}/{}",
+                std::string(path.begin(), path.end()), bytesRead, fileSize);
+            m_requestFilePicker = true;
+            return;
+        }
+        spdlog::info("[FileBrowser] Read {} bytes from '{}'", fileSize,
+            std::string(path.begin(), path.end()));
+
         auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+        std::wstring filename = path.substr(path.find_last_of(L'\\') + 1);
         create_task(localFolder->CreateFolderAsync(
             L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
-        .then([this, path](Windows::Storage::StorageFolder^ tempFolder)
+        .then([filename](Windows::Storage::StorageFolder^ tempFolder)
         {
-            return create_task(Windows::Storage::StorageFile::GetFileFromPathAsync(
-                ref new Platform::String(path.c_str())))
-            .then([tempFolder](Windows::Storage::StorageFile^ srcFile)
-            {
-                return create_task(srcFile->CopyAsync(tempFolder, srcFile->Name,
-                    Windows::Storage::NameCollisionOption::ReplaceExisting));
-            });
+            return create_task(tempFolder->CreateFileAsync(
+                ref new Platform::String(filename.c_str()),
+                Windows::Storage::CreationCollisionOption::ReplaceExisting));
         })
-        .then([this](Windows::Storage::StorageFile^ destFile)
+        .then([this, fileData](Windows::Storage::StorageFile^ destFile)
         {
-            if (destFile)
+            auto writer = ref new Windows::Storage::Streams::DataWriter();
+            writer->WriteBytes(fileData);
+            return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
+                writer->DetachBuffer()))
+            .then([this, destFile]()
             {
                 std::wstring localPath = destFile->Path->Data();
                 spdlog::info("[FileBrowser] Copied to: '{}'",
                     std::string(localPath.begin(), localPath.end()));
                 QueueLoadRom(localPath, {});
-            }
-            else
-            {
-                spdlog::error("[FileBrowser] Copy failed, destFile is null");
-            }
+            });
         });
     };
     m_menu.onOpenPuremenu = [this]() {
@@ -227,6 +284,33 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         }
         m_xaudio2->Submit(samples.data(), numFrames);
     };
+    m_menu.onOptionChanged = [this](const char* key, const char* value) {
+        if (!strcmp(key, "frontend_vsync"))
+        {
+            bool enabled = !strcmp(value, "On");
+            m_deviceResources->SetVSync(enabled);
+            spdlog::info("[Settings] VSync = {} (syncInterval={})", value, m_deviceResources->GetSyncInterval());
+        }
+        else if (!strcmp(key, "frontend_scaler"))
+        {
+            D2D1_BITMAP_INTERPOLATION_MODE mode = !strcmp(value, "Nearest")
+                ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+                : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+            m_retroScreen->SetInterpolationMode(mode);
+            spdlog::info("[Settings] Scaler = {} (d2dMode={})", value, (int)mode);
+        }
+    };
+
+    // Apply frontend-only settings at startup
+    {
+        auto vsync = SettingsManager::GetOption("frontend_vsync", "On");
+        m_deviceResources->SetVSync(!vsync.empty() && vsync != "Off");
+        auto scaler = SettingsManager::GetOption("frontend_scaler", "Bilinear");
+        D2D1_BITMAP_INTERPOLATION_MODE mode = (scaler == "Nearest")
+            ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+            : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+        m_retroScreen->SetInterpolationMode(mode);
+    }
 
     BootCore();
 }

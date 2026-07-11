@@ -5,10 +5,15 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 
+# Read version from version.txt
+$versionFile = Join-Path $root 'version.txt'
+if (-not (Test-Path $versionFile)) { Write-Error "version.txt not found"; exit 1 }
+$version = (Get-Content $versionFile -Raw).Trim()
+
 $pkgName = '81ef2129-2f08-4d22-9816-050b2b62b308'
 
-$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_1.0.0.0_${Platform}_${Configuration}_Test"
-$msix = Join-Path $pkgDir "dosbox-uwp_1.0.0.0_${Platform}_${Configuration}.msix"
+$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_${version}_${Platform}_${Configuration}_Test"
+$msix = Join-Path $pkgDir "dosbox-uwp_${version}_${Platform}_${Configuration}.msix"
 $extractDir = Join-Path $pkgDir "extracted"
 
 if (-not (Test-Path $msix)) {

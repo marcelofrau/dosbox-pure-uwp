@@ -5,6 +5,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# ── Read version ──
+$versionFile = Join-Path $PSScriptRoot '..\version.txt'
+if (!(Test-Path $versionFile)) { Write-Error "version.txt not found"; exit 1 }
+$version = (Get-Content $versionFile -Raw).Trim()
+
 # ── Load .env ──
 $envPath = Join-Path $PSScriptRoot '..\.env'
 if (!(Test-Path $envPath)) { Write-Error ".env not found at $envPath"; exit 1 }
@@ -36,8 +41,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Build failed"; exit 1 }
 
 # ── Locate MSIX ──
 $configSuffix = if ($Configuration -eq 'Debug') { '_Debug' } else { '' }
-$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_1.0.0.0_${Platform}${configSuffix}_Test"
-$msix = Join-Path $pkgDir "dosbox-uwp_1.0.0.0_${Platform}${configSuffix}.msix"
+$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_${version}_${Platform}${configSuffix}_Test"
+$msix = Join-Path $pkgDir "dosbox-uwp_${version}_${Platform}${configSuffix}.msix"
 if (!(Test-Path $msix)) { Write-Error "MSIX not found: $msix"; exit 1 }
 Write-Host "MSIX: $msix" -ForegroundColor Cyan
 

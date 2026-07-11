@@ -269,3 +269,59 @@ Convert all `OutputDebugStringA` callsites to `spdlog::info("fmt", args...)` dir
 
 When done, remove macro from `LogHelper.h` and include `<spdlog/spdlog.h>` directly.
 New code: always use `spdlog::info()` directly, never `OutputDebugStringA`.
+
+## Frame Pacing: VSync & Settings Menu (Jul 2026)
+
+### Problem: Games running too fast on Windows
+Main loop was a **busy-spin** with no frame limiter:
+```
+App::Run → Update → Render → Present(0, 0) → repeat
+                              ↑ syncInterval=0 = no vsync wait
+```
+Loop ran as fast as CPU allowed. Only throttle was audio queue DRC feedback (reactive, not proactive). Xbox worked because UWP compositor enforces vsync.
+
+### Fix 1: VSync via Present(1, 0)
+`App.cpp:145` — Changed `Present(0, 0)` → `Present(m_deviceResources->GetSyncInterval(), 0)`.
+
+- `DeviceResources::SetVSync(bool)` toggles `m_syncInterval` between 0 (no vsync) and 1 (vblank sync)
+- Default is `m_syncInterval = 1` (vsync on)
+- `Present(1, 0)` blocks until next display vblank → loop naturally runs at display refresh rate (60Hz/120Hz/144Hz)
+- Adds ~1 frame of input latency (acceptable for DOS emulator)
+- Xbox already gets this from compositor, but explicit is better
+
+### Fix 2: GET_THROTTLE_STATE reports VSYNC
+`RetroCore.cpp:415-426` — Changed `RETRO_THROTTLE_NONE` → `RETRO_THROTTLE_VSYNC`. This tells the core that external frame pacing exists, so it doesn't try to self-throttle.
+
+### Settings Menu Architecture
+**FrontendMenu** extended with real options:
+- `MenuItem` struct gained `optionKey` field — maps toggle to core/frontend option key
+- `onOptionChanged(key, value)` callback — dosbox_uwpMain handles VSync/Scaler changes
+- Options populate from `SettingsManager::GetOption()` with current values at menu build time
+
+**Video section:**
+| Option | Key | Values | Type |
+|--------|-----|--------|------|
+| VSync | `frontend_vsync` | Off, On | Frontend-only |
+| Scaler | `frontend_scaler` | Nearest, Bilinear | Frontend-only |
+| Aspect Ratio | `dosbox_pure_aspect_correction` | Off, On, Doublescan, Padded, Padded+Doublescan | Core |
+| Graphics Chip | `dosbox_pure_machine` | SVGA, VGA, EGA, CGA, Tandy, Hercules, PCJR | Core |
+| SVGA Memory | `dosbox_pure_svgamem` | 0-4, 8 (512KB-8MB) | Core |
+| Overscan | `dosbox_pure_overscan` | 0-3 | Core |
+
+**Audio section:**
+| Option | Key | Values | Type |
+|--------|-----|--------|------|
+| Sample Rate | `dosbox_pure_audiorate` | 48000, 44100, 32000, 22050, 16000, 11025 | Core |
+| SoundBlaster Type | `dosbox_pure_sblaster_type` | SB16, SBPro2, SBPro1, SB2, SB1, GB, None | Core |
+| Volume: SB/MIDI/Adlib/Speaker | `dosbox_pure_volume_*` | 50%, 100%, 150%, 200%, 300%, 500% | Core |
+
+**Scaler** — `RetroScreenRenderer::SetInterpolationMode()` toggles D2D1 between `NEAREST_NEIGHBOR` (pixel-perfect) and `LINEAR` (smooth). Applied immediately on toggle.
+
+### Key Insight: C++17 for static inline
+`dosbox_pure_osd.h` forked with `static inline Bit32u` members inside `struct DBP_BufferDrawing` (replacing `enum EColors`). This requires `<LanguageStandard>stdcpp17</LanguageStandard>` in vcxproj. Without it, MSVC errors `C7525: inline variables require at least '/std:c++17'`.
+
+### Future Improvements
+- **Audio-driven pacing** using `GetState().SamplesPlayed` — eliminates QPC drift entirely
+- **Slider items** for volume/sensitivity — currently discrete values only
+- **Per-game settings** — `DBPS_ApplyConfigOverrides` (FRONTEND.DBP JSON override) still stub
+- **Settings persistence on shutdown** — currently auto-saves on SetOption, but could batch save

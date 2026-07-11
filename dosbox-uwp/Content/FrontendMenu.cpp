@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "FrontendMenu.h"
+#include "SettingsManager.h"
+#include "RetroCore.h"
 #include <wincodec.h>
 #include <sysinfoapi.h>
 #include <memoryapi.h>
@@ -138,7 +140,7 @@ void FrontendMenu::BuildMenuTree()
     {
         { "Load File",           MenuAction::OPEN_FILE },
         { "",                    MenuAction::NONE },
-        { "Settings",            MenuAction::SETTINGS, {}, {}, 0, false },
+        { "Settings",            MenuAction::SETTINGS, {}, {}, 0, true },
         { "Controls",            MenuAction::OPEN_PUREMENU, {}, {}, 0, false },
         { "",                    MenuAction::NONE },
         { "Exit",                MenuAction::EXIT },
@@ -153,20 +155,55 @@ void FrontendMenu::BuildMenuTree()
         { "Back",                MenuAction::BACK },
     };
 
-    m_videoItems =
-    {
-        { "Fullscreen",          MenuAction::TOGGLE_VALUE, {}, { "Off", "On" }, 0 },
-        { "Aspect Ratio",        MenuAction::TOGGLE_VALUE, {}, { "Auto", "4:3", "16:9" }, 0 },
-        { "",                    MenuAction::NONE },
-        { "Back",                MenuAction::BACK },
+    // Helper to find current value index from settings
+    auto findVal = [](const std::string& key, const std::vector<std::string>& vals, const char* def) -> int {
+        std::string cur = SettingsManager::GetOption(key.c_str(), def);
+        for (int i = 0; i < (int)vals.size(); i++)
+            if (vals[i] == cur) return i;
+        return 0;
     };
 
-    m_audioItems =
+    // Video options
     {
-        { "Volume",              MenuAction::TOGGLE_VALUE, {}, { "100%", "75%", "50%", "25%", "0%" }, 0 },
-        { "",                    MenuAction::NONE },
-        { "Back",                MenuAction::BACK },
-    };
+        std::vector<std::string> vsyncVals = { "Off", "On" };
+        std::vector<std::string> scalerVals = { "Nearest", "Bilinear" };
+        std::vector<std::string> aspectVals = { "Off", "On", "Doublescan", "Padded", "Padded+Doublescan" };
+        std::vector<std::string> machineVals = { "SVGA", "VGA", "EGA", "CGA", "Tandy", "Hercules", "PCJR" };
+        std::vector<std::string> svgaMemVals = { "0 (512KB)", "1 (1MB)", "2 (2MB)", "3 (3MB)", "4 (4MB)", "8 (8MB)" };
+        std::vector<std::string> overscanVals = { "0", "1", "2", "3" };
+
+        m_videoItems = {
+            { "VSync",             MenuAction::TOGGLE_VALUE, {}, vsyncVals, findVal("frontend_vsync", vsyncVals, "On"), true, "frontend_vsync" },
+            { "Scaler",            MenuAction::TOGGLE_VALUE, {}, scalerVals, findVal("frontend_scaler", scalerVals, "Bilinear"), true, "frontend_scaler" },
+            { "",                  MenuAction::NONE },
+            { "Aspect Ratio",      MenuAction::TOGGLE_VALUE, {}, aspectVals, findVal("dosbox_pure_aspect_correction", aspectVals, "Off"), true, "dosbox_pure_aspect_correction" },
+            { "Graphics Chip",     MenuAction::TOGGLE_VALUE, {}, machineVals, findVal("dosbox_pure_machine", machineVals, "SVGA"), true, "dosbox_pure_machine" },
+            { "SVGA Memory",       MenuAction::TOGGLE_VALUE, {}, svgaMemVals, findVal("dosbox_pure_svgamem", svgaMemVals, "2 (2MB)"), true, "dosbox_pure_svgamem" },
+            { "Overscan",          MenuAction::TOGGLE_VALUE, {}, overscanVals, findVal("dosbox_pure_overscan", overscanVals, "0"), true, "dosbox_pure_overscan" },
+            { "",                  MenuAction::NONE },
+            { "Back",              MenuAction::BACK },
+        };
+    }
+
+    // Audio options
+    {
+        std::vector<std::string> rateVals = { "48000", "44100", "32000", "22050", "16000", "11025" };
+        std::vector<std::string> sbTypeVals = { "SB16", "SBPro2", "SBPro1", "SB2", "SB1", "Game Blaster", "None" };
+        std::vector<std::string> volVals = { "50%", "100%", "150%", "200%", "300%", "500%" };
+        std::vector<std::string> midiVals = { "Disabled" };
+
+        m_audioItems = {
+            { "Sample Rate",       MenuAction::TOGGLE_VALUE, {}, rateVals, findVal("dosbox_pure_audiorate", rateVals, "48000"), true, "dosbox_pure_audiorate" },
+            { "SoundBlaster Type", MenuAction::TOGGLE_VALUE, {}, sbTypeVals, findVal("dosbox_pure_sblaster_type", sbTypeVals, "SB16"), true, "dosbox_pure_sblaster_type" },
+            { "",                  MenuAction::NONE },
+            { "Volume: SB",        MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_sb", volVals, "100%"), true, "dosbox_pure_volume_sb" },
+            { "Volume: MIDI",      MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_midi", volVals, "100%"), true, "dosbox_pure_volume_midi" },
+            { "Volume: Adlib",     MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_adlib", volVals, "100%"), true, "dosbox_pure_volume_adlib" },
+            { "Volume: Speaker",   MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_speaker", volVals, "100%"), true, "dosbox_pure_volume_speaker" },
+            { "",                  MenuAction::NONE },
+            { "Back",              MenuAction::BACK },
+        };
+    }
 
     m_stateItems =
     {
@@ -343,18 +380,21 @@ void FrontendMenu::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwri
         fontSizeFooter = 18.0f;
     }
 
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x000000), &m_brushBlack);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x74898e), &m_brushDisabled);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x0b002e), &m_brushBg);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x94164d), &m_brushTitleBg);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xfefefe), &m_brushSelected);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xaabbb9), &m_brushItemText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x2c0087), &m_brushTitleText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x59caf9), &m_brushValueText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x74898e), &m_brushFooter);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x761694), &m_brushFrame);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x30f84c), &m_brushBios);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xffffff), &m_brushWhite);
+    {
+        const auto& c = SettingsManager::GetTheme();
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.bg_fullscreen), &m_brushBlack);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushDisabled);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.bg_panel), &m_brushBg);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.title_bg), &m_brushTitleBg);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.selection_text), &m_brushSelected);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_normal), &m_brushItemText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.selection_bg), &m_brushTitleText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_value), &m_brushValueText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushFooter);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.frame), &m_brushFrame);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_bios), &m_brushBios);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_title), &m_brushWhite);
+    }
 
     dwrite->CreateTextFormat(
         L"VCR OSD Mono", nullptr,
@@ -873,6 +913,17 @@ void FrontendMenu::OnConfirm()
         {
             items[m_selected].currentValue =
                 (item.currentValue + 1) % (int)item.values.size();
+
+            // Push to core or frontend
+            if (!item.optionKey.empty())
+            {
+                const char* newVal = item.values[item.currentValue].c_str();
+                spdlog::info("[FrontendMenu] TOGGLE: {} = {}", item.optionKey, newVal);
+                SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+                RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+                if (onOptionChanged)
+                    onOptionChanged(item.optionKey.c_str(), newVal);
+            }
         }
         break;
 

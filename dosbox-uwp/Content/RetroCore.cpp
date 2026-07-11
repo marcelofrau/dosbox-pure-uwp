@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "RetroCore.h"
+#include "SettingsManager.h"
 #include "libretro.h"
 #include "XAudio2Output.h"
 #include <vfs/vfs.h>
@@ -93,6 +94,9 @@ bool RetroCore::Init()
     retro_init();
     m_initialized = true;
 
+    // Apply theme colors from settings to PUREMENU statics
+    SettingsManager::ApplyThemeToPUREMENU();
+
     OutputDebugStringA("[dosbox-uwp] RetroCore::Init exit OK\n");
     return true;
 }
@@ -144,6 +148,13 @@ bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>
 
     m_loaded = true;
     OutputDebugStringA("[dosbox-uwp] retro_load_game SUCCESS\n");
+
+    // Apply saved core options from settings
+    {
+        auto transparency = SettingsManager::GetOption("dosbox_pure_menu_transparency", "70");
+        SetOptionValue("dosbox_pure_menu_transparency", transparency.c_str());
+    }
+
     return true;
 }
 
@@ -404,11 +415,13 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
     {
         auto* state = static_cast<retro_throttle_state*>(data);
-        state->mode = RETRO_THROTTLE_NONE;
+        // Report VSYNC throttle when vsync is enabled (syncInterval=1)
+        // so core knows there's external frame pacing
+        state->mode = RETRO_THROTTLE_VSYNC;
         state->rate = (float)s_targetFps;
 #ifdef FRAME_TRACE
         char buf[128];
-        sprintf_s(buf, "[dosbox-uwp]   THROTTLE_STATE: rate=%.0f\n", s_targetFps);
+        sprintf_s(buf, "[dosbox-uwp]   THROTTLE_STATE: VSYNC rate=%.0f\n", s_targetFps);
         OutputDebugStringA(buf);
 #endif
         return 1;

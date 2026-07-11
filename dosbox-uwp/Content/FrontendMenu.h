@@ -35,6 +35,7 @@ namespace dosbox_uwp
         std::vector<std::string> values;
         int currentValue = 0;
         bool enabled = true;
+        std::string optionKey;  // core or frontend option key for TOGGLE_VALUE
     };
 
     struct MenuPage
@@ -77,6 +78,7 @@ namespace dosbox_uwp
         std::function<void()> onOpenPuremenu;
         std::function<void()> onExit;
         std::function<void()> onBeep;
+        std::function<void(const char* key, const char* value)> onOptionChanged;
 
         FileBrowser m_fileBrowser;
 

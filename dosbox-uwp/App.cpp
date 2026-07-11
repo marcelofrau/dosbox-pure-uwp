@@ -142,7 +142,7 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				m_deviceResources->Present(0, 0);
+				m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
 			}
 
 			m_main->ProcessPendingLoad();

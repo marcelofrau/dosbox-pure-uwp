@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FileBrowser.h"
+#include "SettingsManager.h"
 #include <algorithm>
 #include <cmath>
 
@@ -297,18 +298,21 @@ void FileBrowser::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrit
         fontSizeFooter = 18.0f;
     }
 
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.55f), &m_brushBlack);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x0b002e), &m_brushBg);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x761694), &m_brushFrame);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x94164d), &m_brushTitleBg);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x2c0087), &m_brushSelectedBg);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xfefefe), &m_brushSelectedText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xaabbb9), &m_brushItemText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x30f84c), &m_brushDirText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xd0d0d0), &m_brushFileText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x59caf9), &m_brushPathText);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x74898e), &m_brushFooter);
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0x74898e), &m_brushDimPrefix);
+    {
+        const auto& c = SettingsManager::GetTheme();
+        d2d->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, c.overlay_alpha), &m_brushBlack);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.bg_panel), &m_brushBg);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.frame), &m_brushFrame);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.title_bg), &m_brushTitleBg);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.selection_bg), &m_brushSelectedBg);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.selection_text), &m_brushSelectedText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_normal), &m_brushItemText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_bios), &m_brushDirText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.file_text), &m_brushFileText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_value), &m_brushPathText);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushFooter);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushDimPrefix);
+    }
 
     dwrite->CreateTextFormat(
         L"VCR OSD Mono", nullptr,

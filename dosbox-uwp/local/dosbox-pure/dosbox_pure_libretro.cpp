@@ -1479,6 +1479,37 @@ static std::vector<std::string>& DBP_ScanSystem(bool force_midi_scan)
 #include "dosbox_pure_run.h"
 #include "dosbox_pure_osd.h"
 
+// Bridge: SettingsManager → PUREMENU struct statics
+// Defined here because DBP_BufferDrawing::BGCOL_*/COL_* statics live in this TU (forked osd.h).
+#include "Content/SettingsManager.h"
+void DBPS_SetMenuColorsFromTheme(const ThemeColors& t)
+{
+	DBP_BufferDrawing::BGCOL_SELECTION  = t.selection_bg;
+	DBP_BufferDrawing::BGCOL_SCROLL     = 0xFF164794; // scroll doesn't map to ThemeColors directly
+	DBP_BufferDrawing::BGCOL_MENU       = t.bg_panel;
+	DBP_BufferDrawing::BGCOL_HEADER     = t.title_bg;
+	DBP_BufferDrawing::BGCOL_STARTMENU  = t.bg_fullscreen;
+	DBP_BufferDrawing::COL_MENUTITLE    = t.text_title;
+	DBP_BufferDrawing::COL_CONTENT      = t.text_normal;
+	DBP_BufferDrawing::COL_LINEBOX      = t.frame;
+	DBP_BufferDrawing::COL_HIGHLIGHT    = t.selection_text;
+	DBP_BufferDrawing::COL_NORMAL       = t.text_value;
+	DBP_BufferDrawing::COL_DIM          = t.col_dim;
+	DBP_BufferDrawing::COL_WHITE        = t.col_white;
+	DBP_BufferDrawing::COL_WARN         = t.col_warn;
+	DBP_BufferDrawing::COL_HEADER       = t.text_title;
+	DBP_BufferDrawing::BGCOL_BTNOFF     = t.bg_btn_off;
+	DBP_BufferDrawing::BGCOL_BTNON      = t.bg_btn_on;
+	DBP_BufferDrawing::BGCOL_BTNHOVER   = t.bg_btn_hover;
+	DBP_BufferDrawing::COL_BTNTEXT      = t.col_btn_text;
+	DBP_BufferDrawing::BGCOL_KEY        = t.bg_key;
+	DBP_BufferDrawing::BGCOL_KEYHOVER   = t.bg_key_hover;
+	DBP_BufferDrawing::BGCOL_KEYPRESS   = t.bg_key_press;
+	DBP_BufferDrawing::BGCOL_KEYHELD    = t.bg_key_held;
+	DBP_BufferDrawing::BGCOL_KEYOUTLINE = t.bg_key_outline;
+	DBP_BufferDrawing::COL_KEYTEXT      = t.col_key_text;
+}
+
 Bitu GFX_GetBestMode(Bitu flags)
 {
 	return GFX_CAN_32 | GFX_RGBONLY | GFX_SCALING | GFX_HARDWARE;
