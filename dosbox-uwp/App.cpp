@@ -295,9 +295,16 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 
 void App::OnBackRequested(Platform::Object^ sender, Windows::UI::Core::BackRequestedEventArgs^ args)
 {
-	OutputDebugStringA("[dosbox-uwp] BackRequested — toggle menu\n");
 	args->Handled = true;
-	if (m_main) m_main->ToggleMenu();
+	if (m_main)
+	{
+		auto& menu = m_main->GetMenu();
+		if (menu.m_fileBrowser.IsVisible())
+		{
+			menu.m_fileBrowser.OnBack();
+		}
+		// FrontendMenu is bootstrap — no toggle
+	}
 }
 
 void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
@@ -320,12 +327,25 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 	if (key == VirtualKey::F12)
 		args->Handled = true;
 
+	// Ctrl+L = force system FileOpenPicker fallback
+	if (key == VirtualKey::L && m_ctrlHeld)
+	{
+		spdlog::info("[App] Ctrl+L -> system FileOpenPicker fallback");
+		args->Handled = true;
+		OpenFilePicker();
+		return;
+	}
+
+	// Track Ctrl state for Ctrl+L
+	if (key == VirtualKey::Control) m_ctrlHeld = true;
+
 	m_main->OnKeyEvent(key, true, (uint32_t)args->KeyStatus.ScanCode, args->KeyStatus.IsExtendedKey);
 }
 
 void App::OnKeyUp(CoreWindow^ sender, KeyEventArgs^ args)
 {
 	auto key = args->VirtualKey;
+	if (key == VirtualKey::Control) m_ctrlHeld = false;
 	m_main->OnKeyEvent(key, false, (uint32_t)args->KeyStatus.ScanCode, args->KeyStatus.IsExtendedKey);
 }
 

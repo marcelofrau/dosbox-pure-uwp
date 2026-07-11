@@ -379,11 +379,11 @@ void FrontendMenu::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float
     if (!m_visible) return;
 }
 
-static constexpr double ANIM_INITIAL_SEC = 1.0;
-static constexpr double ANIM_LINE_INTERVAL = 0.30;
-static constexpr double ANIM_EMPTY_INTERVAL = 0.05;
-static constexpr double ANIM_MEMORY_DELAY = 0.5;
-static constexpr double ANIM_MEMORY_DURATION = 2.0;
+static constexpr double ANIM_INITIAL_SEC = 0.5;
+static constexpr double ANIM_LINE_INTERVAL = 0.18;
+static constexpr double ANIM_EMPTY_INTERVAL = 0.03;
+static constexpr double ANIM_MEMORY_DELAY = 0.3;
+static constexpr double ANIM_MEMORY_DURATION = 1.2;
 
 static void DrawTextLine(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, IDWriteFontCollection* fc,
     IDWriteTextFormat* fmt, const wchar_t* text, UINT32 len, float x, float y, float w, float h,
@@ -477,6 +477,7 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
     {
         onBeep();
         m_beepPlayed = true;
+        m_animCompleteTick = GetTickCount64();
     }
     m_animPhase = newPhase;
     m_biosLinesToShow = linesToShow;
@@ -707,6 +708,9 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
             }
         }
     }
+
+    // FileBrowser overlay (drawn on top of menu panel)
+    m_fileBrowser.Render(d2d, dwrite, screenW, screenH);
 }
 
 int FrontendMenu::HitTest(float sx, float sy)
@@ -744,13 +748,56 @@ void FrontendMenu::SelectItem(int idx)
 
 void FrontendMenu::HandlePointerMove(float sx, float sy)
 {
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.HandlePointerMove(sx, sy);
+        return;
+    }
     int idx = HitTest(sx, sy);
     if (idx >= 0) m_selected = idx;
+}
+
+void FrontendMenu::HandlePointerDown(float sx, float sy, unsigned btn)
+{
+    if (!m_visible) return;
+    if (m_fileBrowser.IsVisible())
+    {
+        if (btn == 1)
+            m_fileBrowser.HandlePointerDown(sx, sy);
+        return;
+    }
+    // Click on FrontendMenu items
+    if (btn == 1)
+    {
+        int idx = HitTest(sx, sy);
+        if (idx >= 0)
+        {
+            m_selected = idx;
+            OnConfirm();
+        }
+    }
+}
+
+void FrontendMenu::HandlePointerWheel(int delta)
+{
+    if (!m_visible) return;
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.HandlePointerWheel(delta);
+        return;
+    }
 }
 
 void FrontendMenu::OnDPad(bool up)
 {
     if (!m_visible) return;
+
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.OnDPad(up);
+        return;
+    }
+
     auto& items = *m_stack.back().items;
     int count = (int)items.size();
 
@@ -779,6 +826,14 @@ void FrontendMenu::OnDPad(bool up)
 void FrontendMenu::OnConfirm()
 {
     if (!m_visible) return;
+
+    // Route to FileBrowser if visible
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.OnConfirm();
+        return;
+    }
+
     auto& items = *m_stack.back().items;
     if (m_selected < 0 || m_selected >= (int)items.size()) return;
     auto& item = items[m_selected];
@@ -787,7 +842,8 @@ void FrontendMenu::OnConfirm()
     switch (item.action)
     {
     case MenuAction::OPEN_FILE:
-        if (onOpenFile) onOpenFile();
+        spdlog::info("[FrontendMenu] OPEN_FILE -> FileBrowser.Open()");
+        m_fileBrowser.Open();
         break;
 
     case MenuAction::OPEN_PUREMENU:
@@ -833,6 +889,13 @@ void FrontendMenu::OnConfirm()
 void FrontendMenu::OnBack()
 {
     if (!m_visible) return;
+
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.OnBack();
+        return;
+    }
+
     if (m_stack.size() > 1)
     {
         m_stack.pop_back();
@@ -840,4 +903,35 @@ void FrontendMenu::OnBack()
         m_scrollOffset = 0;
     }
     // else: root menu — B does nothing (no hide, no exit)
+}
+
+void FrontendMenu::OnPageUp()
+{
+    if (!m_visible) return;
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.OnPageUp();
+        return;
+    }
+    // Scroll menu items by MAX_VISIBLE
+    m_selected -= (int)MAX_VISIBLE;
+    if (m_selected < 0) m_selected = 0;
+    m_scrollOffset -= (int)MAX_VISIBLE;
+    if (m_scrollOffset < 0) m_scrollOffset = 0;
+}
+
+void FrontendMenu::OnPageDown()
+{
+    if (!m_visible) return;
+    if (m_fileBrowser.IsVisible())
+    {
+        m_fileBrowser.OnPageDown();
+        return;
+    }
+    auto& items = *m_stack.back().items;
+    m_selected += (int)MAX_VISIBLE;
+    if (m_selected >= (int)items.size()) m_selected = (int)items.size() - 1;
+    int visibleCount = (int)MAX_VISIBLE;
+    if (m_selected >= m_scrollOffset + visibleCount)
+        m_scrollOffset = m_selected - visibleCount + 1;
 }

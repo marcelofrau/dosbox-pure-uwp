@@ -44,6 +44,18 @@
     <ClCompile Include="Content\SdlInput.cpp">
       <Filter>Content</Filter>
     </ClCompile>
+    <ClInclude Include="Content\FrontendMenu.h">
+      <Filter>Content</Filter>
+    </ClInclude>
+    <ClCompile Include="Content\FrontendMenu.cpp">
+      <Filter>Content</Filter>
+    </ClCompile>
+    <ClInclude Include="Content\FileBrowser.h">
+      <Filter>Content</Filter>
+    </ClInclude>
+    <ClCompile Include="Content\FileBrowser.cpp">
+      <Filter>Content</Filter>
+    </ClCompile>
 	<FxCompile Include="Content\SamplePixelShader.hlsl">
       <Filter>Content</Filter>
     </FxCompile>

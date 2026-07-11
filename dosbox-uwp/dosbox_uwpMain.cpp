@@ -164,6 +164,41 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 
     // Wire FrontendMenu callbacks
     m_menu.onOpenFile = [this]() { m_requestFilePicker = true; };
+    m_menu.m_fileBrowser.onFileSelected = [this](const std::wstring& path) {
+        spdlog::info("[FileBrowser] onFileSelected: '{}'", std::string(path.begin(), path.end()));
+        m_menu.m_fileBrowser.Close();
+        ActivateLoadingScreen();
+
+        // Replicate old picker flow: copy to LocalFolder/temp/ then load from there.
+        // Core needs a writable app-local path for config/saves.
+        auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+        create_task(localFolder->CreateFolderAsync(
+            L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
+        .then([this, path](Windows::Storage::StorageFolder^ tempFolder)
+        {
+            return create_task(Windows::Storage::StorageFile::GetFileFromPathAsync(
+                ref new Platform::String(path.c_str())))
+            .then([tempFolder](Windows::Storage::StorageFile^ srcFile)
+            {
+                return create_task(srcFile->CopyAsync(tempFolder, srcFile->Name,
+                    Windows::Storage::NameCollisionOption::ReplaceExisting));
+            });
+        })
+        .then([this](Windows::Storage::StorageFile^ destFile)
+        {
+            if (destFile)
+            {
+                std::wstring localPath = destFile->Path->Data();
+                spdlog::info("[FileBrowser] Copied to: '{}'",
+                    std::string(localPath.begin(), localPath.end()));
+                QueueLoadRom(localPath, {});
+            }
+            else
+            {
+                spdlog::error("[FileBrowser] Copy failed, destFile is null");
+            }
+        });
+    };
     m_menu.onOpenPuremenu = [this]() {
         if (m_retroCore && m_retroCore->IsLoaded()) {
             m_menu.Hide();
@@ -327,11 +362,21 @@ void dosbox_uwpMain::Update()
         m_sdlInput->PollEvents();
         QueryPerformanceCounter(&_t0);
 
-        // Stop audio when core idle — prevents underrun on splash screen
-        // Skip during boot animation (beep needs to play)
-        if (!m_retroCore->IsLoaded() && !m_retroRunning && m_xaudio2 && m_xaudio2->IsStarted())
+        // Stop audio when core idle or menu visible — prevents underrun spam
+        if (m_xaudio2 && m_xaudio2->IsStarted())
         {
-            m_xaudio2->Flush();
+            bool skipFlush = m_menu.IsVisible() && (m_menu.IsBootAnimComplete() ? m_menu.IsBeepGracePeriod() : true);
+            if (!skipFlush)
+            {
+                if (!m_retroCore->IsLoaded() && !m_retroRunning)
+                {
+                    m_xaudio2->Flush();
+                }
+                else if (m_menu.IsVisible())
+                {
+                    m_xaudio2->Flush();
+                }
+            }
         }
 
         // Read gamepad analog stick always — used for splash cursor + in-game
@@ -355,6 +400,10 @@ void dosbox_uwpMain::Update()
                 m_menu.OnConfirm();
             if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
                 m_menu.OnBack();
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_L))
+                m_menu.OnPageUp();
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_R))
+                m_menu.OnPageDown();
         }
 
         // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
@@ -485,10 +534,11 @@ void dosbox_uwpMain::Update()
                 if (m_xaudio2 && m_xaudio2->IsStarted())
                 {
                     long q = m_xaudio2->GetQueuedFrames();
-                    if (q > 11025)           // >250ms: drain first
+                    long targetQ = XAudio2Output::TARGET_FRAMES;
+                    if (q < targetQ)
+                        maxRetroRuns = (int)((targetQ - q) / 630) + 1;
+                    else
                         maxRetroRuns = 1;
-                    else if (q > 6615)       // >150ms: moderate
-                        maxRetroRuns = 3;
                 }
                 while (m_audioTimeAccumulator >= audioPeriodMs && retroRuns < maxRetroRuns)
                 {
@@ -764,7 +814,8 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
             case 0x28: m_menu.OnDPad(false); return; // Down
             case 0x0D: m_menu.OnConfirm(); return;   // Enter
             case 0x1B: m_menu.OnBack();  return;     // Escape
-            case 0x4C: m_requestFilePicker = true; spdlog::info("[dosbox-uwp] L -> FilePicker"); return; // L = Open Game
+            case 0x21: m_menu.OnPageUp(); return;    // PageUp
+            case 0x22: m_menu.OnPageDown(); return;  // PageDown
             }
         }
         return; // absorb all keyboard while menu is visible
@@ -984,16 +1035,8 @@ void dosbox_uwpMain::OnPointerDown(float nx, float ny, unsigned btn)
     // Route to FrontendMenu when visible
     if (m_menu.IsVisible())
     {
-        if (btn == 1)
-        {
-            auto logicalSize = m_deviceResources->GetLogicalSize();
-            int idx = m_menu.HitTest(nx * logicalSize.Width, ny * logicalSize.Height);
-            if (idx >= 0)
-            {
-                m_menu.SelectItem(idx);
-                m_menu.OnConfirm();
-            }
-        }
+        auto logicalSize = m_deviceResources->GetLogicalSize();
+        m_menu.HandlePointerDown(nx * logicalSize.Width, ny * logicalSize.Height, btn);
         return;
     }
 
@@ -1022,6 +1065,11 @@ void dosbox_uwpMain::OnPointerRelease()
 
 void dosbox_uwpMain::OnPointerWheel(int delta)
 {
+    if (m_menu.IsVisible())
+    {
+        m_menu.HandlePointerWheel(delta);
+        return;
+    }
     if (!m_retroCore) return;
     m_retroCore->SetMouseWheel(delta);
 }
@@ -1156,7 +1204,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
         // Boost accumulator so next Tick catches up ~30 frames fast
         double targetFps = m_retroCore ? m_retroCore->GetTargetFps() : 70.0;
         if (targetFps <= 0) targetFps = 60.0;
-        m_audioTimeAccumulator = (1000.0 / targetFps) * 30.0;
+        m_audioTimeAccumulator = (1000.0 / targetFps) * 8.0;
         spdlog::info("[dosbox-uwp] XA2 force-started after load, acc boosted to {}",
             m_audioTimeAccumulator);
     }

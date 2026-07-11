@@ -52,6 +52,7 @@ namespace dosbox_uwp
 		std::unique_ptr<dosbox_uwpMain> m_main;
 		bool m_windowClosed;
 		bool m_windowVisible;
+		bool m_ctrlHeld = false;
 	};
 }
 

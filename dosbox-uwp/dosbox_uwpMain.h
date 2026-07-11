@@ -34,7 +34,6 @@ namespace dosbox_uwp
 		void PollMouseButtons();
 #endif
         void ToggleOSD();
-        void ToggleMenu() { m_menu.Toggle(); }
         bool IsMenuVisible() const { return m_menu.IsVisible(); }
         FrontendMenu& GetMenu() { return m_menu; }
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);

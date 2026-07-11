@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include "FileBrowser.h"
 
 namespace dosbox_uwp
 {
@@ -51,27 +52,33 @@ namespace dosbox_uwp
         void OnDPad(bool up);
         void OnConfirm();
         void OnBack();
+        void OnPageUp();
+        void OnPageDown();
         int HitTest(float sx, float sy);
         void SelectItem(int idx);
         void HandlePointerMove(float sx, float sy);
+        void HandlePointerDown(float sx, float sy, unsigned btn);
+        void HandlePointerWheel(int delta);
         void RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
 
         bool IsVisible() const { return m_visible; }
         void Show() { m_visible = true; }
         void Hide() { m_visible = false; }
-        void Toggle() { m_visible = !m_visible; }
 
         void SetCoreLoaded(bool loaded);
         void LoadLogoBitmap(ID2D1DeviceContext* d2d);
 
         void SetBiosInfo(const std::vector<std::wstring>& lines) { m_biosLines = lines; }
         bool IsBootAnimComplete() const { return m_animPhase >= ANIM_COMPLETE; }
+        bool IsBeepGracePeriod() const { return m_beepPlayed && (GetTickCount64() - m_animCompleteTick) < 300; }
         void ResetBootAnim() { m_animPhase = ANIM_INITIAL_DELAY; m_animStartTick = GetTickCount64(); m_beepPlayed = false; }
 
         std::function<void()> onOpenFile;
         std::function<void()> onOpenPuremenu;
         std::function<void()> onExit;
         std::function<void()> onBeep;
+
+        FileBrowser m_fileBrowser;
 
     private:
         void BuildMenuTree();
@@ -88,6 +95,7 @@ namespace dosbox_uwp
         int m_animMemoryDisplayedKB = 0;
         int m_memoryTotalMB = 0;
         bool m_beepPlayed = false;
+        ULONGLONG m_animCompleteTick = 0;
 
         int m_selected = 0;
         int m_scrollOffset = 0;
