@@ -2,73 +2,221 @@
   <img src="docs/images/social-preview.jpg" alt="DOSBox Pure - Xbox UWP Port" width="800"/>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/status-work--in--progress-yellow?style=for-the-badge">
-  <img alt="Status" src="https://img.shields.io/badge/status-work--in--progress-yellow?style=for-the-badge">
-</picture>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/platform-Windows%20%7C%20Xbox-blue?style=for-the-badge">
+<p align="center">
+  <strong>DOS games on Windows and Xbox — no RetroArch, no fuss.</strong>
+</p>
+
+<p align="center">
+  <img alt="Status" src="https://img.shields.io/badge/status-playable-yellow?style=for-the-badge">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Xbox-blue?style=for-the-badge">
-</picture>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/build-0%20errors-brightgreen?style=for-the-badge">
   <img alt="Build" src="https://img.shields.io/badge/build-0%20errors-brightgreen?style=for-the-badge">
-</picture>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/architecture-x64%20only-lightgrey?style=for-the-badge">
   <img alt="Arch" src="https://img.shields.io/badge/architecture-x64%20only-lightgrey?style=for-the-badge">
-</picture>
+  <img alt="License" src="https://img.shields.io/badge/license-GPL--2.0-red?style=for-the-badge">
+</p>
 
-# dosbox-pure-uwp
+---
 
-**DOSBox-Pure libretro core ported to UWP — runs on Windows 11 and Xbox Series (Dev Mode).**
+## What is this?
 
-This is a ground-up port of the [dosbox-pure](https://github.com/schellingb/dosbox-pure) emulator as a native UWP app. No RetroArch wrapper — direct libretro frontend built with C++/CX, Direct2D, and SDL2 for audio/input.
+A standalone UWP port of [dosbox-pure](https://github.com/schellingb/dosbox-pure) — the best DOS emulator for retro gaming. Runs natively on **Windows 11** and **Xbox Series (Dev Mode)** without needing RetroArch or any other frontend.
 
-Inspired by [dosbox-pure-unleashed](https://github.com/marcelofrau/dosbox-pure-unleashed-uwp) (original experiment), rewritten for standalone deployment.
+The emulation core is identical to the one used in RetroArch. What's different is everything around it: a custom menu system, an in-app file browser, native audio, and gamepad/keyboard/mouse input — all built specifically for the UWP platform.
+
+---
+
+## Quick Start
+
+### 1. Install
+
+**Windows:**
+Download the latest release `.msix` from [Releases](https://github.com/marcelofrau/dosbox-pure-unleashed-uwp/releases). Double-click to install (sideloading must be enabled).
+
+**Xbox:**
+Enable Dev Mode on your Xbox. Deploy the `.msix` via [Xbox Device Portal](https://learn.microsoft.com/en-us/gaming/gdk/_content/gc/features/live/testing-on-xbox-devkits) or use the deploy script (see [Building from Source](#building-from-source)).
+
+### 2. Add Games
+
+The app includes an in-app file browser (press **A** on "Load Game" or navigate to your game folders). Supported formats:
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| `.zip` | ZIP archive containing game files | `DOOM.ZIP` |
+| `.dosz` | DOSBox Pure compressed archive | `QUAKE.DOSZ` |
+| `.exe` | DOS executable | `DUKE3D.EXE` |
+| `.com` | DOS COM file | `TETRIS.COM` |
+| `.bat` | DOS batch file | `INSTALL.BAT` |
+| `.iso` | CD-ROM image | `WING COMMANDER.ISO` |
+| `.chd` | Compressed Hunks of Data (CD) | `COMMAND&CONQUER.CHD` |
+| `.cue` + `.bin` | CUE sheet + BIN image | `STUNT_ISLAND.CUE` |
+| `.img` / `.ima` | Floppy disk image | `WOLF3D.IMG` |
+| `.vhd` | Virtual Hard Disk | `WINDOWS31.VHD` |
+| `.conf` | DOSBox configuration file | `custom.conf` |
+
+### 3. Play
+
+Connect a gamepad or use keyboard/mouse. See [Controls](#controls) below.
+
+---
+
+## Creating Compatible ZIP Files
+
+The easiest way to package a DOS game is as a `.zip` file. DOSBox Pure mounts the ZIP as a virtual C: drive.
+
+### Basic ZIP (single-directory game)
+
+Many DOS games have all files in one folder. Just ZIP the whole folder:
+
+```
+DOOM/
+├── DOOM.EXE
+├── DOOM.WAD
+├── SETUP.EXE
+└── README.TXT
+```
+
+**Windows:** Right-click the folder → Send to → Compressed (zipped) folder → rename to `DOOM.ZIP`
+
+**Command line:**
+```bash
+# From inside the DOOM folder:
+cd DOOM
+powershell -Command "Compress-Archive -Path * -DestinationPath ../DOOM.ZIP"
+```
+
+### ZIP with subdirectories
+
+Games with subdirectories work too. DOSBox Pure preserves the folder structure:
+
+```
+DUKE3D.ZIP
+├── DUKE3D/
+│   ├── DUKE3D.EXE
+│   ├── DUKE3D.GRP
+│   └── SETUP.EXE
+└── README.TXT
+```
+
+When you load `DUKE3D.ZIP`, the app shows `DUKE3D.EXE` at the root. Select it and the game runs.
+
+### Multiple disks in one ZIP
+
+Games that span multiple floppy disks (like many Sierra adventures) can be packaged as:
+
+```
+KQ5.ZIP
+├── DISK1/
+│   ├── INSTALL.BAT
+│   └── ...
+├── DISK2/
+│   └── ...
+└── DISK3/
+    └── ...
+```
+
+DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
+
+### Best practices
+
+- **Use UPPERCASE** for filenames and extensions — most DOS games expect this
+- **Include the launcher** — if the game has `INSTALL.BAT` or `SETUP.EXE`, include it
+- **Don't ZIP the ZIP** — avoid nesting ZIPs inside ZIPs
+- **Max 4GB** total ZIP size recommended for Xbox (storage limits)
+- **`.dosz` format** — if you want smaller files, use the [dosz tool](https://github.com/schellingb/dosbox-pure#dosz-format) for better compression
+
+### Pre-made game packs
+
+Ready-to-play game packs are available from the dosbox-pure community:
+- [DOSZ game packs](https://github.com/schellingb/dosbox-pure/releases) — optimized `.dosz` files
+- [MyAbandonware](https://www.myabandonware.com/) — download DOS games, ZIP the folder
+- [Internet Archive](https://archive.org/details/softwarelibrary_msdos_games) — MS-DOS game archive
+
+---
+
+## Controls
+
+### Gamepad
+
+| Button | Action |
+|--------|--------|
+| **D-Pad** | Navigate menus / arrow keys in-game |
+| **A** | Confirm / primary action |
+| **B** | Back / cancel |
+| **X** | Varies by game |
+| **Y** | Varies by game |
+| **LB / RB** | Page up/down in menus / disk swap |
+| **LT / RT** | Triggers (mapped per game) |
+| **Left Stick** | Mouse emulation |
+| **Right Stick** | Scroll / secondary input |
+| **Start** | PUREMENU (in-game settings) |
+| **Back** | Close menu / exit |
+
+### Keyboard
+
+Standard DOS keyboard mapping. All keys work as expected: arrows, Enter, Escape, F1-F12, Ctrl, Shift, Alt, Tab, etc.
+
+### Mouse
+
+Connected via USB or emulated through left stick. Works in all DOS games that use mouse input (Doom, Duke Nukem 3D, etc.).
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| **F10** | Toggle menu |
+| **Ctrl+L** | Open system file picker (fallback) |
 
 ---
 
 ## Features
 
-| Area | Status |
-|------|--------|
-| libretro core integration | ✅ Done |
-| D2D video pipeline (bitmap + letterbox) | ✅ Done |
-| UWP file picker (F1 / R3+Select) | ✅ Done |
-| Xbox controller input (A/B/X/Y/Select/R3) | ✅ Done |
-| Signing & packaging (self-signed cert) | ✅ Done |
-| Xbox deployment via WDP REST API | ✅ Done |
-| Keyboard input mapping | ⏳ Blocked |
-| Audio output (SDL_QueueAudio) | 📋 Planned |
-| GET_VARIABLE handler (launcher UI) | 📋 Planned |
-| Xbox Series S|X testing | 🔬 Partial |
+| Feature | Status |
+|---------|--------|
+| DOS emulation (CPU, memory, sound) | ✅ Done |
+| Dynamic recompiler (JIT, 5-10x speed) | ✅ Done |
+| D2D video pipeline with letterbox | ✅ Done |
+| XAudio2 audio output (low latency) | ✅ Done |
+| In-app file browser (gamepad+mouse) | ✅ Done |
+| FrontendMenu (DOS-style BIOS screen) | ✅ Done |
+| Gamepad input (Xbox controller) | ✅ Done |
+| Keyboard input (full DOS mapping) | ✅ Done |
+| Mouse input (USB + stick emulation) | ✅ Done |
+| PUREMENU (in-game OSD settings) | ✅ Done |
+| Multi-disc support (CD swap) | ✅ Done |
+| ZIP/ISO/CHD mounting | ✅ Done |
+| Self-signed packaging (MSIX) | ✅ Done |
+| Xbox deployment (WDP REST API) | ✅ Done |
+| Save states | ⏳ Planned |
+| Network play (IPX) | ⏳ Planned |
 
 ---
 
-## Build
+## Building from Source
 
 ### Prerequisites
 
-- Visual Studio 2022 (v17, not v18 preview)
-- Windows SDK 10.0.26100.0
-- x64 only (ARM/ARM64/x86 not supported)
+- **Visual Studio 2022** (v17.x, not v18 preview)
+- **Windows SDK 10.0.26100.0**
+- **x64 only** — ARM/ARM64/x86 not supported (Xbox Series is x64)
 
-### Quick start
+### Build
+
+```powershell
+MSBuild.exe "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64 /nowarn:MSB4011
+```
+
+Or use the build script:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Platform x64
 ```
 
-0 errors, ~1500 warnings C4244 (cosmetic, from dosbox-pure source).
-
-### Package
+### Package (MSIX)
 
 ```powershell
 .\scripts\package.ps1 -Configuration Release -Platform x64
 ```
 
-Generates MSIX + auto-creates signing certificate if missing.
+Auto-creates a self-signed certificate if none exists.
 
 ### Run (Windows)
 
@@ -76,7 +224,7 @@ Generates MSIX + auto-creates signing certificate if missing.
 .\scripts\run.ps1 -Configuration Release -Platform x64
 ```
 
-Builds, extracts MSIX, registers, and launches via `IApplicationActivationManager`.
+Builds, registers, and launches the app.
 
 ### Deploy (Xbox)
 
@@ -84,56 +232,180 @@ Builds, extracts MSIX, registers, and launches via `IApplicationActivationManage
 .\scripts\deploy-xbox.ps1 -Configuration Release -Platform x64 -XboxIp 10.0.0.98
 ```
 
-Uploads MSIX + dependencies via WDP REST API, installs, and launches.
+Uploads MSIX + dependencies via Xbox Device Portal REST API.
 
 ---
 
 ## Project Structure
 
 ```
-dosbox-uwp/
-├── App.cpp/h            — Entry point, F1 picker, lifecycle
-├── dosbox_uwpMain.cpp/h — Main loop, Update/Render, input routing
-├── Content/
-│   ├── RetroCore.cpp/h  — libretro bridge (init/load/run/callbacks)
-│   ├── RetroScreenRenderer.cpp/h — D2D bitmap + letterbox
-│   └── SdlInput.cpp/h   — SDL + UWP gamepad polling
-├── Package.appxmanifest — UWP manifest (Windows.Universal + Windows.Xbox)
-├── dosbox-uwp.vcxproj   — Signing config, .NET Native off
-├── local/dosbox-pure/   — Patched core (mirrors submodule structure)
-└── uwp-dep.props        — SDL2/libuwp paths
-scripts/
-├── build.ps1            — MSBuild wrapper (VS2022 path)
-├── package.ps1          — Build + MSIX + cert auto-creation
-├── deploy-xbox.ps1      — WDP REST API deploy to Xbox
-├── run.ps1              — Build + register + launch
-└── install.ps1          — MSIX extract + register
-extern/
-├── dosbox-pure/         — Submodule (source, unmodified)
-├── libretro-common/     — Submodule (VFS, mem, etc.)
-└── uwp-dep/             — SDL2 + libuwp prebuilt binaries
+dosbox-pure-unleashed-uwp/
+├── dosbox-uwp/                       ← UWP frontend (our code)
+│   ├── App.cpp/h                     ← Entry point, Ctrl+L fallback
+│   ├── dosbox_uwpMain.cpp/h          ← Main loop, input routing, audio pacing
+│   ├── Content/
+│   │   ├── RetroCore.cpp/h           ← libretro bridge: init/load/run/callbacks/VFS
+│   │   ├── RetroScreenRenderer.cpp/h ← D2D bitmap + letterbox rendering
+│   │   ├── XAudio2Output.cpp/h       ← XAudio2 audio: ring buffer, queue cap
+│   │   ├── FrontendMenu.cpp/h        ← DOS-style BIOS menu overlay
+│   │   ├── FileBrowser.cpp/h         ← In-app file explorer (D2D)
+│   │   └── SdlInput.cpp/h            ← SDL gamepad + UWP fallback
+│   ├── dosbox_pure_sta.cpp           ← DBPS_* stubs
+│   ├── local/dosbox-pure/            ← Patched core files (UWP compat)
+│   └── Package.appxmanifest          ← UWP manifest + capabilities
+├── extern/
+│   ├── dosbox-pure/                  ← Submodule: emulation core (unmodified)
+│   ├── libretro-common/              ← VFS + UWP helpers (selective copy)
+│   └── uwp-xray-depot/              ← TCP diagnostics + Lua REPL (Debug)
+├── scripts/                          ← Build, package, deploy scripts
+├── docs/                             ← Documentation
+│   ├── ARCHITECTURE.md               ← Technical deep-dive
+│   ├── ROADMAP.md                    ← Development phases
+│   ├── DYNAREC_UWP.md               ← JIT compiler on UWP
+│   ├── discoveries.md               ← Bug investigations & fixes
+│   ├── filebrowser/                 ← File browser docs
+│   └── frontend/                    ← FrontendMenu docs
+└── dosbox-pure-unleashed-uwp.sln     ← Solution file
 ```
 
 ---
 
-## Known Pitfalls
+## For Developers
+
+This section covers the architecture for contributors.
+
+### How It Works
+
+The app is a **libretro frontend**. The dosbox-pure core (in `extern/dosbox-pure/`) handles all emulation. Our code provides:
+
+1. **Video** — Core calls `retro_video_refresh_cb()` with an XRGB8888 framebuffer. We copy it to a D2D bitmap and render with letterboxing.
+
+2. **Audio** — Core calls `retro_audio_sample_batch()` with stereo PCM16. We submit to XAudio2 with a ring buffer and queue-depth cap (~20ms max latency).
+
+3. **Input** — `retro_input_poll()` reads gamepad/keyboard/mouse state. `retro_input_state()` returns button states.
+
+4. **Environment** — `retro_environment()` handles VFS, configuration, hardware render rejection (SW path forced), and keyboard callbacks.
+
+### Key Technical Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Render API | Direct2D | No OpenGL/ANGLE needed, `ID2D1Bitmap1` accepts XRGB8888 directly |
+| Audio API | XAudio2 (native) | Low latency, no SDL dependency |
+| VFS | RetroArch copy (`CreateFile2FromAppW`) | Already proven on UWP sandbox |
+| File picker | Custom D2D file browser | Gamepad-navigable, replaces UWP FileOpenPicker |
+| Language | C++/CX | Scaffold already uses it; C++/WinRT would be rewrite |
+| HW render | Rejected (`SET_HW_RENDER` returns 0) | No OpenGL context on UWP; core auto-fallbacks to SW |
+| Dynarec | Enabled via `VirtualAllocFromApp` | UWP-compatible JIT without AppContainer restrictions |
+
+### Build System
+
+- **Solution file** required (not `.vcxproj` directly) — `$(SolutionDir)` needed for `uwp-dep.props` SDL paths
+- Core files: `CompileAsWinRT=false` (legacy C, no `/ZW`)
+- C++/CX files: `/ZW` enabled
+- ~1500 warnings C4244 (cosmetic, from dosbox-pure source)
+
+### Submodule Policy
+
+- **Never commit to `extern/dosbox-pure/`** — patches go in `dosbox-uwp/local/dosbox-pure/`
+- Patches mirror the same directory structure as the submodule
+- **OK to commit to `extern/uwp-xray-depot/`** — same author/owner
+
+### Known Gotchas
 
 | Issue | Detail |
 |-------|--------|
-| STA `.get()` crash | Never call `.get()` on `IAsyncOperation` from STA — use `.then()` |
+| STA `.get()` crash | Never call `.get()` on `IAsyncOperation` from STA — use `.then()` chaining |
 | D2D `BeginDraw/EndDraw` | `DrawBitmap()` crashes without explicit begin/end |
-| HW frame valid check | `pitch==0` = `RETRO_HW_FRAME_BUFFER_VALID`, skip memcpy |
+| HW frame valid check | `pitch==0` = `RETRO_HW_FRAME_BUFFER_VALID`, skip `memcpy` |
 | Pixel format | Framebuffer is raw XRGB8888 — use `D2D1_ALPHA_MODE_IGNORE` |
 | DPI matching | Always `GetDpi()` from render target, never hardcode 96 |
-| File access | UWP sandbox: use `StorageFile^` from picker, not raw paths |
-| SET_HW_RENDER | Return 0 to force SW path (no OpenGL context on UWP) |
-| Xbox B button | System `BackRequested` event — suppressed via handler |
-| DEP6701 | VS2022 deploy to Xbox broken; use `deploy-xbox.ps1` instead |
+| File access | UWP sandbox: use `StorageFile^` from picker or `broadFileSystemAccess` |
+| SET_HW_RENDER | Return 0 to force SW path (no OpenGL context) |
+| Xbox B button | System `BackRequested` event — routed to file browser or menu |
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | Technical deep-dive: dependency graph, rendering pipeline, libretro interfaces |
+| [Roadmap](docs/ROADMAP.md) | Development phases with detailed status |
+| [Dynarec on UWP](docs/DYNAREC_UWP.md) | JIT compiler setup and performance |
+| [Discoveries](docs/discoveries.md) | Bug investigations, audio pacing analysis, technical debt |
+| [File Browser](docs/filebrowser/README.md) | In-app file explorer design and implementation |
+| [FrontendMenu](docs/frontend/FrontendMenu.md) | DOS-style menu system |
+| [References](docs/REFERENCES.md) | Research findings, libretro interfaces, VFS implementation |
+
+---
+
+## Dependencies & Credits
+
+This project builds on the work of several open-source projects:
+
+### Core Emulation
+
+| Project | Role | License |
+|---------|------|---------|
+| [dosbox-pure](https://github.com/schellingb/dosbox-pure) | DOS emulation core (libretro). Handles CPU, memory, sound, input, disk mounting. Included as git submodule at `extern/dosbox-pure/`. | GPL-2.0 |
+| [libretro-common](https://github.com/libretro/libretro-common) | Shared libretro utilities. We use the VFS (Virtual File System) implementation for UWP file access via `CreateFile2FromAppW`. Selective copy in `extern/libretro-common/`. | MIT |
+
+### UWP Platform
+
+| Project | Role | License |
+|---------|------|---------|
+| [RetroArch UWP](https://github.com/XboxEmulationHub/RetroArch) | Reference for UWP VFS implementation, file picker patterns, and Xbox deployment. The VFS file (`vfs_implementation_uwp.cpp`) is adapted from this project. | GPL-3.0 |
+
+### Development Tools
+
+| Project | Role | License |
+|---------|------|---------|
+| [xb-xray](https://github.com/marcelofrau/uwp-xray-depot) | Remote diagnostics for UWP homebrews on Xbox Dev Mode. Provides real-time log streaming, a Lua REPL, and live C++ variable inspection over TCP. Debug-only (`#ifdef XB_INSPECTOR_ENABLED`), zero overhead in Release builds. Included as submodule at `extern/uwp-xray-depot/`. | MIT |
+| [spdlog](https://github.com/gabime/spdlog) | Fast C++ logging library. Used via xb-xray for log streaming to file + TCP + OutputDebugString simultaneously. Header-only, included as xb-xray dependency. | MIT |
+| [Lua 5.4](https://www.lua.org/) | Embedded scripting language. Powers the xb-xray REPL — lets developers inspect and modify C++ variables in real time from a terminal. Prebuilt static lib via xb-xray. | MIT |
+
+### About xb-xray
+
+Xbox UWP development is painful — the Visual Studio Remote Debugger disconnects constantly, and the Xbox Device Portal web UI is slow. **xb-xray solves this** by streaming diagnostics over TCP.
+
+When enabled (Debug builds only), the app opens a TCP socket on port 9000-9009. Connect from your dev PC:
+
+```bash
+# Quick connect with netcat:
+nc <xbox-ip> 9000
+
+# Or Python CLI (recommended):
+pip install xb-connector
+python -m xb_connector.cli <xbox-ip>
+```
+
+What you can do:
+- **Live logs** — see `spdlog::info()` output in real time, no Visual Studio needed
+- **Inspect variables** — bind C++ variables (`fps`, `audio_queued`, `frame_ms`) and read them live
+- **Modify at runtime** — change variable values from the Lua REPL to tweak behavior without redeploying
+- **Lua scripting** — full Lua 5.4 (math, strings, control flow) with sandboxed access to game state
+
+This project binds: `audio_queued` (queue depth), `fps`, `target_fps`, `frame_ms`, and timing breakdowns (`poll_ms`, `hud_ms`, `render_ms`, `total_ms`).
+
+### Historical Reference
+
+| Project | Role | Note |
+|---------|------|------|
+| [dosbox-pure-unleashed](https://github.com/marcelofrau/dosbox-pure-unleashed) | Original desktop frontend using ZillaLib. Reference for core integration patterns and build configuration. Not used at runtime. | Archived |
+| [ZillaLib](https://github.com/Jereq/ZillaLib) | Cross-platform game framework used by dosbox-pure-unleashed. Replaced by our UWP scaffold (DirectX 11 + D2D). | Reference only |
 
 ---
 
 ## License
 
-This project is based on [dosbox-pure](https://github.com/schellingb/dosbox-pure) by [@schellingb](https://github.com/schellingb), licensed under GPL-2.0.
+This project is based on [dosbox-pure](https://github.com/schellingb/dosbox-pure) by [@schellingb](https://github.com/schellingb).
 
-Additional code in this repository is also licensed under **GPL-2.0**.
+**Licensed under the GNU General Public License v2.0 (GPL-2.0)** — same as dosbox-pure.
+
+This license applies to all source code in this repository, including the UWP frontend, patched core files, and build scripts. See [extern/dosbox-pure/LICENSE](extern/dosbox-pure/LICENSE) for the full license text.
+
+Third-party components retain their original licenses:
+- xb-xray, spdlog, Lua 5.4: MIT
+- libretro-common: MIT
+- RetroArch UWP (reference only, not linked): GPL-3.0

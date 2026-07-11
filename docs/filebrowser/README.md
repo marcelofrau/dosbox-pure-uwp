@@ -7,14 +7,14 @@ styled like a DOS dialog, rendered on top of the BIOS boot screen.
 
 | Task | Status |
 |------|--------|
-| Documentation (this file) | DONE |
-| `Package.appxmanifest` capabilities | TODO |
-| `FileBrowser.h` | TODO |
-| `FileBrowser.cpp` | TODO |
-| `FrontendMenu` integration | TODO |
-| `App.cpp` — Ctrl+L fallback | TODO |
-| `dosbox_uwpMain.cpp` input routing | TODO |
-| Build test | TODO |
+| Documentation (this file) | ✅ DONE |
+| `Package.appxmanifest` capabilities | ✅ DONE |
+| `FileBrowser.h` | ✅ DONE |
+| `FileBrowser.cpp` | ✅ DONE |
+| `FrontendMenu` integration | ✅ DONE |
+| `App.cpp` — Ctrl+L fallback | ✅ DONE |
+| `dosbox_uwpMain.cpp` input routing | ✅ DONE |
+| Build test | ✅ DONE |
 
 ---
 

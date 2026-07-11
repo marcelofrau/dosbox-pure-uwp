@@ -10,29 +10,12 @@ Legend: ✅ done  🏗️ partial  🔲 not started  ⏸️ blocked  ❌ broken
 **Goal: DirectX 11 UWP template compiling + SDL2 + build tooling**
 **Status: ✅ DONE**
 
-### 0.1 — Template
-- [x] DirectX 11 UWP `App` + `IFrameworkView` loop compiles
+- [x] DirectX 11 UWP `App` + `IFrameworkView` loop
 - [x] `DeviceResources` (DXGI swap chain, D3D/D2D/DWrite devices)
 - [x] `StepTimer` for fixed/variable timestep
-- [x] `Sample3DSceneRenderer` (3D rotating cube fallback)
-- [x] `SampleFpsTextRenderer` (DWrite debug overlay)
-
-### 0.2 — SDL2 integration
-- [x] `SdlInput` class: SDL init (gamecontroller + haptic + audio)
-- [x] SDL_GameController open close add/remove events
-- [x] UWP `Gamepad` API fallback (works on Xbox without SDL)
-- [x] Button state tracking (m_buttonHeld / m_buttonJustPressed)
-- [x] Gamepad A button → beep + background color change (test)
-
-### 0.3 — Audio (test)
-- [x] SDL audio device init (44100Hz, AUDIO_S16SYS, mono)
-- [x] `PlayBeep()` generates sine wave → `SDL_QueueAudio`
-
-### 0.4 — Build system
-- [x] `.sln` with `uwp-dep.props` for SDL paths
-- [x] `build.ps1`, `package.ps1`, `new-cert.ps1`, `install.ps1`
-- [x] `.gitignore` (certs, build artifacts)
-- [x] PFX cert with password `dev` for AppX packaging
+- [x] SDL_GameController + haptic + audio init
+- [x] UWP `Gamepad` API fallback (Xbox)
+- [x] Build scripts, signing cert, .gitignore
 
 ---
 
@@ -40,234 +23,196 @@ Legend: ✅ done  🏗️ partial  🔲 not started  ⏸️ blocked  ❌ broken
 **Goal: dosbox-pure compiles as part of the UWP app (0 errors)**
 **Status: ✅ DONE**
 
-### 1.1 — Submodule
-- [x] `git submodule add` — `extern/dosbox-pure` at `e166344` (has UWP compat patches)
-- [x] `extern/libretro-common/` — selective copy of VFS + UWP helpers (~10 files)
-
-### 1.2 — Add core sources to vcxproj
-- [x] 15 source files from `$(DBPDir)src/`: cpu (callback, core_dyn_x86, core_dynrec, core_full, core_normal, core_prefetch, core_simple, cpu, flags, modrm, paging), dos (cdrom, cdrom_image, dos_classes, dos_devices, dos_execute, dos_files, dos_ioctl, dos_keyboard_layout, dos_memory, dos_misc, dos_mscdex, drives), hardware (adlib, disney, dma, gameblaster, gus, ipx, joystick, mame, mixer, mouse, pci, pcspeaker, serialport, sblaster, tandy_sound, vga_*, voodoo_*, ...), ints, fpu, gui, misc, hardware/serialport, dbp_network, plus more
-- [x] `$(DBPDir)dosbox_pure_libretro.cpp` (main libretro bridge — 4073 lines)
-- [x] `$(DBPDir)dosbox_pure_ver.h`, `dosbox_pure_pad.h`, `dosbox_pure_run.h`, `dosbox_pure_osd.h` (core OS/menu logic)
-- [x] `$(DBPDir)core_options.h` (~1177 lines — 70+ config variables)
-- [x] 5 local patches in `dosbox-uwp/local/dosbox-pure/` (cross.cpp, midi.cpp, dbp_serialize.cpp, drive_cache.cpp, dosbox_pure_libretro.cpp)
-
-### 1.3 — Compile flags
-- [x] Defines: `__LIBRETRO__`, `DBP_STANDALONE`, `_CRT_SECURE_NO_WARNINGS`, `_CRT_NONSTDC_NO_DEPRECATE`, `_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING`
-- [x] `CompileAsWinRT=false` for all .cpp from core (legacy C++)
-- [x] `/bigobj` for large object files
-- [x] Include paths: `$(DBPDir)`, `$(DBPDir)include`, `$(DBPDir)src`, `$(DBPDir)libretro-common/include`, `$(LrCommonDir)`, `$(LrCommonDir)include`
-- [x] Optimizations: `MaxSpeed` for core files even in Debug
-
-### 1.4 — Resolve incompatibilities
-- [x] `cross.cpp`: UWP paths, `getcwd`/`chdir` replacements via local patch
-- [x] `midi.cpp`: disabled MIDI output (no MIDI UWP API)
-- [x] `drive_cache.cpp`: std::filesystem compat via local patch
-- [x] `dosbox_pure_libretro.cpp`: local copy with UWP tweaks (SET_HW_RENDER handling, etc.)
-- [x] VFS: `vfs_implementation_uwp.cpp` from RetroArch — uses `CreateFile2FromAppW`
-
-### 1.5 — Verify
+- [x] Submodule `extern/dosbox-pure` at `e166344`
+- [x] Selective copy of `extern/libretro-common/` (VFS + UWP helpers)
+- [x] ~150 source files from core added to vcxproj
+- [x] 5 local patches: `cross.cpp`, `midi.cpp`, `dbp_serialize.cpp`, `drive_cache.cpp`, `dosbox_pure_libretro.cpp`
+- [x] Per-file overrides: `CompileAsWinRT=false`, `/bigobj`, `DisableSpecificWarnings=4703`
 - [x] Build succeeds 0 errors (Release|x64)
-- [x] ~~1500 warnings C4244 (cosmetic — "conversion possible loss of data")
 
 ---
 
-## Phase A — Core Infra (Changes 1-3)
-**Goal: ROMs load, keyboard + gamepad work in core**
-**Status: 🏗️ PARTIAL — patch-fopen-vfs DONE**
+## Phase 2 — Core Lifecycle
+**Goal: ROM loads, core initializes, frames render**
+**Status: ✅ DONE**
 
-### Change: `patch-fopen-vfs` ✅
-**Files:** `dosbox-uwp/local/dosbox-pure/dosbox_pure_libretro.cpp`, `extern/libretro-common/vfs/vfs_implementation_uwp.cpp`, `dosbox-uwp/local/dosbox-pure/src/misc/cross.cpp`
-
-- [x] `fopen_wrap()` → copy to LocalFolder + CRT fopen (works on UWP)
-- [x] VFS interface provided via GET_VFS_INTERFACE (used by fpath_nocase)
-- [x] `info->data` fallback (LoadGame accepts in-memory buffer)
-- [x] Verify `stat()`/`access()` UWP compat (works on LocalFolder)
-- [x] **Result:** ZIP mounts as C: drive, games load
-- [x] Task 6 N/A — dosbox-pure workflow: all disks inside ZIP, PUREMENU handles swap
-
-### Change: `fix-keyboard-input`
-**Files:** `dosbox-uwp/dosbox_uwpMain.cpp`, `dosbox-uwp/Content/RetroCore.cpp/.h`
-
-- [ ] Map `Windows::System::VirtualKey` → `RETROK_*` (Enter, Escape, Backspace, Tab, Arrows, Shift, Ctrl, Alt, F1-F12, Numpad, punctuation)
-- [ ] Expand `s_keyboardState[256]` → `s_keyboardState[RETROK_LAST]` (324)
-- [ ] Resolve F1 conflict (picker vs core key)
-- [ ] **Result:** Keyboard navigates Puremenu launcher
-
-### Change: `fix-gamepad-input`
-**Files:** `dosbox-uwp/Content/SdlInput.cpp/.h`, `dosbox-uwp/Content/RetroCore.cpp`
-
-- [ ] SDL buttons A/B/X/Y/Select/Start → `RETRO_DEVICE_ID_JOYPAD_*`
-- [ ] D-pad → `RETRO_DEVICE_ID_JOYPAD_UP/DOWN/LEFT/RIGHT`
-- [ ] Left/Right sticks → `RETRO_DEVICE_ANALOG` (LY/LX/RY/RX)
-- [ ] Triggers (L2/R2) → `RETRO_DEVICE_ID_JOYPAD_L2/R2`
-- [ ] Shoulder (L1/R1) → `RETRO_DEVICE_ID_JOYPAD_L/R`
-- [ ] **Result:** Gamepad navigates Puremenu + plays games
+- [x] `RetroCore`: init, load, run, unload, deinit
+- [x] `retro_env`: GET_VFS_INTERFACE, GET_SYSTEM_DIR, GET_SAVE_DIR, SET_PIXEL_FORMAT, SET_HW_RENDER (return 0), SET_MESSAGE_EXT, SET_KEYBOARD_CALLBACK, GET_THROTTLE_STATE, SHUTDOWN
+- [x] Smoke test: boot, F1 picker, load, video renders
 
 ---
 
-## Phase B — OSD/Launcher (Changes 4-5)
-**Goal: Puremenu visible, configurable, navigable**
-**Status: 🔲 NOT STARTED**
+## Phase 3 — Video Pipeline
+**Goal: Core framebuffer renders on screen**
+**Status: ✅ DONE**
 
-### Change: `register-core-options`
-**Files:** `dosbox-uwp/Content/RetroCore.cpp`
-
-- [ ] `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` — expose ~52 vars from `core_options.h`
-- [ ] `RETRO_ENVIRONMENT_GET_VARIABLE` — respond with current values
-- [ ] `RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE` — notify changes
-- [ ] Fallback v1/v0 if core requests older version
-- [ ] **Result:** Puremenu launcher appears with options
-
-### Change: `software-framebuffer`
-**Files:** `dosbox-uwp/Content/RetroCore.cpp`
-
-- [ ] `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER` — expose SW framebuffer pointer
-- [ ] Allow Pure OSD to draw overlay on top of game
-- [ ] **Result:** OSD overlay visible (menus, notifications)
+- [x] `retro_video_refresh_cb` with pitch==0 guard
+- [x] D2D bitmap: XRGB8888 + ALPHA_IGNORE + GetDpi() + CopyFromMemory
+- [x] BeginDraw/DrawBitmap/EndDraw with letterboxing
+- [x] D2DERR_RECREATE_TARGET handling
 
 ---
 
-## Phase C — Audio (Change 6)
-**Goal: DOSBox sound plays through speaker**
-**Status: ✅ DONE** (replaced SDL audio with native XAudio2)
+## Phase 4 — Input
+**Goal: Keyboard + gamepad + mouse input working**
+**Status: ✅ DONE**
 
-### Change: `wire-audio`
-**Files:** `dosbox-uwp/Content/XAudio2Output.h/.cpp`, `dosbox-uwp/dosbox_uwpMain.cpp/.h`, `dosbox-uwp/Content/RetroCore.cpp/.h`, `dosbox-uwp/Content/SdlInput.cpp/.h`
-
-- [x] Removed SDL audio subsystem init from SdlInput
-- [x] Created `XAudio2Output` class: alloc-per-submit ring buffer, `OnBufferEnd` callback, file-scope `s_queuedFrames` counter
-- [x] Voice `Start(0)` called in `Initialize()` with zero buffers (no pre-buffer)
-- [x] `retro_audio()` calls `s_audioOutput->Submit()`
-- [x] HUD shows XA2 ready + `GetQueuedFrames()` instead of SDL audio stats
-- [x] Queue-depth cap: When `s_queuedFrames > MAX_QUEUE` (882 = 20ms), flush voice and restart with fresh audio — bounds max latency
-- [x] Frame pacing: `CreateWaitableTimerEx(HIGH_RESOLUTION)` replaces `Sleep()` for µs-precision timing, fixing QPC/Sleep granularity drift
-- [ ] **TODO (future):** Audio-driven pacing using `GetState().SamplesPlayed` to eliminate residual QPC drift entirely — see `docs/discoveries.md`
+- [x] `RETROK_*` mapping (VirtualKey → libretro keyboard codes)
+- [x] `s_keyboardState[RETROK_LAST]` — full keyboard state
+- [x] `s_joypadState[16]` — separate from keyboard (fixes state leak bug)
+- [x] UWP Gamepad API → DPad/Buttons/Triggers
+- [x] Mouse input: CoreWindow pointer events → SetMouseMove/SetPointer/SetMouseButton/SetMouseWheel
+- [x] Mouse wheel scroll for file browser
+- [x] PageUp/PageDown (keyboard + LB/RB shoulder buttons)
+- [x] `SET_KEYBOARD_CALLBACK` pushes held keys to core
 
 ---
 
-## Phase D — Platform (Changes 7-9)
-**Goal: Mouse, joypad binding, multi-disc**
-**Status: 🔲 NOT STARTED**
+## Phase 5 — Audio Pipeline
+**Goal: DOSBox sound plays through speakers**
+**Status: ✅ DONE**
 
-### Change: `dbps-mouse`
-**Files:** `dosbox-uwp/App.cpp`, `dosbox-uwp/dosbox_pure_sta.cpp`
-
-- [ ] Connect CoreWindow `PointerPressed/Moved/Released` → `DBPS_GetMouse`
-- [ ] Relative (MOUSE) + absolute (POINTER)
-- [ ] Scroll wheel support
-- [ ] Mouse capture toggle (relative for FPS games)
-- [ ] **Result:** Mouse works in DOS games and OSD
-
-### Change: `dbps-platform`
-**Files:** `dosbox-uwp/dosbox_pure_sta.cpp`
-
-- [ ] `DBPS_HaveJoy` — return whether gamepad connected
-- [ ] `DBPS_GetJoyBind` — return current mapping
-- [ ] `DBPS_ApplyConfigOverrides` — read/write `FRONTEND.DBP`
-- [ ] `DBPS_IsConfigOverride` / `DBPS_ToggleConfigOverride` / `DBPS_GetConfigOverrideJSON`
-- [ ] `DBPS_SubmitOSDFrame` — route OSD frame to renderer
-- [ ] `DBPS_StartCaptureJoyBind` — binding UI
-- [ ] **Result:** DBPS stubs functional, core integrated with platform
-
-### Change: `disk-control`
-**Files:** `dosbox-uwp/Content/RetroCore.cpp`
-
-- [ ] `RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE`
-- [ ] Callbacks: `set_eject_state`, `get_eject_state`, `get_image_index`, `set_image_index`, `get_num_images`, `replace_image_index`, `add_image_index`, `set_initial_image`
-- [ ] **Result:** Multi-disc games (eject/swap) work
+- [x] `XAudio2Output` class: alloc-per-submit ring buffer, `OnBufferEnd` callback
+- [x] `retro_audio_sample_batch` → `Submit()` → `IXAudio2SourceVoice`
+- [x] Queue-depth cap at 882 frames (~20ms) — flush/restart cycle
+- [x] Multi-retro_run per visual frame (1.17× per 60fps frame → 70fps aggregate)
+- [x] QPC-based frame pacing with `CreateWaitableTimerEx(HIGH_RESOLUTION)`
+- [x] Queue-based accumulator scaling (replaces DRC)
+- [x] Emergency catch-up when queue < 500 frames
+- [x] Queue-headroom-based `maxRetroRuns` (prevents overshoot)
 
 ---
 
-## Phase E — UX (Changes 10-11)
-**Goal: Configurable visual experience, modern overlay**
-**Status: 🔲 NOT STARTED**
+## Phase 6 — FrontendMenu (BIOS-style overlay)
+**Goal: DOS-style menu system with gamepad navigation**
+**Status: ✅ DONE**
 
-### Change: `video-enhancements`
-**Files:** `dosbox-uwp/Content/RetroScreenRenderer.cpp/.h`
-
-- [ ] Scale modes: pixel-perfect, integer, stretch, aspect-ratio
-- [ ] Core video options exposed via GET_VARIABLE (machine, cga, svga, aspect_correction, overscan)
-- [ ] FPS baseline measurement
-- [ ] **Result:** User controls scaling and video options
-
-### Change: `rmlui-overlay`
-**Files:** New (RMLUI integration)
-
-- [ ] Integrate RMLUI as D2D/D3D overlay
-- [ ] Visual ROM picker (replace/supplement native FileOpenPicker)
-- [ ] Modern config UI (replace Pure text-mode OSD)
-- [ ] Touch-friendly virtual keyboard
-- [ ] Visual save state manager
-- [ ] **Result:** Modern GUI overlay on DOSBox
+- [x] D2D-rendered menu overlay (RGUI-inspired)
+- [x] Menu tree: Continue Game, Load Game, Puremenu, Settings, Exit
+- [x] Gamepad: DPad navigate, A confirm, B back
+- [x] Mouse: click select + confirm
+- [x] PageUp/PageDown scroll items by MAX_VISIBLE
+- [x] Semi-transparent background, VGA/DOS color palette
+- [x] `OPEN_FILE` action opens FileBrowser
+- [x] `OPEN_PUREMENU` action opens core's OSD
+- [x] Boot animation with beep + memory count
 
 ---
 
-## Phase F — Save States (Change 12)
+## Phase 7 — FileBrowser (In-app file explorer)
+**Goal: Replace UWP FileOpenPicker with gamepad-navigable file browser**
+**Status: ✅ DONE**
+
+- [x] DOS/BIOS-style D2D overlay panel
+- [x] Gamepad: DPad navigate, A confirm, B back, LB/RB page
+- [x] Mouse: wheel scroll, click select+confirm
+- [x] Keyboard: arrows, Enter, Escape, PageUp/PageDown
+- [x] Supported extensions: `.zip .dosz .exe .com .bat .iso .chd .cue .img .ima .vhd .conf`
+- [x] Marquee scroll on long filenames, text ellipsis trimming
+- [x] `broadFileSystemAccess` + `runFullTrust` capabilities
+- [x] Ctrl+L fallback to system FileOpenPicker
+- [x] Xbox B button (BackRequested) routes to file browser or menu
+- [x] Async file copy to `LocalFolder/temp/` before `QueueLoadRom`
+
+---
+
+## Phase 8 — PUREMENU Integration
+**Goal: Core's OSD menu (PUREMENU) works and persists changes**
+**Status: ✅ DONE**
+
+- [x] `RETRO_ENVIRONMENT_SET_VARIABLE` → stores in `s_optionValues` map
+- [x] `RETRO_ENVIRONMENT_GET_VARIABLE` → returns from map
+- [x] `RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE` → returns dirty flag
+- [x] OSD overlay renders directly onto framebuffer (DBP_STANDALONE fix)
+- [x] PUREMENU option changes propagate to core via `check_variables()`
+
+---
+
+## Phase 9 — Dynamic Recompiler (JIT)
+**Goal: Enable dynarec for 5-10× speedup**
+**Status: ✅ DONE**
+
+- [x] Patched `dyn_cache.h`: `VirtualAllocFromApp` + `VirtualProtectFromApp`
+- [x] `cache_make_writable()`/`cache_make_executable()` around code generation
+- [x] `DISABLE_DYNAREC` removed from PreprocessorDefinitions
+- [x] Include path priority: local patch before submodule
+
+---
+
+## Phase 10 — xb-xray Diagnostics
+**Goal: Remote debugging for Xbox Dev Mode**
+**Status: ✅ DONE**
+
+- [x] `uwp-xray-depot` submodule integrated
+- [x] `XB_INSPECTOR_ENABLED` guard (Debug only, zero overhead in Release)
+- [x] TCP socket on port 9000-9009
+- [x] Live binds: `audio_queued`, `fps`, `target_fps`, `frame_ms`, timing breakdown
+- [x] spdlog → file + TCP + OutputDebugString
+
+---
+
+## Future Phases
+
+### Phase 11 — Save States
 **Goal: Save/load game state**
 **Status: 🔲 NOT STARTED**
 
-### Change: `save-states`
-**Files:** `dosbox-uwp/dosbox_pure_sta.cpp`, `dosbox-uwp/Content/RetroCore.cpp`
-
-- [ ] `retro_serialize_size()` — query state size
-- [ ] `retro_serialize(void* data, size_t size)` — serialize state
-- [ ] `retro_unserialize(const void* data, size_t size)` — restore state
-- [ ] `DBPS_RequestSaveLoad` — trigger save/load from core
-- [ ] `DBPS_HaveSaveSlot` — query available slots
-- [ ] Hotkeys: F5 save, F7 load (or via Puremenu)
+- [ ] `retro_serialize_size()`, `retro_serialize()`, `retro_unserialize()`
+- [ ] `DBPS_RequestSaveLoad`, `DBPS_HaveSaveSlot`
+- [ ] Hotkeys: F5 save, F7 load
 - [ ] Auto-save on suspend/shutdown
-- [ ] SRAM (`retro_get_memory_data/size`) if core uses it
-- [ ] **Result:** Save states functional
+
+### Phase 12 — Disk Control
+**Goal: Multi-disc games (eject/swap)**
+**Status: 🔲 NOT STARTED**
+
+- [ ] `RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE`
+- [ ] Callbacks: eject, swap, add, remove
+
+### Phase 13 — Video Enhancements
+**Goal: Scale modes, config UI**
+**Status: 🔲 NOT STARTED**
+
+- [ ] Scale modes: pixel-perfect, integer, stretch, aspect-ratio
+- [ ] Core video options via GET_VARIABLE
+- [ ] FPS baseline measurement
+
+### Phase 14 — Network Play
+**Goal: IPX tunneling for multiplayer**
+**Status: 🔲 NOT STARTED**
+
+- [ ] `RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE`
+- [ ] IPX over TCP/UDP
 
 ---
 
-## Dependencies Between Changes
+## Dependencies Between Phases
 
 ```
-Phase 0 (scaffold) ────────────────── ✅ done
+Phase 0 (scaffold) ─────────────────── ✅ done
     │
-    ▼
-Phase 1 (core compiles) ───────────── ✅ done
+Phase 1 (core compiles) ────────────── ✅ done
     │
-    ▼
-Phase A ── patch-fopen-vfs ────────── 🔲 BLOCKS EVERYTHING
-    │         │
-    │         ├── fix-keyboard-input ── 🔲 unblocks launcher navigation
-    │         └── fix-gamepad-input ─── 🔲 unblocks gamepad
+Phase 2 (core lifecycle) ───────────── ✅ done
     │
-Phase B ── register-core-options ──── 🔲 unblocks launcher + config
-    │         │
-    │         └── software-framebuffer ── 🔲 OSD overlay
+Phase 3 (video) ────────────────────── ✅ done
     │
-Phase C ── wire-audio ─────────────── 🔲 independent
+Phase 4 (input) ────────────────────── ✅ done
     │
-Phase D ── dbps-mouse ─────────────── 🔲 independent
-    │         │
-    │         ├── dbps-platform ──────── 🔲 depends on mouse
-    │         └── disk-control ───────── 🔲 independent
+Phase 5 (audio) ────────────────────── ✅ done
     │
-Phase E ── video-enhancements ─────── 🔲 depends on options
-    │         │
-    │         └── rmlui-overlay ──────── 🔲 depends on almost everything
+Phase 6 (frontend menu) ───────────── ✅ done
     │
-Phase F ── save-states ────────────── 🔲 independent (but complex)
+Phase 7 (file browser) ────────────── ✅ done
+    │
+Phase 8 (PUREMENU) ─────────────────── ✅ done
+    │
+Phase 9 (dynarec) ──────────────────── ✅ done
+    │
+Phase 10 (xb-xray) ────────────────── ✅ done
+    │
+Phase 11 (save states) ────────────── 🔲 future
+Phase 12 (disk control) ───────────── 🔲 future
+Phase 13 (video enhancements) ─────── 🔲 future
+Phase 14 (network play) ───────────── 🔲 future
 ```
-
----
-
-## OpenSpec Changes
-
-| Change | Status | OpenSpec Path |
-|--------|--------|---------------|
-| `patch-fopen-vfs` | 🔲 created | `openspec/changes/patch-fopen-vfs/` |
-| `fix-keyboard-input` | 🔲 created | `openspec/changes/fix-keyboard-input/` |
-| `fix-gamepad-input` | 🔲 created | `openspec/changes/fix-gamepad-input/` |
-| `register-core-options` | 🔲 created | `openspec/changes/register-core-options/` |
-| `software-framebuffer` | 🔲 created | `openspec/changes/software-framebuffer/` |
-| `wire-audio` | 🔲 created | `openspec/changes/wire-audio/` |
-| `dbps-mouse` | 🔲 created | `openspec/changes/dbps-mouse/` |
-| `dbps-platform` | 🔲 created | `openspec/changes/dbps-platform/` |
-| `disk-control` | 🔲 created | `openspec/changes/disk-control/` |
-| `video-enhancements` | 🔲 created | `openspec/changes/video-enhancements/` |
-| `rmlui-overlay` | 🔲 created | `openspec/changes/rmlui-overlay/` |
-| `save-states` | 🔲 created | `openspec/changes/save-states/` |

@@ -207,9 +207,8 @@ When menu has > visible items (max ~20), scroll offset follows selection:
 
 ## Future Work
 
-1. **Disk browser** — replace FileOpenPicker with gamepad-navigable file listing using `KnownFolders` + `StorageFolder`
-2. **Recent games** — persist JSON list via `ApplicationData::LocalSettings`
-3. **DOS bitmap font** — replace Consolas with .FON/.FNT bitmap font for authentic look
-4. **Textured cube** — replace solid-color cube faces with DOSBox logo texture
-5. **Settings persistence** — save frontend prefs (fullscreen, volume, aspect) to JSON file
-6. **Core config overlay** — expose core options directly (instead of opening PUREMENU)
+1. **Recent games** — persist JSON list via `ApplicationData::LocalSettings`
+2. **Settings persistence** — save frontend prefs (fullscreen, volume, aspect) to JSON file
+3. **Core config overlay** — expose core options directly (instead of opening PUREMENU)
+4. **DOS bitmap font** — replace Consolas with .FON/.FNT bitmap font for authentic look
+5. **Textured cube** — replace solid-color cube faces with DOSBox logo texture
