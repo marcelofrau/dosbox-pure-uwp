@@ -123,13 +123,6 @@ DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
 - **Max 4GB** total ZIP size recommended for Xbox (storage limits)
 - **`.dosz` format** — if you want smaller files, use the [dosz tool](https://github.com/schellingb/dosbox-pure#dosz-format) for better compression
 
-### Pre-made game packs
-
-Ready-to-play game packs are available from the dosbox-pure community:
-- [DOSZ game packs](https://github.com/schellingb/dosbox-pure/releases) — optimized `.dosz` files
-- [MyAbandonware](https://www.myabandonware.com/) — download DOS games, ZIP the folder
-- [Internet Archive](https://archive.org/details/softwarelibrary_msdos_games) — MS-DOS game archive
-
 ---
 
 ## Controls
