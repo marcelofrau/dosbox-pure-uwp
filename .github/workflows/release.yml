@@ -50,7 +50,7 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          msbuild "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64 /nowarn:MSB4011 /m /nologo
+          msbuild "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64 /p:AppxPackageSigningEnabled=false /nowarn:MSB4011 /m /nologo
 
       - name: Package & Create Distributable
         id: package
