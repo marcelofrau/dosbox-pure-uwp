@@ -36,8 +36,8 @@ namespace dosbox_uwp
         void ToggleOSD();
         bool IsMenuVisible() const { return m_menu.IsVisible(); }
         FrontendMenu& GetMenu() { return m_menu; }
-        void LoadRom(const std::wstring& path, std::vector<uint8_t> romData);
-        void QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData);
+        void LoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath = {});
+        void QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath = {});
         void ProcessPendingLoad();
         void RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize);
         void EnsureLoadingDisc();
@@ -84,6 +84,7 @@ namespace dosbox_uwp
         int m_loadTimer = 0;
         struct PendingLoad {
             std::wstring path;
+            std::wstring originalPath;
             std::vector<uint8_t> data;
         };
         std::unique_ptr<PendingLoad> m_pendingLoad;

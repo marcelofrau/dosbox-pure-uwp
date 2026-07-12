@@ -124,7 +124,10 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             }
         }
         if (!settingsDir.empty())
+        {
             SettingsManager::Initialize(settingsDir + "\\dosbox-pure-settings.json");
+            m_menu.RefreshMenuItems();
+        }
     }
 
 #ifdef XB_INSPECTOR_ENABLED
@@ -225,18 +228,20 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 
         // Copy to LocalFolder\temp\ via kernel-level copy (no memory allocation).
         std::wstring srcPath = path;
+        CleanupTempFile();
         create_task([srcPath]() -> std::wstring
         {
             return CopyFileToTemp(srcPath);
-        }).then([this](std::wstring tempPath)
+        }).then([this, srcPath](std::wstring tempPath)
         {
             if (tempPath.empty())
             {
                 spdlog::error("[FileBrowser] Copy failed, re-opening picker");
+                m_loadingActive = false;
                 m_requestFilePicker = true;
                 return;
             }
-            QueueLoadRom(tempPath, {});
+            QueueLoadRom(tempPath, {}, srcPath);
         });
     };
     m_menu.onOpenPuremenu = [this]() {
@@ -249,20 +254,24 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         spdlog::info("[History] Loading '{}'", std::string(path.begin(), path.end()));
         ActivateLoadingScreen();
 
+        // History stores original path (e.g. E:\Games\Doom\doom.exe).
+        // Re-copy to LocalFolder\temp\ just like file browser does.
         std::wstring srcPath = path;
+        CleanupTempFile();
         create_task([srcPath]() -> std::wstring
         {
             return CopyFileToTemp(srcPath);
-        }).then([this](std::wstring tempPath)
+        }).then([this, srcPath](std::wstring tempPath)
         {
             if (tempPath.empty())
             {
-                spdlog::error("[History] Copy failed");
+                spdlog::error("[History] Copy failed from original path, file may be missing");
+                m_loadingActive = false;
                 m_menu.Show();
                 m_menu.RebuildItems();
                 return;
             }
-            QueueLoadRom(tempPath, {});
+            QueueLoadRom(tempPath, {}, srcPath);
         });
     };
     m_menu.onExit = []() {
@@ -350,7 +359,7 @@ void dosbox_uwpMain::BootCore()
     m_retroRunning = true;
 }
 
-void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romData)
+void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
 {
     m_audioTimeAccumulator = 0.0;
     if (!m_retroCore->IsInitialized())
@@ -385,7 +394,6 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
 #endif
     }
 
-    CleanupTempFile();
     m_currentTempPath = path;
 
     if (m_retroCore->LoadGame(path, romData))
@@ -395,13 +403,20 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         m_clearColor = DirectX::Colors::Black;
         m_menu.Hide();
 
-        // Add to history
+        // Push all saved option values to core so check_variables() picks them up
+        SettingsManager::ForEachOption([](const char* key, const char* value) {
+            if (strncmp(key, "frontend_", 9) != 0) // skip frontend-only options
+                RetroCore::SetOptionValue(key, value);
+        });
+
+        // Add to history — store original path, not temp path
         {
+            const std::wstring& histPath = originalPath.empty() ? path : originalPath;
             std::string pathUtf8;
             {
-                int len = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                int len = WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
                 pathUtf8.resize(len - 1);
-                WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
+                WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
             }
             auto slash = pathUtf8.find_last_of("/\\");
             std::string fnameUtf8 = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
@@ -415,10 +430,11 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     }
 }
 
-void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData)
+void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
 {
     m_pendingLoad = std::make_unique<PendingLoad>();
     m_pendingLoad->path = path;
+    m_pendingLoad->originalPath = originalPath;
     m_pendingLoad->data = std::move(romData);
 }
 
@@ -971,6 +987,7 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
             case 0x1B: m_menu.OnBack();  return;     // Escape
             case 0x21: m_menu.OnPageUp(); return;    // PageUp
             case 0x22: m_menu.OnPageDown(); return;  // PageDown
+            case 0x45: m_menu.OnEasterEgg(); return;  // E = next quote
             }
         }
         return; // absorb all keyboard while menu is visible
@@ -1343,7 +1360,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
     QueryPerformanceCounter(&_now);
     double elapsedMs = (double)(_now.QuadPart - m_loadingStart.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
     if (elapsedMs < 2000.0) return;
-    LoadRom(m_pendingLoad->path, std::move(m_pendingLoad->data));
+    LoadRom(m_pendingLoad->path, std::move(m_pendingLoad->data), m_pendingLoad->originalPath);
     m_pendingLoad.reset();
     m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
 
@@ -1369,62 +1386,119 @@ void dosbox_uwpMain::ProcessPendingLoad()
 
 void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize)
 {
-    d2d->Clear(D2D1::ColorF(0x000000));
-    EnsureLoadingDisc();
-
+    const auto& theme = SettingsManager::GetTheme();
     float w = logicalSize.width;
     float h = logicalSize.height;
 
-    static const wchar_t* dotStates[] = { L".", L"..", L"...", L"" };
+    float dpiscale;
+    { FLOAT dx, dy; d2d->GetDpi(&dx, &dy); dpiscale = dx / 96.0f; }
 
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+    // Semi-transparent fullscreen background
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blackBg;
+    d2d->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, theme.overlay_alpha), &blackBg);
+    if (blackBg) d2d->FillRectangle(D2D1::RectF(0, 0, w, h), blackBg.Get());
+
+    // Centered dialog panel
+    float panelW = min(w * 0.50f, 360.0f);
+    float panelH = min(h * 0.40f, 260.0f);
+    float panelX = (w - panelW) * 0.5f;
+    float panelY = (h - panelH) * 0.5f;
+
+    // Panel background
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+    d2d->CreateSolidColorBrush(D2D1::ColorF(theme.bg_panel), &bgBrush);
+    if (bgBrush) d2d->FillRectangle(D2D1::RectF(panelX, panelY, panelX + panelW, panelY + panelH), bgBrush.Get());
+
+    // Panel border (double border like AboutDialog)
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> frameBrush;
+    d2d->CreateSolidColorBrush(D2D1::ColorF(theme.frame), &frameBrush);
+    if (frameBrush)
+    {
+        d2d->DrawRectangle(D2D1::RectF(panelX, panelY, panelX + panelW, panelY + panelH), frameBrush.Get(), 2.0f);
+        d2d->DrawRectangle(D2D1::RectF(panelX + 4, panelY + 4, panelX + panelW - 4, panelY + panelH - 4), frameBrush.Get(), 1.0f);
+    }
+
+    // Title bar (animated alpha pulse)
+    float TITLE_H = 38.0f * dpiscale;
+    float titleTop = panelY + 8;
+    D2D1_RECT_F titleBg = { panelX + 8, titleTop, panelX + panelW - 8, titleTop + TITLE_H };
+    float t = (float)(GetTickCount64() % 3000) / 3000.0f;
+    float alpha = 0.70f + 0.30f * (0.5f + 0.5f * sinf(t * 6.283185f));
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> titlePulseBrush;
+    D2D1_COLOR_F titleCol = D2D1::ColorF(theme.title_bg);
+    titleCol.a = alpha;
+    d2d->CreateSolidColorBrush(titleCol, &titlePulseBrush);
+    if (titlePulseBrush) d2d->FillRectangle(titleBg, titlePulseBrush.Get());
+
+    // Title text "LOADING" centered
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> titleFmt;
     dwrite->CreateTextFormat(L"VCR OSD Mono", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 22.0f, L"en-US", &fmt);
-    if (!fmt) return;
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 28.0f * dpiscale, L"en-US", &titleFmt);
+    if (titleFmt)
+    {
+        titleFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        float titleBarW = panelW - 32.0f;
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> titleLayout;
+        dwrite->CreateTextLayout(L"LOADING", 7, titleFmt.Get(), titleBarW, TITLE_H, &titleLayout);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> titleTextBrush;
+        d2d->CreateSolidColorBrush(D2D1::ColorF(theme.text_title), &titleTextBrush);
+        if (titleLayout && titleTextBrush)
+            d2d->DrawTextLayout(D2D1::Point2F(panelX + 16, titleTop), titleLayout.Get(), titleTextBrush.Get());
+    }
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> grayBrush;
-    d2d->CreateSolidColorBrush(D2D1::ColorF(0xcccccc), &grayBrush);
+    // Content area
+    float contentTop = panelY + 8 + TITLE_H + 16.0f;
+    float contentBottom = panelY + panelH - 16.0f;
+    float contentCenterX = panelX + panelW * 0.5f;
 
-    float margin = 20.0f;
-    float loadingY = h - margin - 28.0f;
-
-    // Layout at fixed width = "Loading..." so text never shifts
-    Microsoft::WRL::ComPtr<IDWriteTextLayout> maxTl;
-    dwrite->CreateTextLayout(L"Loading...", 10, fmt.Get(), 300.0f, 30.0f, &maxTl);
-    DWRITE_TEXT_METRICS maxTm;
-    maxTl->GetMetrics(&maxTm);
-    float textX = w - margin - maxTm.width;
-
-    wchar_t loadingText[64];
-    swprintf_s(loadingText, L"Loading%s", dotStates[m_loadingDots]);
-
-    Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
-    dwrite->CreateTextLayout(loadingText, (UINT32)wcslen(loadingText), fmt.Get(),
-        maxTm.width, 30.0f, &tl);
-    if (tl && grayBrush)
-        d2d->DrawTextLayout(D2D1::Point2F(textX, loadingY), tl.Get(), grayBrush.Get());
-
-    // Spinning disc above loading text
-    float discSize = 64.0f;
-    float discX = w - margin - discSize - 40.0f;
-    float discY = loadingY - discSize - 12.0f;
-    float discCenterX = discX + discSize * 0.5f;
-    float discCenterY = discY + discSize * 0.5f;
-    D2D1_RECT_F discRect = { discX, discY, discX + discSize, discY + discSize };
+    // Spinning disc centered
+    float discSize = 80.0f;
+    float discCenterY = (contentTop + contentBottom) * 0.5f - 20.0f;
+    EnsureLoadingDisc();
 
     if (m_loadingDisc)
     {
+        D2D1_RECT_F discRect = {
+            contentCenterX - discSize * 0.5f, discCenterY - discSize * 0.5f,
+            contentCenterX + discSize * 0.5f, discCenterY + discSize * 0.5f
+        };
         d2d->SetTransform(D2D1::Matrix3x2F::Rotation(m_loadingAngle,
-            D2D1::Point2F(discCenterX, discCenterY)));
+            D2D1::Point2F(contentCenterX, discCenterY)));
         d2d->DrawBitmap(m_loadingDisc.Get(), discRect, 1.0f);
         d2d->SetTransform(D2D1::Matrix3x2F::Identity());
     }
     else
     {
+        // Fallback: orange circle
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> orangeBrush;
         d2d->CreateSolidColorBrush(D2D1::ColorF(0xff8800), &orangeBrush);
         if (orangeBrush)
-            d2d->FillEllipse(D2D1::Ellipse(D2D1::Point2F(discCenterX, discCenterY),
+            d2d->FillEllipse(D2D1::Ellipse(D2D1::Point2F(contentCenterX, discCenterY),
                 discSize * 0.5f, discSize * 0.5f), orangeBrush.Get());
+    }
+
+    // "Loading..." text below disc — fixed width, LEADING alignment so "Loading" stays still
+    static const wchar_t* dotStates[] = { L".", L"..", L"...", L"" };
+    wchar_t loadingText[64];
+    swprintf_s(loadingText, L"Loading%s", dotStates[m_loadingDots]);
+
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> textFmt;
+    dwrite->CreateTextFormat(L"VCR OSD Mono", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 22.0f * dpiscale, L"en-US", &textFmt);
+    if (textFmt)
+    {
+        textFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        textFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        // Fixed width = "Loading..." (widest) so layout never shifts
+        float fixedTextW = 160.0f * dpiscale;
+        float textY = discCenterY + discSize * 0.5f + 34.0f;
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+        dwrite->CreateTextLayout(loadingText, (UINT32)wcslen(loadingText), textFmt.Get(),
+            fixedTextW, 30.0f, &textLayout);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+        d2d->CreateSolidColorBrush(D2D1::ColorF(0xcccccc), &textBrush);
+        if (textLayout && textBrush)
+            d2d->DrawTextLayout(D2D1::Point2F(contentCenterX - fixedTextW * 0.5f, textY), textLayout.Get(), textBrush.Get());
     }
 }

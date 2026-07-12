@@ -22,9 +22,12 @@ namespace dosbox_uwp
         OPEN_HISTORY,
         OPEN_PUREMENU,
         SETTINGS,
+        GENERAL,
+        INPUT,
+        PERFORMANCE,
         VIDEO,
+        SYSTEM,
         AUDIO,
-        CORE_OPTIONS,
         STATE,
         TOGGLE_VALUE,
         RESET_DEFAULTS,
@@ -39,7 +42,8 @@ namespace dosbox_uwp
         std::string label;
         MenuAction action;
         std::vector<MenuItem> children;
-        std::vector<std::string> values;
+        std::vector<std::string> values;       // display labels (UI)
+        std::vector<std::string> coreValues;   // core-expected values (sent to core, stored in SettingsManager)
         int currentValue = 0;
         bool enabled = true;
         std::string optionKey;  // core or frontend option key for TOGGLE_VALUE
@@ -60,6 +64,7 @@ namespace dosbox_uwp
         void OnDPad(bool up);
         void OnDPadLeft();
         void OnDPadRight();
+        void OnEasterEgg();
         void OnConfirm();
         void OnBack();
         void OnPageUp();
@@ -76,6 +81,7 @@ namespace dosbox_uwp
         void Hide() { ReleaseResources(); m_visible = false; }
         void ReleaseResources();
         void RebuildItems();
+        void RefreshMenuItems() { BuildMenuTree(); }  // Re-reads saved values from SettingsManager
 
         void SetCoreLoaded(bool loaded);
         void LoadLogoBitmap(ID2D1DeviceContext* d2d);
@@ -101,6 +107,9 @@ namespace dosbox_uwp
         void EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
         void SaveCurrentSettings();
         void ShowToast(const wchar_t* msg);
+        void DrawValueText(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite,
+            const std::string& value, float containerX, float containerW, float iy,
+            ID2D1Brush* brush, bool isSelected);
 
         bool m_visible = true;
         bool m_coreLoadedPrev = false;
@@ -124,13 +133,19 @@ namespace dosbox_uwp
 
         std::vector<MenuItem> m_mainItems;
         std::vector<MenuItem> m_settingsItems;
+        std::vector<MenuItem> m_generalItems;
+        std::vector<MenuItem> m_inputItems;
+        std::vector<MenuItem> m_performanceItems;
         std::vector<MenuItem> m_videoItems;
+        std::vector<MenuItem> m_systemItems;
         std::vector<MenuItem> m_audioItems;
-        std::vector<MenuItem> m_coreOptionItems;
         std::vector<MenuItem> m_historyItems;
         std::vector<MenuItem> m_stateItems;
         std::vector<MenuItem> m_aboutItems;
         std::vector<std::wstring> m_biosLines;
+        int m_easterEggIndex = 0;
+        static const wchar_t* const s_easterEggs[];
+        static const int s_easterEggCount;
 
         // Overlay state (Video/Audio/CoreOptions/Settings render as stacked overlays)
         bool m_overlayActive = false;
@@ -189,6 +204,7 @@ namespace dosbox_uwp
         // Overlay panel (settings dialogs)
         static constexpr float OVERLAY_WIDTH_RATIO = 0.60f;
         static constexpr float OVERLAY_MAX_WIDTH = 800.0f;
+        static constexpr float VALUE_WIDTH_RATIO = 0.40f;
         static constexpr float OVERLAY_HEIGHT_RATIO = 0.65f;
         static constexpr float OVERLAY_MAX_HEIGHT = 550.0f;
         static constexpr float LOGO_SIZE = 100.0f;

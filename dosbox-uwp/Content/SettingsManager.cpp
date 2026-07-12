@@ -5,6 +5,7 @@
 #include <sstream>
 #include <algorithm>
 #include <ctime>
+#include <cstdio>
 
 std::string SettingsManager::s_settingsPath;
 ThemeColors SettingsManager::s_theme;
@@ -16,6 +17,7 @@ std::vector<SettingsManager::HistoryEntry> SettingsManager::s_history;
 std::string SettingsManager::s_historyPath;
 
 static const char* SETTINGS_FILENAME = "dosbox-pure-settings.json";
+static constexpr int SETTINGS_VERSION = 1;
 
 uint32_t SettingsManager::ParseHexColor(const char* str, uint32_t defaultVal)
 {
@@ -121,6 +123,24 @@ void SettingsManager::Initialize(const std::string& settingsPath)
     {
         auto j = nlohmann::json::parse(cleaned);
 
+        // Version check — backup and reset if incompatible
+        int fileVersion = 0;
+        if (j.contains("version") && j["version"].is_number_integer())
+            fileVersion = j["version"].get<int>();
+
+        if (fileVersion != SETTINGS_VERSION)
+        {
+            spdlog::warn("[Settings] Settings version mismatch (file={}, expected={}), backing up and resetting", fileVersion, SETTINGS_VERSION);
+            file.close();
+            std::string backupPath = settingsPath + ".backup";
+            std::rename(settingsPath.c_str(), backupPath.c_str());
+            LoadDefaults();
+            Save();
+            s_loaded = true;
+            LoadHistory();
+            return;
+        }
+
         if (j.contains("theme") && j["theme"].is_object())
         {
             auto& t = j["theme"];
@@ -188,6 +208,7 @@ void SettingsManager::Initialize(const std::string& settingsPath)
 std::string SettingsManager::SerializeJson()
 {
     nlohmann::json j;
+    j["version"] = SETTINGS_VERSION;
 
     auto& t = s_theme;
     j["theme"]["bg_panel"]       = [&]() -> std::string { char b[16]; sprintf_s(b, "#%06x", t.bg_panel & 0xFFFFFF); return b; }();
@@ -255,10 +276,17 @@ void SettingsManager::SetOption(const char* key, const char* value)
     {
         s_coreOptions[key] = value;
         s_dirty = true;
+        Save();
     }
 }
 
 bool SettingsManager::IsLoaded() { return s_loaded; }
+
+void SettingsManager::ForEachOption(void (*callback)(const char* key, const char* value))
+{
+    for (auto& kv : s_coreOptions)
+        callback(kv.first.c_str(), kv.second.c_str());
+}
 
 void SettingsManager::ResetToDefaults()
 {
@@ -269,19 +297,69 @@ void SettingsManager::ResetToDefaults()
 
 static const char* GetDefaultForOption(const char* key)
 {
+    // Frontend-only
     if (strcmp(key, "frontend_vsync") == 0) return "On";
     if (strcmp(key, "frontend_scaler") == 0) return "Bilinear";
+    // General
+    if (strcmp(key, "dosbox_pure_force60fps") == 0) return "false";
+    if (strcmp(key, "dosbox_pure_savestate") == 0) return "on";
+    if (strcmp(key, "dosbox_pure_menu_time") == 0) return "99";
     if (strcmp(key, "dosbox_pure_menu_transparency") == 0) return "70";
-    if (strcmp(key, "dosbox_pure_aspect_correction") == 0) return "Off";
-    if (strcmp(key, "dosbox_pure_machine") == 0) return "SVGA";
-    if (strcmp(key, "dosbox_pure_svgamem") == 0) return "2 (2MB)";
+    if (strcmp(key, "dosbox_pure_strict_mode") == 0) return "false";
+    if (strcmp(key, "dosbox_pure_conf") == 0) return "false";
+    // Input
+    if (strcmp(key, "dosbox_pure_on_screen_keyboard") == 0) return "true";
+    if (strcmp(key, "dosbox_pure_mouse_input") == 0) return "true";
+    if (strcmp(key, "dosbox_pure_mouse_wheel") == 0) return "67/68";
+    if (strcmp(key, "dosbox_pure_mouse_speed_factor") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_mouse_speed_factor_x") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_actionwheel_inputs") == 0) return "14";
+    if (strcmp(key, "dosbox_pure_auto_mapping") == 0) return "true";
+    if (strcmp(key, "dosbox_pure_keyboard_layout") == 0) return "us";
+    if (strcmp(key, "dosbox_pure_joystick_analog_deadzone") == 0) return "15";
+    if (strcmp(key, "dosbox_pure_joystick_timed") == 0) return "true";
+    // Performance
+    if (strcmp(key, "dosbox_pure_cycles") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_cycles_max") == 0) return "none";
+    if (strcmp(key, "dosbox_pure_cycles_scale") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_cycle_limit") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_perfstats") == 0) return "none";
+    // Video
+    if (strcmp(key, "dosbox_pure_machine") == 0) return "svga";
+    if (strcmp(key, "dosbox_pure_cga") == 0) return "early_auto";
+    if (strcmp(key, "dosbox_pure_hercules") == 0) return "white";
+    if (strcmp(key, "dosbox_pure_svga") == 0) return "svga_s3";
+    if (strcmp(key, "dosbox_pure_svgamem") == 0) return "2";
+    if (strcmp(key, "dosbox_pure_voodoo") == 0) return "8mb";
+    if (strcmp(key, "dosbox_pure_voodoo_perf") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_voodoo_scale") == 0) return "1";
+    if (strcmp(key, "dosbox_pure_voodoo_gamma") == 0) return "-2";
+    if (strcmp(key, "dosbox_pure_aspect_correction") == 0) return "false";
     if (strcmp(key, "dosbox_pure_overscan") == 0) return "0";
+    // System
+    if (strcmp(key, "dosbox_pure_memory_size") == 0) return "16";
+    if (strcmp(key, "dosbox_pure_modem") == 0) return "null";
+    if (strcmp(key, "dosbox_pure_cpu_type") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_cpu_core") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_bootos_ramdisk") == 0) return "false";
+    if (strcmp(key, "dosbox_pure_bootos_dfreespace") == 0) return "1024";
+    if (strcmp(key, "dosbox_pure_bootos_forcenormal") == 0) return "false";
+    // Audio
     if (strcmp(key, "dosbox_pure_audiorate") == 0) return "48000";
-    if (strcmp(key, "dosbox_pure_sblaster_type") == 0) return "SB16";
-    if (strcmp(key, "dosbox_pure_volume_sb") == 0) return "100%";
-    if (strcmp(key, "dosbox_pure_volume_midi") == 0) return "100%";
-    if (strcmp(key, "dosbox_pure_volume_adlib") == 0) return "100%";
-    if (strcmp(key, "dosbox_pure_volume_speaker") == 0) return "100%";
+    if (strcmp(key, "dosbox_pure_sblaster_type") == 0) return "sb16";
+    if (strcmp(key, "dosbox_pure_sblaster_conf") == 0) return "A220 I7 D1 H5";
+    if (strcmp(key, "dosbox_pure_sblaster_adlib_mode") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_sblaster_adlib_emu") == 0) return "default";
+    if (strcmp(key, "dosbox_pure_midi") == 0) return "disabled";
+    if (strcmp(key, "dosbox_pure_gus") == 0) return "false";
+    if (strcmp(key, "dosbox_pure_tandysound") == 0) return "auto";
+    if (strcmp(key, "dosbox_pure_swapstereo") == 0) return "false";
+    if (strcmp(key, "dosbox_pure_volume_sb") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_volume_midi") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_volume_adlib") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_volume_speaker") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_volume_cdrom") == 0) return "1.0";
+    if (strcmp(key, "dosbox_pure_volume_other") == 0) return "1.0";
     return nullptr;
 }
 

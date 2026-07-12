@@ -63,6 +63,7 @@ public:
 
     static void Save();
     static bool IsLoaded();
+    static void ForEachOption(void (*callback)(const char* key, const char* value));
 
     // History (recently opened games)
     struct HistoryEntry {
