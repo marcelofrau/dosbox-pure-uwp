@@ -17,12 +17,15 @@ namespace dosbox_uwp
         BACK,
         CONTINUE_GAME,
         OPEN_FILE,
+        OPEN_HISTORY,
         OPEN_PUREMENU,
         SETTINGS,
         VIDEO,
         AUDIO,
+        CORE_OPTIONS,
         STATE,
         TOGGLE_VALUE,
+        RESET_DEFAULTS,
         ABOUT,
         EXIT
     };
@@ -51,6 +54,8 @@ namespace dosbox_uwp
 
         void Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
         void OnDPad(bool up);
+        void OnDPadLeft();
+        void OnDPadRight();
         void OnConfirm();
         void OnBack();
         void OnPageUp();
@@ -63,8 +68,9 @@ namespace dosbox_uwp
         void RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
 
         bool IsVisible() const { return m_visible; }
-        void Show() { m_visible = true; }
+        void Show();
         void Hide() { m_visible = false; }
+        void RebuildItems();
 
         void SetCoreLoaded(bool loaded);
         void LoadLogoBitmap(ID2D1DeviceContext* d2d);
@@ -79,12 +85,12 @@ namespace dosbox_uwp
         std::function<void()> onExit;
         std::function<void()> onBeep;
         std::function<void(const char* key, const char* value)> onOptionChanged;
+        std::function<void(const std::wstring&)> onFileSelectedHistory;
 
         FileBrowser m_fileBrowser;
 
     private:
         void BuildMenuTree();
-        void RebuildItems();
         void EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
 
         bool m_visible = true;
@@ -106,9 +112,27 @@ namespace dosbox_uwp
         std::vector<MenuItem> m_settingsItems;
         std::vector<MenuItem> m_videoItems;
         std::vector<MenuItem> m_audioItems;
+        std::vector<MenuItem> m_coreOptionItems;
+        std::vector<MenuItem> m_historyItems;
         std::vector<MenuItem> m_stateItems;
         std::vector<MenuItem> m_aboutItems;
         std::vector<std::wstring> m_biosLines;
+
+        // Overlay state (Video/Audio/CoreOptions/Settings render as stacked overlays)
+        bool m_overlayActive = false;
+        std::string m_overlayTitle;
+        std::vector<MenuItem>* m_overlayItems = nullptr;
+        int m_panelSavedSelected = 0;
+        int m_panelSavedScrollOffset = 0;
+
+        struct OverlayState
+        {
+            std::string title;
+            std::vector<MenuItem>* items;
+            int selected;
+            int scrollOffset;
+        };
+        std::vector<OverlayState> m_overlayStack;
 
         struct PageRef
         {
@@ -146,7 +170,13 @@ namespace dosbox_uwp
         static constexpr float PANEL_MARGIN = 20.0f;
         static constexpr float PANEL_WIDTH_RATIO = 0.45f;
         static constexpr float PANEL_MAX_WIDTH = 480.0f;
+        static constexpr float PANEL_MIN_WIDTH = 350.0f;
         static constexpr float PANEL_FIXED_HEIGHT = 360.0f;
+        // Overlay panel (settings dialogs)
+        static constexpr float OVERLAY_WIDTH_RATIO = 0.60f;
+        static constexpr float OVERLAY_MAX_WIDTH = 800.0f;
+        static constexpr float OVERLAY_HEIGHT_RATIO = 0.65f;
+        static constexpr float OVERLAY_MAX_HEIGHT = 550.0f;
         static constexpr float LOGO_SIZE = 100.0f;
         static constexpr float LOGO_MARGIN = 20.0f;
 

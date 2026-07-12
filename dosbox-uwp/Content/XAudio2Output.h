@@ -29,7 +29,7 @@ namespace dosbox_uwp
         bool IsReady() const { return m_initialized; }
         bool IsStarted() const { return m_started; }
         uint32_t GetQueuedFrames() const;
-        static const long TARGET_FRAMES = 3307; // ~75ms @44100Hz
+        static const long TARGET_FRAMES = 6615; // ~150ms @44100Hz — generous headroom to absorb batch gaps
         static volatile long* QueuedFramesPtr();
         static volatile long long* TotalProducedPtr();
         static volatile long long* TotalConsumedPtr();

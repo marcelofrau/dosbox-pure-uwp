@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <string>
+#include <vector>
 #include <map>
 
 struct ThemeColors
@@ -57,9 +58,22 @@ public:
 
     static std::string GetOption(const char* key, const char* defaultVal = nullptr);
     static void SetOption(const char* key, const char* value);
+    static void ResetToDefaults();
+    static void ResetSectionDefaults(const std::vector<std::string>& keys);
 
     static void Save();
     static bool IsLoaded();
+
+    // History (recently opened games)
+    struct HistoryEntry {
+        std::string filename;  // display name (e.g. "xargon.dosz")
+        std::string fullPath;  // full path for loading
+        uint64_t timestamp;    // unix time for sorting
+    };
+    static void AddToHistory(const std::string& filename, const std::string& fullPath);
+    static const std::vector<HistoryEntry>& GetHistory();
+    static void ClearHistory();
+    static void SaveHistory();
 
 private:
     static std::string s_settingsPath;
@@ -69,10 +83,16 @@ private:
     static bool s_dirty;
     static uint64_t s_lastSaveTime;
 
+    // History
+    static std::vector<HistoryEntry> s_history;
+    static std::string s_historyPath;
+    static const int MAX_HISTORY = 10;
+
     static uint32_t ParseHexColor(const char* str, uint32_t defaultVal);
     static std::string StripJsonComments(const std::string& raw);
     static std::string SerializeJson();
     static void LoadDefaults();
+    static void LoadHistory();
 };
 
 // Bridge: defined in dosbox_pure_libretro.cpp (forked OSD header scope)

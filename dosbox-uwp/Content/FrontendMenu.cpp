@@ -127,6 +127,18 @@ FrontendMenu::FrontendMenu()
     m_visible = true;
 }
 
+void FrontendMenu::Show()
+{
+    m_visible = true;
+    // Refresh History enabled state — AddToHistory may have been called since last BuildMenuTree
+    auto& history = SettingsManager::GetHistory();
+    for (auto& item : m_mainItems)
+    {
+        if (item.action == MenuAction::OPEN_HISTORY)
+            item.enabled = !history.empty();
+    }
+}
+
 void FrontendMenu::SetCoreLoaded(bool loaded)
 {
     if (m_coreLoadedPrev == loaded) return;
@@ -141,7 +153,7 @@ void FrontendMenu::BuildMenuTree()
         { "Load File",           MenuAction::OPEN_FILE },
         { "",                    MenuAction::NONE },
         { "Settings",            MenuAction::SETTINGS, {}, {}, 0, true },
-        { "Controls",            MenuAction::OPEN_PUREMENU, {}, {}, 0, false },
+        { "History",             MenuAction::OPEN_HISTORY, {}, {}, 0, false },
         { "",                    MenuAction::NONE },
         { "Exit",                MenuAction::EXIT },
     };
@@ -150,7 +162,7 @@ void FrontendMenu::BuildMenuTree()
     {
         { "Video",               MenuAction::VIDEO },
         { "Audio",               MenuAction::AUDIO },
-        { "Core Options",        MenuAction::OPEN_PUREMENU },
+        { "Core Options",        MenuAction::CORE_OPTIONS },
         { "",                    MenuAction::NONE },
         { "Back",                MenuAction::BACK },
     };
@@ -181,7 +193,7 @@ void FrontendMenu::BuildMenuTree()
             { "SVGA Memory",       MenuAction::TOGGLE_VALUE, {}, svgaMemVals, findVal("dosbox_pure_svgamem", svgaMemVals, "2 (2MB)"), true, "dosbox_pure_svgamem" },
             { "Overscan",          MenuAction::TOGGLE_VALUE, {}, overscanVals, findVal("dosbox_pure_overscan", overscanVals, "0"), true, "dosbox_pure_overscan" },
             { "",                  MenuAction::NONE },
-            { "Back",              MenuAction::BACK },
+            { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
         };
     }
 
@@ -201,7 +213,40 @@ void FrontendMenu::BuildMenuTree()
             { "Volume: Adlib",     MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_adlib", volVals, "100%"), true, "dosbox_pure_volume_adlib" },
             { "Volume: Speaker",   MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_speaker", volVals, "100%"), true, "dosbox_pure_volume_speaker" },
             { "",                  MenuAction::NONE },
-            { "Back",              MenuAction::BACK },
+            { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
+        };
+    }
+
+    // Core Options (libretro core settings)
+    {
+        std::vector<std::string> machineVals = { "SVGA", "VGA", "EGA", "CGA", "Tandy", "Hercules", "PCJR" };
+        std::vector<std::string> svgaMemVals = { "0 (512KB)", "1 (1MB)", "2 (2MB)", "3 (3MB)", "4 (4MB)", "8 (8MB)" };
+        std::vector<std::string> aspectVals = { "Off", "On", "Doublescan", "Padded", "Padded+Doublescan" };
+        std::vector<std::string> overscanVals = { "0", "1", "2", "3" };
+        std::vector<std::string> rateVals = { "48000", "44100", "32000", "22050", "16000", "11025" };
+        std::vector<std::string> sbTypeVals = { "SB16", "SBPro2", "SBPro1", "SB2", "SB1", "Game Blaster", "None" };
+        std::vector<std::string> volVals = { "50%", "100%", "150%", "200%", "300%", "500%" };
+        std::vector<std::string> transparencyVals;
+        for (int i = 0; i <= 100; i += 10)
+            transparencyVals.push_back(std::to_string(i));
+
+        m_coreOptionItems = {
+            { "Aspect Ratio",      MenuAction::TOGGLE_VALUE, {}, aspectVals, findVal("dosbox_pure_aspect_correction", aspectVals, "Off"), true, "dosbox_pure_aspect_correction" },
+            { "Graphics Chip",     MenuAction::TOGGLE_VALUE, {}, machineVals, findVal("dosbox_pure_machine", machineVals, "SVGA"), true, "dosbox_pure_machine" },
+            { "SVGA Memory",       MenuAction::TOGGLE_VALUE, {}, svgaMemVals, findVal("dosbox_pure_svgamem", svgaMemVals, "2 (2MB)"), true, "dosbox_pure_svgamem" },
+            { "Overscan",          MenuAction::TOGGLE_VALUE, {}, overscanVals, findVal("dosbox_pure_overscan", overscanVals, "0"), true, "dosbox_pure_overscan" },
+            { "",                  MenuAction::NONE },
+            { "Sample Rate",       MenuAction::TOGGLE_VALUE, {}, rateVals, findVal("dosbox_pure_audiorate", rateVals, "48000"), true, "dosbox_pure_audiorate" },
+            { "SoundBlaster Type", MenuAction::TOGGLE_VALUE, {}, sbTypeVals, findVal("dosbox_pure_sblaster_type", sbTypeVals, "SB16"), true, "dosbox_pure_sblaster_type" },
+            { "",                  MenuAction::NONE },
+            { "Volume: SB",        MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_sb", volVals, "100%"), true, "dosbox_pure_volume_sb" },
+            { "Volume: MIDI",      MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_midi", volVals, "100%"), true, "dosbox_pure_volume_midi" },
+            { "Volume: Adlib",     MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_adlib", volVals, "100%"), true, "dosbox_pure_volume_adlib" },
+            { "Volume: Speaker",   MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_speaker", volVals, "100%"), true, "dosbox_pure_volume_speaker" },
+            { "",                  MenuAction::NONE },
+            { "Menu Transparency", MenuAction::TOGGLE_VALUE, {}, transparencyVals, findVal("dosbox_pure_menu_transparency", transparencyVals, "70"), true, "dosbox_pure_menu_transparency" },
+            { "",                  MenuAction::NONE },
+            { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
         };
     }
 
@@ -233,6 +278,20 @@ void FrontendMenu::RebuildItems()
     m_stack.push_back({ "DOSBox Pure Unleashed", &m_mainItems });
     m_selected = 0;
     m_scrollOffset = 0;
+
+    // Clear overlay state
+    m_overlayActive = false;
+    m_overlayItems = nullptr;
+    m_overlayStack.clear();
+
+    // Enable/disable History based on whether we have entries
+    auto& history = SettingsManager::GetHistory();
+    for (auto& item : m_mainItems)
+    {
+        if (item.action == MenuAction::OPEN_HISTORY)
+            item.enabled = !history.empty();
+    }
+
     auto& items = *m_stack.back().items;
     for (int i = 0; i < (int)items.size(); i++)
     {
@@ -639,23 +698,27 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
     if (maxFit < 1) maxFit = 1;
     if (maxFit > MAX_VISIBLE) maxFit = (int)MAX_VISIBLE;
 
+    // Use saved panel selection when overlay is active
+    int panelSel = m_overlayActive ? m_panelSavedSelected : m_selected;
+    int panelScroll = m_overlayActive ? m_panelSavedScrollOffset : m_scrollOffset;
+
     int itemCount = (int)items.size();
     int visibleCount = min(itemCount, maxFit);
 
-    if (m_scrollOffset > itemCount - visibleCount)
-        m_scrollOffset = itemCount - visibleCount;
-    if (m_scrollOffset < 0) m_scrollOffset = 0;
+    if (panelScroll > itemCount - visibleCount)
+        panelScroll = itemCount - visibleCount;
+    if (panelScroll < 0) panelScroll = 0;
 
     float listY = itemAreaBottom - visibleCount * ITEM_HEIGHT;
 
     for (int i = 0; i < visibleCount; i++)
     {
-        int idx = m_scrollOffset + i;
+        int idx = panelScroll + i;
 
         auto& item = items[idx];
         float iy = listY + i * ITEM_HEIGHT;
 
-        if (idx == m_selected && item.action != MenuAction::NONE)
+        if (idx == panelSel && item.action != MenuAction::NONE)
         {
             D2D1_RECT_F selRect = { panelX + 8.0f, iy, panelX + panelW - 8.0f, iy + ITEM_HEIGHT };
             d2d->FillRectangle(selRect, m_brushTitleText.Get());
@@ -749,6 +812,200 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
         }
     }
 
+    // Settings overlay — render stacked overlays (like FileBrowser card stacking)
+    if (m_overlayActive && m_overlayItems)
+    {
+        const auto& theme = SettingsManager::GetTheme();
+
+        // Collect all overlays to render: stack (deepest first) + current (topmost)
+        struct OverlayRender { std::string title; std::vector<MenuItem>* items; int selected; int scrollOffset; };
+        std::vector<OverlayRender> allOverlays;
+        for (auto& s : m_overlayStack)
+            allOverlays.push_back({ s.title, s.items, s.selected, s.scrollOffset });
+        allOverlays.push_back({ m_overlayTitle, m_overlayItems, m_selected, m_scrollOffset });
+
+        // Single semi-transparent background for all overlays
+        ComPtr<ID2D1SolidColorBrush> overlayBg;
+        d2d->CreateSolidColorBrush(D2D1::ColorF(theme.bg_fullscreen, theme.overlay_alpha), &overlayBg);
+        D2D1_RECT_F fullBg = { 0, 0, screenW, screenH };
+        d2d->FillRectangle(fullBg, overlayBg.Get());
+
+        // Render each overlay as a card, stacked with fixed offsets
+        int totalLayers = (int)allOverlays.size();
+
+        // Overlay panel size (screen-dependent)
+        float ovW = screenW * OVERLAY_WIDTH_RATIO;
+        if (ovW > OVERLAY_MAX_WIDTH) ovW = OVERLAY_MAX_WIDTH;
+        if (ovW < PANEL_MIN_WIDTH) ovW = PANEL_MIN_WIDTH;
+        float ovH = screenH * OVERLAY_HEIGHT_RATIO;
+        if (ovH > OVERLAY_MAX_HEIGHT) ovH = OVERLAY_MAX_HEIGHT;
+
+        // Fixed positions per layer (same X pattern as FileBrowser, cascade offset between layers)
+        // Layer 0: (30, screenH - ovH - 40)
+        // Layer 1: (60, screenH - ovH - 40 - 30)
+        float layerBaseX = 30.0f;
+        float layerBaseY = screenH - ovH - 40.0f;
+        if (layerBaseX + ovW > screenW - PANEL_MARGIN)
+            layerBaseX = screenW - ovW - PANEL_MARGIN;
+        if (layerBaseY < PANEL_MARGIN) layerBaseY = PANEL_MARGIN;
+
+        float layerX[3] = { layerBaseX, layerBaseX + 15.0f, layerBaseX + 30.0f };
+        float layerY[3] = { layerBaseY, layerBaseY - 15.0f, layerBaseY - 30.0f };
+
+        for (int layer = 0; layer < totalLayers; layer++)
+        {
+            auto& ov = allOverlays[layer];
+            bool isTopmost = (layer == totalLayers - 1);
+
+            float ovX = layerX[layer];
+            float ovY = layerY[layer];
+            if (ovX + ovW > screenW - PANEL_MARGIN) ovX = screenW - ovW - PANEL_MARGIN;
+            if (ovY < PANEL_MARGIN) ovY = PANEL_MARGIN;
+
+            // Panel background + frame (slightly dimmed for non-topmost)
+            float bgAlpha = isTopmost ? 1.0f : 0.85f;
+            ComPtr<ID2D1SolidColorBrush> panelBgBrush;
+            d2d->CreateSolidColorBrush(D2D1::ColorF(theme.bg_panel, bgAlpha), &panelBgBrush);
+            D2D1_RECT_F panelBg = { ovX, ovY, ovX + ovW, ovY + ovH };
+            d2d->FillRectangle(panelBg, panelBgBrush.Get());
+            d2d->DrawRectangle(panelBg, m_brushFrame.Get(), isTopmost ? 2.0f : 1.0f);
+            D2D1_RECT_F innerFrame = { ovX + 4.0f, ovY + 4.0f, ovX + ovW - 4.0f, ovY + ovH - 4.0f };
+            d2d->DrawRectangle(innerFrame, m_brushFrame.Get(), 1.0f);
+
+            // Title bar
+            float titleY = ovY + 8.0f;
+            D2D1_RECT_F titleBg = { ovX + 8.0f, titleY, ovX + ovW - 8.0f, titleY + TITLE_HEIGHT };
+            d2d->FillRectangle(titleBg, m_brushTitleBg.Get());
+
+            ComPtr<IDWriteTextLayout> titleLayout;
+            std::wstring wtitle(ov.title.begin(), ov.title.end());
+            dwrite->CreateTextLayout(wtitle.c_str(), (UINT32)wtitle.size(), m_textFormatTitle.Get(),
+                ovW - ITEM_INDENT * 2, TITLE_HEIGHT, &titleLayout);
+            if (titleLayout)
+            {
+                if (m_fontCollection)
+                    { DWRITE_TEXT_RANGE fr = { 0, (UINT32)wtitle.size() }; titleLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                DWRITE_TEXT_RANGE fr2 = { 0, (UINT32)wtitle.size() };
+                titleLayout->SetFontCollection(m_fontCollection.Get(), fr2);
+                DWRITE_TEXT_METRICS tm;
+                titleLayout->GetMetrics(&tm);
+                float tx = ovX + (ovW - tm.width) * 0.5f;
+                d2d->DrawTextLayout(D2D1::Point2F(tx, titleY + 4.0f), titleLayout.Get(), m_brushWhite.Get());
+            }
+
+            // Items
+            auto& ovItems = *ov.items;
+            float itemAreaBottom = ovY + ovH - 8.0f - (isTopmost ? (FOOTER_HEIGHT + 8.0f) : 8.0f);
+            float listAvailable = itemAreaBottom - (titleY + TITLE_HEIGHT + 8.0f);
+            int maxFit = (int)(listAvailable / ITEM_HEIGHT);
+            if (maxFit < 1) maxFit = 1;
+            if (maxFit > MAX_VISIBLE) maxFit = (int)MAX_VISIBLE;
+
+            int itemCount = (int)ovItems.size();
+            int visibleCount = min(itemCount, maxFit);
+            int layerScroll = ov.scrollOffset;
+            if (layerScroll > itemCount - visibleCount) layerScroll = max(0, itemCount - visibleCount);
+            if (layerScroll < 0) layerScroll = 0;
+
+            float listY = itemAreaBottom - visibleCount * ITEM_HEIGHT;
+
+            for (int i = 0; i < visibleCount; i++)
+            {
+                int idx = layerScroll + i;
+                auto& item = ovItems[idx];
+                float iy = listY + i * ITEM_HEIGHT;
+
+                if (idx == ov.selected && item.action != MenuAction::NONE && isTopmost)
+                {
+                    D2D1_RECT_F selRect = { ovX + 8.0f, iy, ovX + ovW - 8.0f, iy + ITEM_HEIGHT };
+                    d2d->FillRectangle(selRect, m_brushTitleText.Get());
+
+                    std::wstring wlabel(item.label.begin(), item.label.end());
+                    ComPtr<IDWriteTextLayout> itemLayout;
+                    auto textBrush = item.enabled ? m_brushSelected.Get() : m_brushDisabled.Get();
+                    dwrite->CreateTextLayout(wlabel.c_str(), (UINT32)wlabel.size(), m_textFormatItem.Get(),
+                        ovW - ITEM_INDENT * 3, ITEM_HEIGHT, &itemLayout);
+                    if (itemLayout)
+                    {
+                        if (m_fontCollection)
+                            { DWRITE_TEXT_RANGE fr = { 0, (UINT32)wlabel.size() }; itemLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                        d2d->DrawTextLayout(D2D1::Point2F(ovX + ITEM_INDENT, iy), itemLayout.Get(), textBrush);
+                    }
+                    if (!item.values.empty())
+                    {
+                        std::wstring wval = L": " + std::wstring(item.values[item.currentValue].begin(), item.values[item.currentValue].end());
+                        ComPtr<IDWriteTextLayout> valLayout;
+                        dwrite->CreateTextLayout(wval.c_str(), (UINT32)wval.size(), m_textFormatItem.Get(),
+                            ovW * 0.35f, ITEM_HEIGHT, &valLayout);
+                        if (valLayout)
+                        {
+                            if (m_fontCollection)
+                                { DWRITE_TEXT_RANGE fr = { 0, (UINT32)wval.size() }; valLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                            DWRITE_TEXT_METRICS tm;
+                            valLayout->GetMetrics(&tm);
+                            d2d->DrawTextLayout(D2D1::Point2F(ovX + ovW - tm.width - ITEM_INDENT, iy),
+                                valLayout.Get(), m_brushSelected.Get());
+                        }
+                    }
+                }
+                else if (item.label.empty())
+                {
+                    float sepY = iy + ITEM_HEIGHT * 0.5f;
+                    d2d->DrawLine(D2D1::Point2F(ovX + 20.0f, sepY),
+                        D2D1::Point2F(ovX + ovW - 20.0f, sepY), m_brushFooter.Get(), 1.0f);
+                }
+                else
+                {
+                    std::wstring wlabel(item.label.begin(), item.label.end());
+                    ComPtr<IDWriteTextLayout> itemLayout;
+                    dwrite->CreateTextLayout(wlabel.c_str(), (UINT32)wlabel.size(), m_textFormatItem.Get(),
+                        ovW - ITEM_INDENT * 3, ITEM_HEIGHT, &itemLayout);
+                    if (itemLayout)
+                    {
+                        if (m_fontCollection)
+                            { DWRITE_TEXT_RANGE fr = { 0, (UINT32)wlabel.size() }; itemLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                        auto brush = isTopmost ? (item.enabled ? m_brushItemText.Get() : m_brushFooter.Get()) : m_brushFooter.Get();
+                        d2d->DrawTextLayout(D2D1::Point2F(ovX + ITEM_INDENT, iy), itemLayout.Get(), brush);
+                    }
+                    if (!item.values.empty())
+                    {
+                        std::wstring wval = L": " + std::wstring(item.values[item.currentValue].begin(), item.values[item.currentValue].end());
+                        ComPtr<IDWriteTextLayout> valLayout;
+                        dwrite->CreateTextLayout(wval.c_str(), (UINT32)wval.size(), m_textFormatItem.Get(),
+                            ovW * 0.35f, ITEM_HEIGHT, &valLayout);
+                        if (valLayout)
+                        {
+                            if (m_fontCollection)
+                                { DWRITE_TEXT_RANGE fr = { 0, (UINT32)wval.size() }; valLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                            DWRITE_TEXT_METRICS tm;
+                            valLayout->GetMetrics(&tm);
+                            d2d->DrawTextLayout(D2D1::Point2F(ovX + ovW - tm.width - ITEM_INDENT, iy),
+                                valLayout.Get(), m_brushValueText.Get());
+                        }
+                    }
+                }
+            }
+
+            // "B: Back" footer hint (only on topmost)
+            if (isTopmost)
+            {
+                std::wstring hint = L"B: Back";
+                ComPtr<IDWriteTextLayout> hintLayout;
+                dwrite->CreateTextLayout(hint.c_str(), (UINT32)hint.size(), m_textFormatFooter.Get(),
+                    ovW, FOOTER_HEIGHT, &hintLayout);
+                if (hintLayout)
+                {
+                    if (m_fontCollection)
+                        { DWRITE_TEXT_RANGE fr = { 0, (UINT32)hint.size() }; hintLayout->SetFontCollection(m_fontCollection.Get(), fr); }
+                    D2D1_RECT_F fbBg = { ovX + 8.0f, ovY + ovH - 8.0f - FOOTER_HEIGHT, ovX + ovW - 8.0f, ovY + ovH - 8.0f };
+                    d2d->FillRectangle(fbBg, m_brushTitleBg.Get());
+                    d2d->DrawTextLayout(D2D1::Point2F(ovX + ITEM_INDENT, ovY + ovH - 8.0f - FOOTER_HEIGHT),
+                        hintLayout.Get(), m_brushFooter.Get());
+                }
+            }
+        }
+    }
+
     // FileBrowser overlay (drawn on top of menu panel)
     m_fileBrowser.Render(d2d, dwrite, screenW, screenH);
 }
@@ -756,6 +1013,54 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
 int FrontendMenu::HitTest(float sx, float sy)
 {
     if (!m_visible) return -1;
+
+    // Overlay hit test (only topmost overlay receives input)
+    if (m_overlayActive && m_overlayItems)
+    {
+        // Topmost overlay position (must match render logic)
+        int topLayer = (int)m_overlayStack.size(); // layer index of topmost
+
+        float ovW = m_lastScreenW * OVERLAY_WIDTH_RATIO;
+        if (ovW > OVERLAY_MAX_WIDTH) ovW = OVERLAY_MAX_WIDTH;
+        if (ovW < PANEL_MIN_WIDTH) ovW = PANEL_MIN_WIDTH;
+        float ovH = m_lastScreenH * OVERLAY_HEIGHT_RATIO;
+        if (ovH > OVERLAY_MAX_HEIGHT) ovH = OVERLAY_MAX_HEIGHT;
+
+        float layerBaseX = 30.0f;
+        float layerBaseY = m_lastScreenH - ovH - 40.0f;
+        if (layerBaseX + ovW > m_lastScreenW - PANEL_MARGIN)
+            layerBaseX = m_lastScreenW - ovW - PANEL_MARGIN;
+        if (layerBaseY < PANEL_MARGIN) layerBaseY = PANEL_MARGIN;
+
+        float layerX[3] = { layerBaseX, layerBaseX + 15.0f, layerBaseX + 30.0f };
+        float layerY[3] = { layerBaseY, layerBaseY - 15.0f, layerBaseY - 30.0f };
+
+        float ovX = layerX[topLayer];
+        float ovY = layerY[topLayer];
+        if (ovX + ovW > m_lastScreenW - PANEL_MARGIN) ovX = m_lastScreenW - ovW - PANEL_MARGIN;
+        if (ovY < PANEL_MARGIN) ovY = PANEL_MARGIN;
+
+        if (sx < ovX || sx > ovX + ovW || sy < ovY || sy > ovY + ovH) return -1;
+
+        auto& items = *m_overlayItems;
+        float titleY = ovY + 8.0f;
+        float itemAreaBottom = ovY + ovH - 8.0f - FOOTER_HEIGHT - 8.0f;
+        float listAvailable = itemAreaBottom - (titleY + TITLE_HEIGHT + 8.0f);
+        int maxFit = (int)(listAvailable / ITEM_HEIGHT);
+        if (maxFit < 1) maxFit = 1;
+        int visibleCount = min((int)items.size(), maxFit);
+        int scroll = m_scrollOffset;
+        if (scroll > (int)items.size() - visibleCount) scroll = max(0, (int)items.size() - visibleCount);
+        if (visibleCount < 1) return -1;
+        float listY = itemAreaBottom - visibleCount * ITEM_HEIGHT;
+
+        if (sy < listY) return -1;
+        int idx = (int)((sy - listY) / ITEM_HEIGHT) + scroll;
+        if (idx < 0 || idx >= (int)items.size()) return -1;
+        if (items[idx].label.empty() || !items[idx].enabled) return -1;
+        return idx;
+    }
+
     if (sx < m_lastPanelX || sx > m_lastPanelX + m_lastPanelW) return -1;
 
     auto& items = *m_stack.back().items;
@@ -806,7 +1111,7 @@ void FrontendMenu::HandlePointerDown(float sx, float sy, unsigned btn)
             m_fileBrowser.HandlePointerDown(sx, sy);
         return;
     }
-    // Click on FrontendMenu items
+    // Click on items (works for both panel and overlay via HitTest)
     if (btn == 1)
     {
         int idx = HitTest(sx, sy);
@@ -826,6 +1131,25 @@ void FrontendMenu::HandlePointerWheel(int delta)
         m_fileBrowser.HandlePointerWheel(delta);
         return;
     }
+    // Scroll overlay items
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        if (delta < 0)
+        {
+            m_selected++;
+            if (m_selected >= (int)items.size()) m_selected = 0;
+        }
+        else
+        {
+            m_selected--;
+            if (m_selected < 0) m_selected = (int)items.size() - 1;
+        }
+        int visibleCount = (int)MAX_VISIBLE;
+        if (m_selected < m_scrollOffset) m_scrollOffset = m_selected;
+        if (m_selected >= m_scrollOffset + visibleCount) m_scrollOffset = m_selected - visibleCount + 1;
+        return;
+    }
 }
 
 void FrontendMenu::OnDPad(bool up)
@@ -835,6 +1159,31 @@ void FrontendMenu::OnDPad(bool up)
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.OnDPad(up);
+        return;
+    }
+
+    // Route to overlay
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        int count = (int)items.size();
+        if (up)
+        {
+            do {
+                m_selected--;
+                if (m_selected < 0) m_selected = count - 1;
+            } while (!items[m_selected].enabled || items[m_selected].label.empty());
+        }
+        else
+        {
+            do {
+                m_selected++;
+                if (m_selected >= count) m_selected = 0;
+            } while (!items[m_selected].enabled || items[m_selected].label.empty());
+        }
+        int visibleCount = (int)MAX_VISIBLE;
+        if (m_selected < m_scrollOffset) m_scrollOffset = m_selected;
+        if (m_selected >= m_scrollOffset + visibleCount) m_scrollOffset = m_selected - visibleCount + 1;
         return;
     }
 
@@ -863,6 +1212,92 @@ void FrontendMenu::OnDPad(bool up)
         m_scrollOffset = m_selected - visibleCount + 1;
 }
 
+void FrontendMenu::OnDPadLeft()
+{
+    if (!m_visible) return;
+
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        if (m_selected < 0 || m_selected >= (int)items.size()) return;
+        auto& item = items[m_selected];
+        if (item.action == MenuAction::TOGGLE_VALUE && item.values.size() > 1 && item.enabled)
+        {
+            item.currentValue = (item.currentValue - 1 + (int)item.values.size()) % (int)item.values.size();
+            if (!item.optionKey.empty())
+            {
+                const char* newVal = item.values[item.currentValue].c_str();
+                spdlog::info("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
+                SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+                RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+                if (onOptionChanged)
+                    onOptionChanged(item.optionKey.c_str(), newVal);
+            }
+        }
+        return;
+    }
+
+    auto& items = *m_stack.back().items;
+    if (m_selected < 0 || m_selected >= (int)items.size()) return;
+    auto& item = items[m_selected];
+    if (item.action == MenuAction::TOGGLE_VALUE && item.values.size() > 1 && item.enabled)
+    {
+        item.currentValue = (item.currentValue - 1 + (int)item.values.size()) % (int)item.values.size();
+        if (!item.optionKey.empty())
+        {
+            const char* newVal = item.values[item.currentValue].c_str();
+            spdlog::info("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
+            SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+            RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+            if (onOptionChanged)
+                onOptionChanged(item.optionKey.c_str(), newVal);
+        }
+    }
+}
+
+void FrontendMenu::OnDPadRight()
+{
+    if (!m_visible) return;
+
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        if (m_selected < 0 || m_selected >= (int)items.size()) return;
+        auto& item = items[m_selected];
+        if (item.action == MenuAction::TOGGLE_VALUE && item.values.size() > 1 && item.enabled)
+        {
+            item.currentValue = (item.currentValue + 1) % (int)item.values.size();
+            if (!item.optionKey.empty())
+            {
+                const char* newVal = item.values[item.currentValue].c_str();
+                spdlog::info("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
+                SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+                RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+                if (onOptionChanged)
+                    onOptionChanged(item.optionKey.c_str(), newVal);
+            }
+        }
+        return;
+    }
+
+    auto& items = *m_stack.back().items;
+    if (m_selected < 0 || m_selected >= (int)items.size()) return;
+    auto& item = items[m_selected];
+    if (item.action == MenuAction::TOGGLE_VALUE && item.values.size() > 1 && item.enabled)
+    {
+        item.currentValue = (item.currentValue + 1) % (int)item.values.size();
+        if (!item.optionKey.empty())
+        {
+            const char* newVal = item.values[item.currentValue].c_str();
+            spdlog::info("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
+            SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+            RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+            if (onOptionChanged)
+                onOptionChanged(item.optionKey.c_str(), newVal);
+        }
+    }
+}
+
 void FrontendMenu::OnConfirm()
 {
     if (!m_visible) return;
@@ -871,6 +1306,151 @@ void FrontendMenu::OnConfirm()
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.OnConfirm();
+        return;
+    }
+
+    // Route to overlay if active
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        if (m_selected < 0 || m_selected >= (int)items.size()) return;
+        auto& item = items[m_selected];
+        if (!item.enabled) return;
+
+        switch (item.action)
+        {
+        case MenuAction::VIDEO:
+        case MenuAction::AUDIO:
+        case MenuAction::CORE_OPTIONS:
+        {
+            // Push current overlay onto stack, open deeper overlay
+            m_overlayStack.push_back({ m_overlayTitle, m_overlayItems, m_selected, m_scrollOffset });
+            spdlog::info("[FrontendMenu] OVERLAY PUSH: {} -> {}", m_overlayTitle,
+                item.action == MenuAction::VIDEO ? "Video" :
+                item.action == MenuAction::AUDIO ? "Audio" : "Core Options");
+            if (item.action == MenuAction::VIDEO) { m_overlayTitle = "Video"; m_overlayItems = &m_videoItems; }
+            else if (item.action == MenuAction::AUDIO) { m_overlayTitle = "Audio"; m_overlayItems = &m_audioItems; }
+            else { m_overlayTitle = "Core Options"; m_overlayItems = &m_coreOptionItems; }
+            m_selected = 0;
+            m_scrollOffset = 0;
+            break;
+        }
+
+        case MenuAction::BACK:
+        {
+            if (!m_overlayStack.empty())
+            {
+                auto& prev = m_overlayStack.back();
+                spdlog::info("[FrontendMenu] OVERLAY POP: {} -> {}", m_overlayTitle, prev.title);
+                m_overlayTitle = prev.title;
+                m_overlayItems = prev.items;
+                m_selected = prev.selected;
+                m_scrollOffset = prev.scrollOffset;
+                m_overlayStack.pop_back();
+            }
+            else
+            {
+                spdlog::info("[FrontendMenu] OVERLAY CLOSE: {} -> panel", m_overlayTitle);
+                m_overlayActive = false;
+                m_overlayItems = nullptr;
+                m_selected = m_panelSavedSelected;
+                m_scrollOffset = m_panelSavedScrollOffset;
+            }
+            break;
+        }
+
+        case MenuAction::TOGGLE_VALUE:
+            // History: load game — check BEFORE values.empty() since history items have no values
+            if (m_overlayTitle == "History" && !item.optionKey.empty())
+            {
+                spdlog::info("[FrontendMenu] History: load {}", item.optionKey);
+                m_overlayActive = false;
+                m_overlayItems = nullptr;
+                m_overlayStack.clear();
+                m_visible = false;
+                m_selected = m_panelSavedSelected;
+                m_scrollOffset = m_panelSavedScrollOffset;
+                if (onFileSelectedHistory)
+                {
+                    std::wstring wpath(item.optionKey.begin(), item.optionKey.end());
+                    onFileSelectedHistory(wpath);
+                }
+                return;
+            }
+            if (!item.values.empty())
+            {
+                items[m_selected].currentValue =
+                    (item.currentValue + 1) % (int)item.values.size();
+
+                if (!item.optionKey.empty())
+                {
+                    const char* newVal = item.values[item.currentValue].c_str();
+                    spdlog::info("[FrontendMenu] TOGGLE: {} = {}", item.optionKey, newVal);
+                    SettingsManager::SetOption(item.optionKey.c_str(), newVal);
+                    RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
+                    if (onOptionChanged)
+                        onOptionChanged(item.optionKey.c_str(), newVal);
+                }
+            }
+            break;
+
+        case MenuAction::RESET_DEFAULTS:
+        {
+            spdlog::info("[FrontendMenu] RESET_DEFAULTS (overlay, section={})", m_overlayTitle);
+            // Per-section reset: only reset keys belonging to the current section
+            std::vector<std::string> sectionKeys;
+            if (m_overlayTitle == "Video")
+            {
+                sectionKeys = { "frontend_vsync", "frontend_scaler",
+                    "dosbox_pure_aspect_correction", "dosbox_pure_machine",
+                    "dosbox_pure_svgamem", "dosbox_pure_overscan" };
+                m_overlayItems = &m_videoItems;
+            }
+            else if (m_overlayTitle == "Audio")
+            {
+                sectionKeys = { "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
+                    "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
+                    "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker" };
+                m_overlayItems = &m_audioItems;
+            }
+            else if (m_overlayTitle == "Core Options")
+            {
+                sectionKeys = { "dosbox_pure_aspect_correction", "dosbox_pure_machine",
+                    "dosbox_pure_svgamem", "dosbox_pure_overscan",
+                    "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
+                    "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
+                    "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker",
+                    "dosbox_pure_menu_transparency" };
+                m_overlayItems = &m_coreOptionItems;
+            }
+            // Reset the option values in SettingsManager
+            SettingsManager::ResetSectionDefaults(sectionKeys);
+            // Apply resets to core via RetroCore (notify each key)
+            for (auto& key : sectionKeys)
+            {
+                std::string val = SettingsManager::GetOption(key.c_str(), "");
+                RetroCore::SetOptionValue(key.c_str(), val.c_str());
+            }
+            // Rebuild the items for this section (re-reads current values from SettingsManager)
+            // We need to save and restore the current section pointer since BuildMenuTree
+            // would overwrite it, but BuildMenuTree only sets m_stack for main menu
+            auto* savedItems = m_overlayItems;
+            std::string savedTitle = m_overlayTitle;
+            // Rebuild items by re-running the relevant BuildMenuTree section
+            // Simpler: just rebuild all and re-acquire
+            BuildMenuTree();
+            if (savedTitle == "Video") m_overlayItems = &m_videoItems;
+            else if (savedTitle == "Audio") m_overlayItems = &m_audioItems;
+            else if (savedTitle == "Core Options") m_overlayItems = &m_coreOptionItems;
+            m_overlayTitle = savedTitle;
+            m_selected = 0;
+            m_scrollOffset = 0;
+            break;
+        }
+
+        default:
+            break;
+        }
         return;
     }
 
@@ -890,41 +1470,39 @@ void FrontendMenu::OnConfirm()
         if (onOpenPuremenu) onOpenPuremenu();
         break;
 
-    case MenuAction::SETTINGS:
-        m_stack.push_back({ "Settings", &m_settingsItems });
-        m_selected = 0;
-        m_scrollOffset = 0;
-        break;
-
-    case MenuAction::VIDEO:
-        m_stack.push_back({ "Video", &m_videoItems });
-        m_selected = 0;
-        m_scrollOffset = 0;
-        break;
-
-    case MenuAction::AUDIO:
-        m_stack.push_back({ "Audio", &m_audioItems });
-        m_selected = 0;
-        m_scrollOffset = 0;
-        break;
-
-    case MenuAction::TOGGLE_VALUE:
-        if (!item.values.empty())
+    case MenuAction::OPEN_HISTORY:
+    {
+        auto& history = SettingsManager::GetHistory();
+        m_historyItems.clear();
+        for (auto& he : history)
         {
-            items[m_selected].currentValue =
-                (item.currentValue + 1) % (int)item.values.size();
-
-            // Push to core or frontend
-            if (!item.optionKey.empty())
-            {
-                const char* newVal = item.values[item.currentValue].c_str();
-                spdlog::info("[FrontendMenu] TOGGLE: {} = {}", item.optionKey, newVal);
-                SettingsManager::SetOption(item.optionKey.c_str(), newVal);
-                RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
-                if (onOptionChanged)
-                    onOptionChanged(item.optionKey.c_str(), newVal);
-            }
+            m_historyItems.push_back({
+                he.filename,
+                MenuAction::TOGGLE_VALUE,
+                {}, {}, 0, true, he.fullPath
+            });
         }
+        if (!m_historyItems.empty())
+        {
+            m_panelSavedSelected = m_selected;
+            m_panelSavedScrollOffset = m_scrollOffset;
+            m_overlayActive = true;
+            m_overlayTitle = "History";
+            m_overlayItems = &m_historyItems;
+            m_selected = 0;
+            m_scrollOffset = 0;
+        }
+        break;
+    }
+
+    case MenuAction::SETTINGS:
+        m_panelSavedSelected = m_selected;
+        m_panelSavedScrollOffset = m_scrollOffset;
+        m_overlayActive = true;
+        m_overlayTitle = "Settings";
+        m_overlayItems = &m_settingsItems;
+        m_selected = 0;
+        m_scrollOffset = 0;
         break;
 
     case MenuAction::EXIT:
@@ -947,6 +1525,30 @@ void FrontendMenu::OnBack()
         return;
     }
 
+    // Close overlay — pop stack or close entirely
+    if (m_overlayActive)
+    {
+        if (!m_overlayStack.empty())
+        {
+            auto& prev = m_overlayStack.back();
+            spdlog::info("[FrontendMenu] BACK overlay pop: {} -> {}", m_overlayTitle, prev.title);
+            m_overlayTitle = prev.title;
+            m_overlayItems = prev.items;
+            m_selected = prev.selected;
+            m_scrollOffset = prev.scrollOffset;
+            m_overlayStack.pop_back();
+        }
+        else
+        {
+            spdlog::info("[FrontendMenu] BACK overlay close: {} -> panel", m_overlayTitle);
+            m_overlayActive = false;
+            m_overlayItems = nullptr;
+            m_selected = m_panelSavedSelected;
+            m_scrollOffset = m_panelSavedScrollOffset;
+        }
+        return;
+    }
+
     if (m_stack.size() > 1)
     {
         m_stack.pop_back();
@@ -964,6 +1566,14 @@ void FrontendMenu::OnPageUp()
         m_fileBrowser.OnPageUp();
         return;
     }
+    if (m_overlayActive && m_overlayItems)
+    {
+        m_selected -= (int)MAX_VISIBLE;
+        if (m_selected < 0) m_selected = 0;
+        m_scrollOffset -= (int)MAX_VISIBLE;
+        if (m_scrollOffset < 0) m_scrollOffset = 0;
+        return;
+    }
     // Scroll menu items by MAX_VISIBLE
     m_selected -= (int)MAX_VISIBLE;
     if (m_selected < 0) m_selected = 0;
@@ -977,6 +1587,16 @@ void FrontendMenu::OnPageDown()
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.OnPageDown();
+        return;
+    }
+    if (m_overlayActive && m_overlayItems)
+    {
+        auto& items = *m_overlayItems;
+        m_selected += (int)MAX_VISIBLE;
+        if (m_selected >= (int)items.size()) m_selected = (int)items.size() - 1;
+        int visibleCount = (int)MAX_VISIBLE;
+        if (m_selected >= m_scrollOffset + visibleCount)
+            m_scrollOffset = m_selected - visibleCount + 1;
         return;
     }
     auto& items = *m_stack.back().items;

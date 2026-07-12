@@ -13,8 +13,8 @@ static volatile long long s_totalProduced = 0;
 static volatile long long s_totalConsumed = 0;
 static volatile long s_flushGen = 1;
 static volatile long s_underrunCount = 0;
-static const long TARGET_QUEUE = 3307; // ~75ms@44100Hz
-static const long MAX_QUEUE = 88200;
+static const long TARGET_QUEUE = 6615; // ~150ms@44100Hz — match TARGET_FRAMES
+static const long MAX_QUEUE = 22050;   // ~500ms — generous cap to prevent flush-during-normal-operation
 
 static LARGE_INTEGER s_qpcFreq = {};
 static LARGE_INTEGER s_lastSubmit = {};

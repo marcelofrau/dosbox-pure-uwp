@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <ctime>
 
 std::string SettingsManager::s_settingsPath;
 ThemeColors SettingsManager::s_theme;
@@ -10,6 +12,8 @@ std::map<std::string, std::string> SettingsManager::s_coreOptions;
 bool SettingsManager::s_loaded = false;
 bool SettingsManager::s_dirty = false;
 uint64_t SettingsManager::s_lastSaveTime = 0;
+std::vector<SettingsManager::HistoryEntry> SettingsManager::s_history;
+std::string SettingsManager::s_historyPath;
 
 static const char* SETTINGS_FILENAME = "dosbox-pure-settings.json";
 
@@ -102,6 +106,7 @@ void SettingsManager::Initialize(const std::string& settingsPath)
     {
         Save();
         s_loaded = true;
+        LoadHistory();
         return;
     }
 
@@ -177,6 +182,7 @@ void SettingsManager::Initialize(const std::string& settingsPath)
     }
 
     s_loaded = true;
+    LoadHistory();
 }
 
 std::string SettingsManager::SerializeJson()
@@ -254,7 +260,153 @@ void SettingsManager::SetOption(const char* key, const char* value)
 
 bool SettingsManager::IsLoaded() { return s_loaded; }
 
+void SettingsManager::ResetToDefaults()
+{
+    LoadDefaults();
+    s_dirty = true;
+    Save();
+}
+
+static const char* GetDefaultForOption(const char* key)
+{
+    if (strcmp(key, "frontend_vsync") == 0) return "On";
+    if (strcmp(key, "frontend_scaler") == 0) return "Bilinear";
+    if (strcmp(key, "dosbox_pure_menu_transparency") == 0) return "70";
+    if (strcmp(key, "dosbox_pure_aspect_correction") == 0) return "Off";
+    if (strcmp(key, "dosbox_pure_machine") == 0) return "SVGA";
+    if (strcmp(key, "dosbox_pure_svgamem") == 0) return "2 (2MB)";
+    if (strcmp(key, "dosbox_pure_overscan") == 0) return "0";
+    if (strcmp(key, "dosbox_pure_audiorate") == 0) return "48000";
+    if (strcmp(key, "dosbox_pure_sblaster_type") == 0) return "SB16";
+    if (strcmp(key, "dosbox_pure_volume_sb") == 0) return "100%";
+    if (strcmp(key, "dosbox_pure_volume_midi") == 0) return "100%";
+    if (strcmp(key, "dosbox_pure_volume_adlib") == 0) return "100%";
+    if (strcmp(key, "dosbox_pure_volume_speaker") == 0) return "100%";
+    return nullptr;
+}
+
+void SettingsManager::ResetSectionDefaults(const std::vector<std::string>& keys)
+{
+    for (auto& key : keys)
+    {
+        const char* def = GetDefaultForOption(key.c_str());
+        if (def)
+            s_coreOptions[key] = def;
+        else
+            s_coreOptions.erase(key);
+    }
+    s_dirty = true;
+    Save();
+}
+
 void SettingsManager::ApplyThemeToPUREMENU()
 {
     DBPS_SetMenuColorsFromTheme(s_theme);
+}
+
+static const char* HISTORY_FILENAME = "dosbox-pure-history.json";
+
+void SettingsManager::LoadHistory()
+{
+    s_history.clear();
+    std::string historyPath = s_settingsPath;
+    // Replace settings filename with history filename
+    auto lastSlash = historyPath.find_last_of("/\\");
+    if (lastSlash != std::string::npos)
+        historyPath = historyPath.substr(0, lastSlash + 1) + HISTORY_FILENAME;
+    else
+        historyPath = HISTORY_FILENAME;
+
+    std::ifstream file(historyPath);
+    if (!file.is_open()) return;
+
+    std::stringstream ss;
+    ss << file.rdbuf();
+    file.close();
+
+    std::string raw = ss.str();
+    std::string cleaned = StripJsonComments(raw);
+
+    try
+    {
+        auto j = nlohmann::json::parse(cleaned);
+        if (j.contains("history") && j["history"].is_array())
+        {
+            for (auto& entry : j["history"])
+            {
+                HistoryEntry he;
+                if (entry.contains("filename") && entry["filename"].is_string())
+                    he.filename = entry["filename"].get<std::string>();
+                if (entry.contains("fullPath") && entry["fullPath"].is_string())
+                    he.fullPath = entry["fullPath"].get<std::string>();
+                if (entry.contains("timestamp") && entry["timestamp"].is_number_unsigned())
+                    he.timestamp = entry["timestamp"].get<uint64_t>();
+                if (!he.filename.empty() && !he.fullPath.empty())
+                    s_history.push_back(he);
+            }
+        }
+    }
+    catch (...) {}
+}
+
+void SettingsManager::SaveHistory()
+{
+    std::string historyPath = s_settingsPath;
+    auto lastSlash = historyPath.find_last_of("/\\");
+    if (lastSlash != std::string::npos)
+        historyPath = historyPath.substr(0, lastSlash + 1) + HISTORY_FILENAME;
+    else
+        historyPath = HISTORY_FILENAME;
+
+    nlohmann::json j;
+    j["history"] = nlohmann::json::array();
+    for (auto& he : s_history)
+    {
+        nlohmann::json entry;
+        entry["filename"] = he.filename;
+        entry["fullPath"] = he.fullPath;
+        entry["timestamp"] = he.timestamp;
+        j["history"].push_back(entry);
+    }
+
+    std::string json = j.dump(4);
+    std::ofstream file(historyPath, std::ios::trunc);
+    if (file.is_open())
+    {
+        file.write(json.c_str(), (std::streamsize)json.size());
+        file.close();
+    }
+}
+
+void SettingsManager::AddToHistory(const std::string& filename, const std::string& fullPath)
+{
+    // Remove existing entry with same path
+    s_history.erase(
+        std::remove_if(s_history.begin(), s_history.end(),
+            [&fullPath](const HistoryEntry& e) { return e.fullPath == fullPath; }),
+        s_history.end());
+
+    // Add to front
+    HistoryEntry he;
+    he.filename = filename;
+    he.fullPath = fullPath;
+    he.timestamp = (uint64_t)time(nullptr);
+    s_history.insert(s_history.begin(), he);
+
+    // Trim to max
+    while ((int)s_history.size() > MAX_HISTORY)
+        s_history.pop_back();
+
+    SaveHistory();
+}
+
+const std::vector<SettingsManager::HistoryEntry>& SettingsManager::GetHistory()
+{
+    return s_history;
+}
+
+void SettingsManager::ClearHistory()
+{
+    s_history.clear();
+    SaveHistory();
 }

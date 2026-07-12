@@ -119,6 +119,15 @@ namespace dosbox_uwp
         int m_lateFrameCount = 0;
         LARGE_INTEGER m_qpcFreq = {};
 
+        // DPad auto-repeat state
+        int m_dpadRepeatBtn = -1;       // which button is being held (-1 = none)
+        ULONGLONG m_dpadRepeatStart = 0; // GetTickCount64 when button was first pressed
+        ULONGLONG m_dpadRepeatNext = 0;  // GetTickCount64 when next repeat fires
+
+        // Gamepad mouse mode toggle (LB+RB+Select)
+        bool m_gamepadMouseMode = false;  // OFF by default; stick→mouse, A→click, B→escape
+        bool m_lbrbsPrevHeld = false;     // edge detection for combo press
+
         // Audio-driven frame pacing state
         LARGE_INTEGER m_audioLastTick = {};
         double m_audioTimeAccumulator = 0.0;

@@ -1,35 +1,41 @@
 name: Release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Git tag (e.g. v0.0.0.1). Leave empty to skip tagging.'
-        required: false
-        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Read version
+      - name: Determine version
         id: version
         shell: pwsh
         run: |
-          $v = (Get-Content 'version.txt' -Raw).Trim()
-          echo "version=$v" >> $env:GITHUB_OUTPUT
-          echo "Release version: $v"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            # Tag push: version from tag (strip 'v' prefix)
+            $tag = "${{ github.ref_name }}"
+            $ver = $tag -replace '^v', ''
+          } else {
+            # Manual dispatch: version from version.txt
+            $ver = (Get-Content 'version.txt' -Raw).Trim()
+          }
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "tag=v$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
 
       - name: Patch appxmanifest
         shell: pwsh
@@ -118,18 +124,19 @@ jobs:
           path: ${{ steps.package.outputs.zip }}
           compression-level: 0
 
-      - name: Create GitHub Release
-        if: inputs.tag != ''
+      - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "DOSBox Pure Unleashed ${{ steps.version.outputs.version }}"
-          tag_name: ${{ inputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
           files: ${{ steps.package.outputs.zip }}
           draft: false
           prerelease: true
           generate_release_notes: true
+          make_latest: false
 
       - name: Bump version for next snapshot
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.version }}"

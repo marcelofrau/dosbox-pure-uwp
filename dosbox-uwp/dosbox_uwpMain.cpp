@@ -196,63 +196,76 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         m_menu.m_fileBrowser.Close();
         ActivateLoadingScreen();
 
-        // Read source file via Win32 API synchronously (works for arbitrary paths incl. Xbox drives).
-        // Then async: create temp folder, write buffer, load ROM.
-        HANDLE hFile = CreateFile2FromAppW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-            OPEN_EXISTING, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE)
-        {
-            spdlog::error("[FileBrowser] CreateFile2FromAppW failed for '{}', error={}",
-                std::string(path.begin(), path.end()), GetLastError());
-            m_requestFilePicker = true;
-            return;
-        }
-        LARGE_INTEGER liSize = {};
-        GetFileSizeEx(hFile, &liSize);
-        DWORD fileSize = (DWORD)liSize.LowPart;
-        if (fileSize == 0)
-        {
-            CloseHandle(hFile);
-            spdlog::error("[FileBrowser] Empty file '{}'", std::string(path.begin(), path.end()));
-            m_requestFilePicker = true;
-            return;
-        }
-        auto fileData = ref new Platform::Array<uint8_t>(fileSize);
-        DWORD bytesRead = 0;
-        BOOL ok = ReadFile(hFile, fileData->Data, fileSize, &bytesRead, nullptr);
-        CloseHandle(hFile);
-        if (!ok || bytesRead != fileSize)
-        {
-            spdlog::error("[FileBrowser] ReadFile failed for '{}', read={}/{}",
-                std::string(path.begin(), path.end()), bytesRead, fileSize);
-            m_requestFilePicker = true;
-            return;
-        }
-        spdlog::info("[FileBrowser] Read {} bytes from '{}'", fileSize,
-            std::string(path.begin(), path.end()));
+        // Read file on background thread to keep UI responsive (large files can take seconds).
+        // Copy to temp and load ROM on UI thread via WinRT async chain.
+        std::wstring srcPath = path;
+        std::wstring srcFilename = path.substr(path.find_last_of(L'\\') + 1);
 
-        auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-        std::wstring filename = path.substr(path.find_last_of(L'\\') + 1);
-        create_task(localFolder->CreateFolderAsync(
-            L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
-        .then([filename](Windows::Storage::StorageFolder^ tempFolder)
+        create_task([srcPath, srcFilename]() -> std::vector<uint8_t>
         {
-            return create_task(tempFolder->CreateFileAsync(
-                ref new Platform::String(filename.c_str()),
-                Windows::Storage::CreationCollisionOption::ReplaceExisting));
-        })
-        .then([this, fileData](Windows::Storage::StorageFile^ destFile)
-        {
-            auto writer = ref new Windows::Storage::Streams::DataWriter();
-            writer->WriteBytes(fileData);
-            return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
-                writer->DetachBuffer()))
-            .then([this, destFile]()
+            HANDLE hFile = CreateFile2FromAppW(srcPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                OPEN_EXISTING, nullptr);
+            if (hFile == INVALID_HANDLE_VALUE)
             {
-                std::wstring localPath = destFile->Path->Data();
-                spdlog::info("[FileBrowser] Copied to: '{}'",
-                    std::string(localPath.begin(), localPath.end()));
-                QueueLoadRom(localPath, {});
+                spdlog::error("[FileBrowser] CreateFile2FromAppW failed for '{}', error={}",
+                    std::string(srcPath.begin(), srcPath.end()), GetLastError());
+                return {};
+            }
+            LARGE_INTEGER liSize = {};
+            GetFileSizeEx(hFile, &liSize);
+            DWORD fileSize = (DWORD)liSize.LowPart;
+            if (fileSize == 0)
+            {
+                CloseHandle(hFile);
+                spdlog::error("[FileBrowser] Empty file '{}'", std::string(srcPath.begin(), srcPath.end()));
+                return {};
+            }
+            std::vector<uint8_t> fileData(fileSize);
+            DWORD bytesRead = 0;
+            BOOL ok = ReadFile(hFile, fileData.data(), fileSize, &bytesRead, nullptr);
+            CloseHandle(hFile);
+            if (!ok || bytesRead != fileSize)
+            {
+                spdlog::error("[FileBrowser] ReadFile failed for '{}', read={}/{}",
+                    std::string(srcPath.begin(), srcPath.end()), bytesRead, fileSize);
+                return {};
+            }
+            spdlog::info("[FileBrowser] Read {} bytes from '{}'", fileSize,
+                std::string(srcPath.begin(), srcPath.end()));
+            return fileData;
+        }).then([this, srcFilename](std::vector<uint8_t> fileData)
+        {
+            if (fileData.empty())
+            {
+                spdlog::error("[FileBrowser] Read failed, re-opening picker");
+                m_requestFilePicker = true;
+                return;
+            }
+
+            auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+            create_task(localFolder->CreateFolderAsync(
+                L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
+            .then([srcFilename](Windows::Storage::StorageFolder^ tempFolder)
+            {
+                return create_task(tempFolder->CreateFileAsync(
+                    ref new Platform::String(srcFilename.c_str()),
+                    Windows::Storage::CreationCollisionOption::ReplaceExisting));
+            })
+            .then([this, fileData = std::move(fileData)](Windows::Storage::StorageFile^ destFile)
+            {
+                auto writer = ref new Windows::Storage::Streams::DataWriter();
+                auto arr = ref new Platform::Array<uint8_t>((UINT32)fileData.size());
+                memcpy(arr->Data, fileData.data(), fileData.size());
+                writer->WriteBytes(arr);
+                return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
+                    writer->DetachBuffer()))
+                .then([this, destFile]()
+                {
+                    std::wstring localPath = destFile->Path->Data();
+                    spdlog::info("[FileBrowser] Copied to: '{}'",
+                        std::string(localPath.begin(), localPath.end()));
+                    QueueLoadRom(localPath, {});
+                });
             });
         });
     };
@@ -261,6 +274,82 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             m_menu.Hide();
             m_retroCore->ToggleOSD();
         }
+    };
+    m_menu.onFileSelectedHistory = [this](const std::wstring& path) {
+        spdlog::info("[History] Loading '{}'", std::string(path.begin(), path.end()));
+        ActivateLoadingScreen();
+
+        std::wstring srcPath = path;
+        std::wstring srcFilename = path.substr(path.find_last_of(L'\\') + 1);
+
+        create_task([srcPath, srcFilename]() -> std::vector<uint8_t>
+        {
+            HANDLE hFile = CreateFile2FromAppW(srcPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                OPEN_EXISTING, nullptr);
+            if (hFile == INVALID_HANDLE_VALUE)
+            {
+                spdlog::error("[History] CreateFile2FromAppW failed for '{}', error={}",
+                    std::string(srcPath.begin(), srcPath.end()), GetLastError());
+                return {};
+            }
+            LARGE_INTEGER liSize = {};
+            GetFileSizeEx(hFile, &liSize);
+            DWORD fileSize = (DWORD)liSize.LowPart;
+            if (fileSize == 0)
+            {
+                CloseHandle(hFile);
+                spdlog::error("[History] Empty file '{}'", std::string(srcPath.begin(), srcPath.end()));
+                return {};
+            }
+            std::vector<uint8_t> fileData(fileSize);
+            DWORD bytesRead = 0;
+            BOOL ok = ReadFile(hFile, fileData.data(), fileSize, &bytesRead, nullptr);
+            CloseHandle(hFile);
+            if (!ok || bytesRead != fileSize)
+            {
+                spdlog::error("[History] ReadFile failed for '{}', read={}/{}",
+                    std::string(srcPath.begin(), srcPath.end()), bytesRead, fileSize);
+                return {};
+            }
+            spdlog::info("[History] Read {} bytes from '{}'", fileSize,
+                std::string(srcPath.begin(), srcPath.end()));
+            return fileData;
+        }).then([this, srcFilename, srcPath](std::vector<uint8_t> fileData)
+        {
+            if (fileData.empty())
+            {
+                spdlog::error("[History] Read failed for '{}'", std::string(srcPath.begin(), srcPath.end()));
+                m_menu.Show();
+                m_menu.RebuildItems();
+                return;
+            }
+
+            auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+            create_task(localFolder->CreateFolderAsync(
+                L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
+            .then([srcFilename](Windows::Storage::StorageFolder^ tempFolder)
+            {
+                return create_task(tempFolder->CreateFileAsync(
+                    ref new Platform::String(srcFilename.c_str()),
+                    Windows::Storage::CreationCollisionOption::ReplaceExisting));
+            })
+            .then([this, fileData = std::move(fileData)](Windows::Storage::StorageFile^ destFile)
+            {
+                auto writer = ref new Windows::Storage::Streams::DataWriter();
+                auto arr = ref new Platform::Array<uint8_t>((UINT32)fileData.size());
+                memcpy(arr->Data, fileData.data(), fileData.size());
+                writer->WriteBytes(arr);
+                return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
+                    writer->DetachBuffer()))
+                .then([this, destFile]()
+                {
+                    std::wstring localPath = destFile->Path->Data();
+                    spdlog::info("[History] Copied to: '{}'",
+                        std::string(localPath.begin(), localPath.end()));
+                    QueueLoadRom(localPath, {});
+                });
+            });
+        });
     };
     m_menu.onExit = []() {
         CoreApplication::Exit();
@@ -391,6 +480,20 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         m_retroRunning = true;
         m_clearColor = DirectX::Colors::Black;
         m_menu.Hide();
+
+        // Add to history
+        {
+            std::string pathUtf8;
+            {
+                int len = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                pathUtf8.resize(len - 1);
+                WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
+            }
+            auto slash = pathUtf8.find_last_of("/\\");
+            std::string fnameUtf8 = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
+            SettingsManager::AddToHistory(fnameUtf8, pathUtf8);
+            m_menu.SetCoreLoaded(true);
+        }
     }
     else
     {
@@ -476,10 +579,58 @@ void dosbox_uwpMain::Update()
         // Menu navigation (absorbs gamepad input while visible)
         if (m_menu.IsVisible())
         {
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_DPAD_UP))
-                m_menu.OnDPad(true);
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_DPAD_DOWN))
-                m_menu.OnDPad(false);
+            // DPad auto-repeat: first press fires immediately, then repeats after delay
+            const int DPAD_INITIAL_DELAY_MS = 300;
+            const int DPAD_REPEAT_RATE_MS = 50;
+
+            auto dpadRepeat = [&](int btn, bool up) {
+                bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
+                bool held = m_sdlInput->IsButtonHeld(btn);
+                ULONGLONG now = GetTickCount64();
+
+                if (justPressed) {
+                    // First press: fire immediately, start repeat timer
+                    m_menu.OnDPad(up);
+                    m_dpadRepeatBtn = btn;
+                    m_dpadRepeatStart = now;
+                    m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
+                    return;
+                }
+                if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
+                    // Repeat: fire and schedule next
+                    m_menu.OnDPad(up);
+                    m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
+                }
+                if (!held && m_dpadRepeatBtn == btn) {
+                    m_dpadRepeatBtn = -1;
+                }
+            };
+            dpadRepeat(BUTTON_DPAD_UP, true);
+            dpadRepeat(BUTTON_DPAD_DOWN, false);
+
+            // DPad Left/Right: toggle option values
+            auto dpadLeftRight = [&](int btn, bool left) {
+                bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
+                bool held = m_sdlInput->IsButtonHeld(btn);
+                ULONGLONG now = GetTickCount64();
+                if (justPressed) {
+                    if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
+                    m_dpadRepeatBtn = btn;
+                    m_dpadRepeatStart = now;
+                    m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
+                    return;
+                }
+                if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
+                    if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
+                    m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
+                }
+                if (!held && m_dpadRepeatBtn == btn) {
+                    m_dpadRepeatBtn = -1;
+                }
+            };
+            dpadLeftRight(BUTTON_DPAD_LEFT, true);
+            dpadLeftRight(BUTTON_DPAD_RIGHT, false);
+
             if (m_sdlInput->WasButtonJustPressed(BUTTON_A))
                 m_menu.OnConfirm();
             if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
@@ -489,11 +640,31 @@ void dosbox_uwpMain::Update()
             if (m_sdlInput->WasButtonJustPressed(BUTTON_R))
                 m_menu.OnPageDown();
         }
+        else
+        {
+            // Reset repeat state when menu is hidden
+            m_dpadRepeatBtn = -1;
+        }
 
         // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
         if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) && m_retroCore && m_retroCore->IsLoaded()) {
             spdlog::info("[input] R3 -> toggle PUREMENU");
             m_retroCore->ToggleOSD();
+        }
+
+        // LB+RB+Select simultaneous press → toggle gamepad mouse mode
+        // Mouse mode OFF (default): stick does NOT simulate mouse in DOSBox/Puremenu
+        // Mouse mode ON: stick → relative mouse, A→Enter, B→Escape for Puremenu
+        {
+            bool lb = m_sdlInput->IsButtonHeld(BUTTON_L);
+            bool rb = m_sdlInput->IsButtonHeld(BUTTON_R);
+            bool sel = m_sdlInput->IsButtonHeld(BUTTON_SELECT);
+            bool allThree = lb && rb && sel;
+            if (allThree && !m_lbrbsPrevHeld && m_retroCore && m_retroCore->IsLoaded()) {
+                m_gamepadMouseMode = !m_gamepadMouseMode;
+                spdlog::info("[input] Gamepad mouse mode: {}", m_gamepadMouseMode ? "ON" : "OFF");
+            }
+            m_lbrbsPrevHeld = allThree;
         }
 
         // Log every gamepad button press (after all handlers consume their events)
@@ -554,49 +725,53 @@ void dosbox_uwpMain::Update()
                 RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
 
 #ifdef MOUSE_SUPPORT
-            // Phase 2: Gamepad left stick → relative mouse
-            if (sx != 0.0f || sy != 0.0f)
+            // Gamepad mouse simulation — only when m_gamepadMouseMode is ON (LB+RB+Select toggle)
+            if (m_gamepadMouseMode)
             {
-                float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
-                float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
-                float inPixelsPerSec = 800.0f;
-                int dx = (int)(curveX * inPixelsPerSec * dtSec);
-                int dy = (int)(curveY * inPixelsPerSec * dtSec);
-                if (dx == 0 && sx != 0) dx = (sx > 0 ? 1 : -1);
-                if (dy == 0 && sy != 0) dy = (sy > 0 ? 1 : -1);
-                m_retroCore->SetMouseMove(dx, dy);
-            }
+                // Phase 2: Gamepad left stick → relative mouse
+                if (sx != 0.0f || sy != 0.0f)
+                {
+                    float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
+                    float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
+                    float inPixelsPerSec = 800.0f;
+                    int dx = (int)(curveX * inPixelsPerSec * dtSec);
+                    int dy = (int)(curveY * inPixelsPerSec * dtSec);
+                    if (dx == 0 && sx != 0) dx = (sx > 0 ? 1 : -1);
+                    if (dy == 0 && sy != 0) dy = (sy > 0 ? 1 : -1);
+                    m_retroCore->SetMouseMove(dx, dy);
+                }
 
-            // Gamepad buttons → PUREMENU keyboard (A=Enter, B=Escape)
-            // Only when OSD visible and menu NOT visible — prevents spurious input in DOS
-            if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
-            {
-                static bool prevA = false, prevB = false;
-                bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
-                bool nowB = m_sdlInput->IsButtonHeld(BUTTON_B);
-                if (nowA != prevA) { RetroCore::SetKeyState(RETROK_RETURN, nowA); prevA = nowA; }
-                if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
-            }
+                // Gamepad buttons → PUREMENU keyboard (A=Enter, B=Escape)
+                // Only when OSD visible and menu NOT visible — prevents spurious input in DOS
+                if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
+                {
+                    static bool prevA = false, prevB = false;
+                    bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
+                    bool nowB = m_sdlInput->IsButtonHeld(BUTTON_B);
+                    if (nowA != prevA) { RetroCore::SetKeyState(RETROK_RETURN, nowA); prevA = nowA; }
+                    if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
+                }
 
-            // Phase 3: Gamepad → absolute pointer for PUREMENU
-            LARGE_INTEGER _gmnow;
-            QueryPerformanceCounter(&_gmnow);
-            double mouseIdleMs = 0.0;
-            if (m_lastPointerTime.QuadPart != 0)
-                mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
-                              * 1000.0 / m_qpcFreq.QuadPart;
-            if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
-            {
-                float cursorDx = sx * 0.80f * dtSec;
-                float cursorDy = sy * 0.80f * dtSec;
-                m_virtualCursorX += cursorDx;
-                m_virtualCursorY += cursorDy;
-                if (m_virtualCursorX < 0.0f) m_virtualCursorX = 0.0f;
-                if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
-                if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
-                if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
-                m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
-            }
+                // Phase 3: Gamepad → absolute pointer for PUREMENU
+                LARGE_INTEGER _gmnow;
+                QueryPerformanceCounter(&_gmnow);
+                double mouseIdleMs = 0.0;
+                if (m_lastPointerTime.QuadPart != 0)
+                    mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
+                                  * 1000.0 / m_qpcFreq.QuadPart;
+                if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
+                {
+                    float cursorDx = sx * 0.80f * dtSec;
+                    float cursorDy = sy * 0.80f * dtSec;
+                    m_virtualCursorX += cursorDx;
+                    m_virtualCursorY += cursorDy;
+                    if (m_virtualCursorX < 0.0f) m_virtualCursorX = 0.0f;
+                    if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
+                    if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
+                    if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
+                    m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
+                }
+            } // end m_gamepadMouseMode
 #endif
 
             double targetFps = m_retroCore->GetTargetFps();
@@ -610,7 +785,7 @@ void dosbox_uwpMain::Update()
                 double deltaMs = (double)(_now.QuadPart - m_audioLastTick.QuadPart)
                                  * 1000.0 / m_qpcFreq.QuadPart;
                 m_audioTimeAccumulator += deltaMs;
-                if (m_audioTimeAccumulator > audioPeriodMs * 60)
+                if (m_audioTimeAccumulator > audioPeriodMs * 5)
                     m_audioTimeAccumulator = audioPeriodMs;
 
                 int retroRuns = 0;
@@ -654,27 +829,7 @@ void dosbox_uwpMain::Update()
                         m_audioTimeAccumulator *= scale;
                     }
 
-                    // Emergency catch-up: if queue critically low after heavy frame, refill immediately
-                    if (q < 500)
-                    {
-                        int catchupRuns = 0;
-                        while (catchupRuns < 30 && m_xaudio2->GetQueuedFrames() < targetQ && !RetroCore::IsShutdownRequested())
-                        {
-#ifndef XB_INSPECTOR_ENABLED
-                            m_retroCore->RunFrame();
-#else
-                            if (!s_paused)
-                                m_retroCore->RunFrame();
-#endif
-                            catchupRuns++;
-                        }
-                        if (catchupRuns > 0)
-                        {
-                            char _dbg[128];
-                            sprintf_s(_dbg, "[dosbox-uwp] CATCH-UP: %d extra frames after heavy frame (queue was %ld)\n", catchupRuns, q);
-                            OutputDebugStringA(_dbg);
-                        }
-                    }
+
                 }
             }
             else
@@ -896,6 +1051,8 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
             {
             case 0x26: m_menu.OnDPad(true); return;  // Up
             case 0x28: m_menu.OnDPad(false); return; // Down
+            case 0x25: m_menu.OnDPadLeft(); return;  // Left
+            case 0x27: m_menu.OnDPadRight(); return; // Right
             case 0x0D: m_menu.OnConfirm(); return;   // Enter
             case 0x1B: m_menu.OnBack();  return;     // Escape
             case 0x21: m_menu.OnPageUp(); return;    // PageUp
