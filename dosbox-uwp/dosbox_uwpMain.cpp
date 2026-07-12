@@ -40,6 +40,33 @@ using namespace Windows::System::Profile;
 using namespace Windows::ApplicationModel::Core;
 using namespace Concurrency;
 
+// Copy a file to LocalFolder\temp\ via Win32 kernel copy (0 heap allocation).
+// Returns dest path on success, empty string on failure.
+static std::wstring CopyFileToTemp(const std::wstring& srcPath)
+{
+    auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
+    std::wstring tempDir = std::wstring(localFolder->Path->Data()) + L"\\temp";
+    CreateDirectoryFromAppW(tempDir.c_str(), nullptr);
+
+    auto slash = srcPath.find_last_of(L'\\');
+    std::wstring filename = (slash != std::wstring::npos) ? srcPath.substr(slash + 1) : srcPath;
+    std::wstring destPath = tempDir + L"\\" + filename;
+
+    std::string srcUtf8(srcPath.begin(), srcPath.end());
+    std::string destUtf8(destPath.begin(), destPath.end());
+
+    BOOL ok = CopyFileFromAppW(srcPath.c_str(), destPath.c_str(), FALSE);
+    if (!ok)
+    {
+        spdlog::error("[CopyFileToTemp] CopyFileFromAppW failed '{}' -> '{}', error={}",
+            srcUtf8, destUtf8, GetLastError());
+        return {};
+    }
+
+    spdlog::info("[CopyFileToTemp] '{}' -> '{}'", srcUtf8, destUtf8);
+    return destPath;
+}
+
 dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& deviceResources)
     : m_deviceResources(deviceResources)
     , m_clearColor{ 0.0f, 0.0f, 0.0f, 1.0f }
@@ -196,77 +223,20 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         m_menu.m_fileBrowser.Close();
         ActivateLoadingScreen();
 
-        // Read file on background thread to keep UI responsive (large files can take seconds).
-        // Copy to temp and load ROM on UI thread via WinRT async chain.
+        // Copy to LocalFolder\temp\ via kernel-level copy (no memory allocation).
         std::wstring srcPath = path;
-        std::wstring srcFilename = path.substr(path.find_last_of(L'\\') + 1);
-
-        create_task([srcPath, srcFilename]() -> std::vector<uint8_t>
+        create_task([srcPath]() -> std::wstring
         {
-            HANDLE hFile = CreateFile2FromAppW(srcPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                OPEN_EXISTING, nullptr);
-            if (hFile == INVALID_HANDLE_VALUE)
-            {
-                spdlog::error("[FileBrowser] CreateFile2FromAppW failed for '{}', error={}",
-                    std::string(srcPath.begin(), srcPath.end()), GetLastError());
-                return {};
-            }
-            LARGE_INTEGER liSize = {};
-            GetFileSizeEx(hFile, &liSize);
-            DWORD fileSize = (DWORD)liSize.LowPart;
-            if (fileSize == 0)
-            {
-                CloseHandle(hFile);
-                spdlog::error("[FileBrowser] Empty file '{}'", std::string(srcPath.begin(), srcPath.end()));
-                return {};
-            }
-            std::vector<uint8_t> fileData(fileSize);
-            DWORD bytesRead = 0;
-            BOOL ok = ReadFile(hFile, fileData.data(), fileSize, &bytesRead, nullptr);
-            CloseHandle(hFile);
-            if (!ok || bytesRead != fileSize)
-            {
-                spdlog::error("[FileBrowser] ReadFile failed for '{}', read={}/{}",
-                    std::string(srcPath.begin(), srcPath.end()), bytesRead, fileSize);
-                return {};
-            }
-            spdlog::info("[FileBrowser] Read {} bytes from '{}'", fileSize,
-                std::string(srcPath.begin(), srcPath.end()));
-            return fileData;
-        }).then([this, srcFilename](std::vector<uint8_t> fileData)
+            return CopyFileToTemp(srcPath);
+        }).then([this](std::wstring tempPath)
         {
-            if (fileData.empty())
+            if (tempPath.empty())
             {
-                spdlog::error("[FileBrowser] Read failed, re-opening picker");
+                spdlog::error("[FileBrowser] Copy failed, re-opening picker");
                 m_requestFilePicker = true;
                 return;
             }
-
-            auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-            create_task(localFolder->CreateFolderAsync(
-                L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
-            .then([srcFilename](Windows::Storage::StorageFolder^ tempFolder)
-            {
-                return create_task(tempFolder->CreateFileAsync(
-                    ref new Platform::String(srcFilename.c_str()),
-                    Windows::Storage::CreationCollisionOption::ReplaceExisting));
-            })
-            .then([this, fileData = std::move(fileData)](Windows::Storage::StorageFile^ destFile)
-            {
-                auto writer = ref new Windows::Storage::Streams::DataWriter();
-                auto arr = ref new Platform::Array<uint8_t>((UINT32)fileData.size());
-                memcpy(arr->Data, fileData.data(), fileData.size());
-                writer->WriteBytes(arr);
-                return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
-                    writer->DetachBuffer()))
-                .then([this, destFile]()
-                {
-                    std::wstring localPath = destFile->Path->Data();
-                    spdlog::info("[FileBrowser] Copied to: '{}'",
-                        std::string(localPath.begin(), localPath.end()));
-                    QueueLoadRom(localPath, {});
-                });
-            });
+            QueueLoadRom(tempPath, {});
         });
     };
     m_menu.onOpenPuremenu = [this]() {
@@ -280,75 +250,19 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         ActivateLoadingScreen();
 
         std::wstring srcPath = path;
-        std::wstring srcFilename = path.substr(path.find_last_of(L'\\') + 1);
-
-        create_task([srcPath, srcFilename]() -> std::vector<uint8_t>
+        create_task([srcPath]() -> std::wstring
         {
-            HANDLE hFile = CreateFile2FromAppW(srcPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                OPEN_EXISTING, nullptr);
-            if (hFile == INVALID_HANDLE_VALUE)
-            {
-                spdlog::error("[History] CreateFile2FromAppW failed for '{}', error={}",
-                    std::string(srcPath.begin(), srcPath.end()), GetLastError());
-                return {};
-            }
-            LARGE_INTEGER liSize = {};
-            GetFileSizeEx(hFile, &liSize);
-            DWORD fileSize = (DWORD)liSize.LowPart;
-            if (fileSize == 0)
-            {
-                CloseHandle(hFile);
-                spdlog::error("[History] Empty file '{}'", std::string(srcPath.begin(), srcPath.end()));
-                return {};
-            }
-            std::vector<uint8_t> fileData(fileSize);
-            DWORD bytesRead = 0;
-            BOOL ok = ReadFile(hFile, fileData.data(), fileSize, &bytesRead, nullptr);
-            CloseHandle(hFile);
-            if (!ok || bytesRead != fileSize)
-            {
-                spdlog::error("[History] ReadFile failed for '{}', read={}/{}",
-                    std::string(srcPath.begin(), srcPath.end()), bytesRead, fileSize);
-                return {};
-            }
-            spdlog::info("[History] Read {} bytes from '{}'", fileSize,
-                std::string(srcPath.begin(), srcPath.end()));
-            return fileData;
-        }).then([this, srcFilename, srcPath](std::vector<uint8_t> fileData)
+            return CopyFileToTemp(srcPath);
+        }).then([this](std::wstring tempPath)
         {
-            if (fileData.empty())
+            if (tempPath.empty())
             {
-                spdlog::error("[History] Read failed for '{}'", std::string(srcPath.begin(), srcPath.end()));
+                spdlog::error("[History] Copy failed");
                 m_menu.Show();
                 m_menu.RebuildItems();
                 return;
             }
-
-            auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-            create_task(localFolder->CreateFolderAsync(
-                L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
-            .then([srcFilename](Windows::Storage::StorageFolder^ tempFolder)
-            {
-                return create_task(tempFolder->CreateFileAsync(
-                    ref new Platform::String(srcFilename.c_str()),
-                    Windows::Storage::CreationCollisionOption::ReplaceExisting));
-            })
-            .then([this, fileData = std::move(fileData)](Windows::Storage::StorageFile^ destFile)
-            {
-                auto writer = ref new Windows::Storage::Streams::DataWriter();
-                auto arr = ref new Platform::Array<uint8_t>((UINT32)fileData.size());
-                memcpy(arr->Data, fileData.data(), fileData.size());
-                writer->WriteBytes(arr);
-                return create_task(Windows::Storage::FileIO::WriteBufferAsync(destFile,
-                    writer->DetachBuffer()))
-                .then([this, destFile]()
-                {
-                    std::wstring localPath = destFile->Path->Data();
-                    spdlog::info("[History] Copied to: '{}'",
-                        std::string(localPath.begin(), localPath.end()));
-                    QueueLoadRom(localPath, {});
-                });
-            });
+            QueueLoadRom(tempPath, {});
         });
     };
     m_menu.onExit = []() {
@@ -1450,6 +1364,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
             m_audioTimeAccumulator);
     }
     m_loadingActive = false;
+    m_loadingDisc.Reset();
 }
 
 void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize)

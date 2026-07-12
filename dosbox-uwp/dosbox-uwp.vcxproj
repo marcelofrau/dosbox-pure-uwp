@@ -108,6 +108,9 @@
     <Content Include="Assets\dosbox-transparent.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Assets\dosbox.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Assets\Fonts\VCR_OSD_MONO_1.001.ttf">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -129,6 +132,8 @@
 <ClInclude Include="Content\XAudio2Output.h" />
 <ClInclude Include="Content\FrontendMenu.h" />
 <ClInclude Include="Content\FileBrowser.h" />
+<ClInclude Include="Content\AboutDialog.h" />
+<ClInclude Include="Content\ConfirmDialog.h" />
 <ClInclude Include="Content\SettingsManager.h" />
 <ClInclude Include="LogHelper.h" />
     <ClInclude Include="pch.h" />
@@ -949,6 +954,8 @@
     <ClCompile Include="LogHelper.cpp" />
     <ClCompile Include="Content\FrontendMenu.cpp" />
     <ClCompile Include="Content\FileBrowser.cpp" />
+    <ClCompile Include="Content\AboutDialog.cpp" />
+    <ClCompile Include="Content\ConfirmDialog.cpp" />
     <ClCompile Include="dosbox_pure_sta.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>

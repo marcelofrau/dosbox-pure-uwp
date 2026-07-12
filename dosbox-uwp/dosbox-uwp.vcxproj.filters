@@ -62,6 +62,18 @@
     <ClCompile Include="Content\SettingsManager.cpp">
       <Filter>Content</Filter>
     </ClCompile>
+    <ClInclude Include="Content\AboutDialog.h">
+      <Filter>Content</Filter>
+    </ClInclude>
+    <ClCompile Include="Content\AboutDialog.cpp">
+      <Filter>Content</Filter>
+    </ClCompile>
+    <ClInclude Include="Content\ConfirmDialog.h">
+      <Filter>Content</Filter>
+    </ClInclude>
+    <ClCompile Include="Content\ConfirmDialog.cpp">
+      <Filter>Content</Filter>
+    </ClCompile>
 	<FxCompile Include="Content\SamplePixelShader.hlsl">
       <Filter>Content</Filter>
     </FxCompile>

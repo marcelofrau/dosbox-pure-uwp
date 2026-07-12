@@ -162,6 +162,14 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
     {
         spdlog::warn("[FileBrowser] FindFirstFileExFromAppW failed for '{}' (GLE={})",
             std::string(path.begin(), path.end()), GetLastError());
+        // Add ".." so user can navigate back even from empty/unreadable drives
+        if (!path.empty())
+        {
+            FileEntry dd;
+            dd.name = L"..";
+            dd.isDir = true;
+            m_entries.push_back(dd);
+        }
         return;
     }
 
@@ -336,6 +344,44 @@ void FileBrowser::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrit
     spdlog::info("[FileBrowser] Resources created (fonts + brushes)");
 }
 
+void FileBrowser::ReleaseResources()
+{
+    if (!m_resourcesCreated) return;
+
+    m_brushBg.Reset();
+    m_brushFrame.Reset();
+    m_brushTitleBg.Reset();
+    m_brushSelectedBg.Reset();
+    m_brushSelectedText.Reset();
+    m_brushItemText.Reset();
+    m_brushDirText.Reset();
+    m_brushFileText.Reset();
+    m_brushPathText.Reset();
+    m_brushFooter.Reset();
+    m_brushBlack.Reset();
+    m_brushDimPrefix.Reset();
+    m_textFormatTitle.Reset();
+    m_textFormatItem.Reset();
+    m_textFormatPath.Reset();
+    m_textFormatFooter.Reset();
+    m_fontCollection.Reset();
+
+    m_resourcesCreated = false;
+    spdlog::info("[FileBrowser] Resources released");
+}
+
+static ComPtr<ID2D1Brush> MakeAnimatedTitleBrush(ID2D1DeviceContext* d2d,
+    float rectX, float rectY, float rectW, float rectH, uint32_t baseColor)
+{
+    float t = (float)(GetTickCount64() % 3000) / 3000.0f;
+    float alpha = 0.70f + 0.30f * (0.5f + 0.5f * sinf(t * 6.283185f));
+    D2D1_COLOR_F col = D2D1::ColorF(baseColor);
+    col.a = alpha;
+    ComPtr<ID2D1SolidColorBrush> brush;
+    d2d->CreateSolidColorBrush(col, &brush);
+    return brush;
+}
+
 static void DrawTextLineFB(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, IDWriteFontCollection* fc,
     IDWriteTextFormat* fmt, const wchar_t* text, UINT32 len, float x, float y, float w, float h,
     ID2D1Brush* brush)
@@ -423,6 +469,7 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
     if (!m_visible) return;
 
     EnsureResources(d2d, dwrite, screenW, screenH);
+    const auto& theme = SettingsManager::GetTheme();
 
     m_lastScreenW = screenW;
     m_lastScreenH = screenH;
@@ -451,11 +498,13 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
         m_panelX + m_panelW - 4.0f, m_panelY + m_panelH - 4.0f };
     d2d->DrawRectangle(innerFrame, m_brushFrame.Get(), 1.0f);
 
-    // Title bar
+    // Title bar (animated gradient)
     float titleY = m_panelY + PANEL_PADDING;
     D2D1_RECT_F titleBg = { m_panelX + PANEL_PADDING, titleY,
         m_panelX + m_panelW - PANEL_PADDING, titleY + TITLE_HEIGHT };
-    d2d->FillRectangle(titleBg, m_brushTitleBg.Get());
+    auto fbTitleBrush = MakeAnimatedTitleBrush(d2d, titleBg.left, titleBg.top,
+        titleBg.right - titleBg.left, titleBg.bottom - titleBg.top, theme.title_bg);
+    d2d->FillRectangle(titleBg, fbTitleBrush.Get());
 
     // Title text: "FILE BROWSER"
     {
@@ -603,6 +652,11 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
 
     // Footer area
     float footerY = m_panelY + m_panelH - PANEL_PADDING - FOOTER_HEIGHT;
+
+    // Footer area background
+    D2D1_RECT_F footerBg = { m_panelX + PANEL_PADDING, footerY,
+        m_panelX + m_panelW - PANEL_PADDING, footerY + FOOTER_HEIGHT };
+    d2d->FillRectangle(footerBg, m_brushTitleBg.Get());
 
     // Item count indicator (left side of footer)
     if (itemCount > 0)

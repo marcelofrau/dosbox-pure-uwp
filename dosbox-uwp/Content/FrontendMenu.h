@@ -7,6 +7,8 @@
 #include <vector>
 #include <functional>
 #include "FileBrowser.h"
+#include "AboutDialog.h"
+#include "ConfirmDialog.h"
 
 namespace dosbox_uwp
 {
@@ -26,6 +28,8 @@ namespace dosbox_uwp
         STATE,
         TOGGLE_VALUE,
         RESET_DEFAULTS,
+        RESET_ALL_SETTINGS,
+        CLEAR_HISTORY,
         ABOUT,
         EXIT
     };
@@ -69,7 +73,8 @@ namespace dosbox_uwp
 
         bool IsVisible() const { return m_visible; }
         void Show();
-        void Hide() { m_visible = false; }
+        void Hide() { ReleaseResources(); m_visible = false; }
+        void ReleaseResources();
         void RebuildItems();
 
         void SetCoreLoaded(bool loaded);
@@ -88,13 +93,22 @@ namespace dosbox_uwp
         std::function<void(const std::wstring&)> onFileSelectedHistory;
 
         FileBrowser m_fileBrowser;
+        AboutDialog m_aboutDialog;
+        ConfirmDialog m_confirmDialog;
 
     private:
         void BuildMenuTree();
         void EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);
+        void SaveCurrentSettings();
+        void ShowToast(const wchar_t* msg);
 
         bool m_visible = true;
         bool m_coreLoadedPrev = false;
+
+        // Toast feedback
+        std::wstring m_toastMsg;
+        ULONGLONG m_toastTick = 0;
+        static constexpr DWORD TOAST_DURATION_MS = 2000;
 
         enum AnimPhase { ANIM_INITIAL_DELAY, ANIM_BIOS_POST, ANIM_MEMORY_COUNT, ANIM_COMPLETE };
         AnimPhase m_animPhase = ANIM_INITIAL_DELAY;

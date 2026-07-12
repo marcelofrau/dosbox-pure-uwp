@@ -130,13 +130,6 @@ FrontendMenu::FrontendMenu()
 void FrontendMenu::Show()
 {
     m_visible = true;
-    // Refresh History enabled state — AddToHistory may have been called since last BuildMenuTree
-    auto& history = SettingsManager::GetHistory();
-    for (auto& item : m_mainItems)
-    {
-        if (item.action == MenuAction::OPEN_HISTORY)
-            item.enabled = !history.empty();
-    }
 }
 
 void FrontendMenu::SetCoreLoaded(bool loaded)
@@ -153,8 +146,9 @@ void FrontendMenu::BuildMenuTree()
         { "Load File",           MenuAction::OPEN_FILE },
         { "",                    MenuAction::NONE },
         { "Settings",            MenuAction::SETTINGS, {}, {}, 0, true },
-        { "History",             MenuAction::OPEN_HISTORY, {}, {}, 0, false },
+        { "History",             MenuAction::OPEN_HISTORY, {}, {}, 0, true },
         { "",                    MenuAction::NONE },
+        { "About",               MenuAction::ABOUT },
         { "Exit",                MenuAction::EXIT },
     };
 
@@ -163,6 +157,8 @@ void FrontendMenu::BuildMenuTree()
         { "Video",               MenuAction::VIDEO },
         { "Audio",               MenuAction::AUDIO },
         { "Core Options",        MenuAction::CORE_OPTIONS },
+        { "",                    MenuAction::NONE },
+        { "Reset All Settings",  MenuAction::RESET_ALL_SETTINGS },
         { "",                    MenuAction::NONE },
         { "Back",                MenuAction::BACK },
     };
@@ -194,6 +190,8 @@ void FrontendMenu::BuildMenuTree()
             { "Overscan",          MenuAction::TOGGLE_VALUE, {}, overscanVals, findVal("dosbox_pure_overscan", overscanVals, "0"), true, "dosbox_pure_overscan" },
             { "",                  MenuAction::NONE },
             { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
+            { "",                  MenuAction::NONE },
+            { "Back",              MenuAction::BACK },
         };
     }
 
@@ -214,6 +212,8 @@ void FrontendMenu::BuildMenuTree()
             { "Volume: Speaker",   MenuAction::TOGGLE_VALUE, {}, volVals, findVal("dosbox_pure_volume_speaker", volVals, "100%"), true, "dosbox_pure_volume_speaker" },
             { "",                  MenuAction::NONE },
             { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
+            { "",                  MenuAction::NONE },
+            { "Back",              MenuAction::BACK },
         };
     }
 
@@ -247,6 +247,8 @@ void FrontendMenu::BuildMenuTree()
             { "Menu Transparency", MenuAction::TOGGLE_VALUE, {}, transparencyVals, findVal("dosbox_pure_menu_transparency", transparencyVals, "70"), true, "dosbox_pure_menu_transparency" },
             { "",                  MenuAction::NONE },
             { "Reset to Defaults", MenuAction::RESET_DEFAULTS },
+            { "",                  MenuAction::NONE },
+            { "Back",              MenuAction::BACK },
         };
     }
 
@@ -283,14 +285,6 @@ void FrontendMenu::RebuildItems()
     m_overlayActive = false;
     m_overlayItems = nullptr;
     m_overlayStack.clear();
-
-    // Enable/disable History based on whether we have entries
-    auto& history = SettingsManager::GetHistory();
-    for (auto& item : m_mainItems)
-    {
-        if (item.action == MenuAction::OPEN_HISTORY)
-            item.enabled = !history.empty();
-    }
 
     auto& items = *m_stack.back().items;
     for (int i = 0; i < (int)items.size(); i++)
@@ -473,6 +467,36 @@ void FrontendMenu::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwri
     m_resourcesCreated = true;
 }
 
+void FrontendMenu::ReleaseResources()
+{
+    if (!m_resourcesCreated) return;
+
+    m_brushTitleBg.Reset();
+    m_brushBg.Reset();
+    m_brushSelected.Reset();
+    m_brushItemText.Reset();
+    m_brushTitleText.Reset();
+    m_brushValueText.Reset();
+    m_brushDisabled.Reset();
+    m_brushFooter.Reset();
+    m_brushFrame.Reset();
+    m_brushBios.Reset();
+    m_brushBlack.Reset();
+    m_brushWhite.Reset();
+    m_textFormatTitle.Reset();
+    m_textFormatItem.Reset();
+    m_textFormatFooter.Reset();
+    m_epaLogo.Reset();
+    m_dosboxLogo.Reset();
+    m_fontCollection.Reset();
+
+    m_resourcesCreated = false;
+
+    m_fileBrowser.ReleaseResources();
+    m_aboutDialog.ReleaseResources();
+    m_confirmDialog.ReleaseResources();
+}
+
 void FrontendMenu::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH)
 {
     if (!m_visible) return;
@@ -499,18 +523,34 @@ static void DrawTextLine(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, IDWrit
         d2d->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush);
 }
 
+static ComPtr<ID2D1Brush> MakeAnimatedTitleBrush(ID2D1DeviceContext* d2d,
+    float rectX, float rectY, float rectW, float rectH, uint32_t baseColor)
+{
+    // Subtle alpha pulse: oscillate opacity 0.85–1.0 over 3 seconds
+    float t = (float)(GetTickCount64() % 3000) / 3000.0f;
+    float alpha = 0.70f + 0.30f * (0.5f + 0.5f * sinf(t * 6.283185f));
+    D2D1_COLOR_F col = D2D1::ColorF(baseColor);
+    col.a = alpha;
+    ComPtr<ID2D1SolidColorBrush> brush;
+    d2d->CreateSolidColorBrush(col, &brush);
+    return brush;
+}
+
 void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH)
 {
     if (!m_visible) return;
 
     EnsureResources(d2d, dwrite, screenW, screenH);
+    const auto& theme = SettingsManager::GetTheme();
 
     m_lastScreenW = screenW;
     m_lastScreenH = screenH;
 
-    // Full black background
-    D2D1_RECT_F fullBg = { 0, 0, screenW, screenH };
-    d2d->FillRectangle(fullBg, m_brushBlack.Get());
+    // Full black background — always draw as base layer for BIOS text and dialog overlays
+    {
+        D2D1_RECT_F fullBg = { 0, 0, screenW, screenH };
+        d2d->FillRectangle(fullBg, m_brushBlack.Get());
+    }
 
     // EPA logo top-right with pulsing animation
     if (m_epaLogo)
@@ -635,14 +675,26 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
         d2d->DrawBitmap(m_dosboxLogo.Get(), dbRect, 1.0f);
     }
 
-    // Version bottom-right (always)
+    // Version bottom-right (replaced by toast when active)
     {
+        const wchar_t* footerText = m_versionStr.c_str();
+        size_t footerLen = m_versionStr.size();
+        std::wstring toastBuf;
+        if (m_toastTick != 0 && (GetTickCount64() - m_toastTick) < TOAST_DURATION_MS)
+        {
+            footerText = m_toastMsg.c_str();
+            footerLen = m_toastMsg.size();
+        }
+        else
+        {
+            m_toastTick = 0;
+        }
         ComPtr<IDWriteTextLayout> verLayout;
-        dwrite->CreateTextLayout(m_versionStr.c_str(), (UINT32)m_versionStr.size(), m_textFormatFooter.Get(),
+        dwrite->CreateTextLayout(footerText, (UINT32)footerLen, m_textFormatFooter.Get(),
             300.0f, FOOTER_HEIGHT, &verLayout);
         if (verLayout && m_fontCollection)
         {
-            DWRITE_TEXT_RANGE fr = { 0, (UINT32)m_versionStr.size() };
+            DWRITE_TEXT_RANGE fr = { 0, (UINT32)footerLen };
             verLayout->SetFontCollection(m_fontCollection.Get(), fr);
         }
         if (verLayout)
@@ -670,10 +722,12 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
     D2D1_RECT_F innerFrame = { panelX + 4.0f, panelY + 4.0f, panelX + panelW - 4.0f, panelY + panelH - 4.0f };
     d2d->DrawRectangle(innerFrame, m_brushFrame.Get(), 1.0f);
 
-    // Title bar
+    // Title bar (animated gradient)
     float titleY = panelY + 8.0f;
     D2D1_RECT_F titleBg = { panelX + 8.0f, titleY, panelX + panelW - 8.0f, titleY + TITLE_HEIGHT };
-    d2d->FillRectangle(titleBg, m_brushTitleBg.Get());
+    auto titleBrush = MakeAnimatedTitleBrush(d2d, titleBg.left, titleBg.top,
+        titleBg.right - titleBg.left, titleBg.bottom - titleBg.top, theme.title_bg);
+    d2d->FillRectangle(titleBg, titleBrush.Get());
 
     ComPtr<IDWriteTextLayout> titleLayout;
     std::wstring wtitle(m_stack.back().title.begin(), m_stack.back().title.end());
@@ -872,10 +926,12 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
             D2D1_RECT_F innerFrame = { ovX + 4.0f, ovY + 4.0f, ovX + ovW - 4.0f, ovY + ovH - 4.0f };
             d2d->DrawRectangle(innerFrame, m_brushFrame.Get(), 1.0f);
 
-            // Title bar
+            // Title bar (animated gradient)
             float titleY = ovY + 8.0f;
             D2D1_RECT_F titleBg = { ovX + 8.0f, titleY, ovX + ovW - 8.0f, titleY + TITLE_HEIGHT };
-            d2d->FillRectangle(titleBg, m_brushTitleBg.Get());
+            auto ovTitleBrush = MakeAnimatedTitleBrush(d2d, titleBg.left, titleBg.top,
+                titleBg.right - titleBg.left, titleBg.bottom - titleBg.top, theme.title_bg);
+            d2d->FillRectangle(titleBg, ovTitleBrush.Get());
 
             ComPtr<IDWriteTextLayout> titleLayout;
             std::wstring wtitle(ov.title.begin(), ov.title.end());
@@ -1008,11 +1064,50 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
 
     // FileBrowser overlay (drawn on top of menu panel)
     m_fileBrowser.Render(d2d, dwrite, screenW, screenH);
+
+    // About dialog (drawn on top of everything)
+    m_aboutDialog.Render(d2d, dwrite, screenW, screenH);
+
+    // Confirm dialog (drawn on top of everything)
+    m_confirmDialog.Render(d2d, dwrite, screenW, screenH);
+}
+
+void FrontendMenu::SaveCurrentSettings()
+{
+    // Collect all option keys from all settings sub-menus and push to core
+    auto pushSection = [](const std::vector<MenuItem>& items) {
+        for (auto& item : items)
+        {
+            if (item.action == MenuAction::TOGGLE_VALUE && !item.optionKey.empty())
+            {
+                const char* key = item.optionKey.c_str();
+                std::string val = SettingsManager::GetOption(key, "");
+                RetroCore::SetOptionValue(key, val.c_str());
+            }
+        }
+    };
+    pushSection(m_videoItems);
+    pushSection(m_audioItems);
+    pushSection(m_coreOptionItems);
+    SettingsManager::Save();
+    spdlog::info("[FrontendMenu] Settings saved to disk + pushed to core");
+}
+
+void FrontendMenu::ShowToast(const wchar_t* msg)
+{
+    m_toastMsg = msg;
+    m_toastTick = GetTickCount64();
 }
 
 int FrontendMenu::HitTest(float sx, float sy)
 {
     if (!m_visible) return -1;
+
+    // ConfirmDialog blocks all input
+    if (m_confirmDialog.IsVisible()) return -1;
+
+    // AboutDialog has its own hit test
+    if (m_aboutDialog.IsVisible()) return -1;
 
     // Overlay hit test (only topmost overlay receives input)
     if (m_overlayActive && m_overlayItems)
@@ -1093,11 +1188,13 @@ void FrontendMenu::SelectItem(int idx)
 
 void FrontendMenu::HandlePointerMove(float sx, float sy)
 {
+    if (m_confirmDialog.IsVisible()) return;
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.HandlePointerMove(sx, sy);
         return;
     }
+    if (m_aboutDialog.IsVisible()) return;
     int idx = HitTest(sx, sy);
     if (idx >= 0) m_selected = idx;
 }
@@ -1105,10 +1202,22 @@ void FrontendMenu::HandlePointerMove(float sx, float sy)
 void FrontendMenu::HandlePointerDown(float sx, float sy, unsigned btn)
 {
     if (!m_visible) return;
+    if (m_confirmDialog.IsVisible())
+    {
+        if (btn == 1)
+            m_confirmDialog.HandlePointerDown(sx, sy);
+        return;
+    }
     if (m_fileBrowser.IsVisible())
     {
         if (btn == 1)
             m_fileBrowser.HandlePointerDown(sx, sy);
+        return;
+    }
+    if (m_aboutDialog.IsVisible())
+    {
+        if (btn == 1)
+            m_aboutDialog.HandlePointerDown(sx, sy);
         return;
     }
     // Click on items (works for both panel and overlay via HitTest)
@@ -1126,11 +1235,13 @@ void FrontendMenu::HandlePointerDown(float sx, float sy, unsigned btn)
 void FrontendMenu::HandlePointerWheel(int delta)
 {
     if (!m_visible) return;
+    if (m_confirmDialog.IsVisible()) return;
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.HandlePointerWheel(delta);
         return;
     }
+    if (m_aboutDialog.IsVisible()) return;
     // Scroll overlay items
     if (m_overlayActive && m_overlayItems)
     {
@@ -1161,6 +1272,7 @@ void FrontendMenu::OnDPad(bool up)
         m_fileBrowser.OnDPad(up);
         return;
     }
+    if (m_aboutDialog.IsVisible()) return;
 
     // Route to overlay
     if (m_overlayActive && m_overlayItems)
@@ -1216,6 +1328,12 @@ void FrontendMenu::OnDPadLeft()
 {
     if (!m_visible) return;
 
+    if (m_confirmDialog.IsVisible())
+    {
+        m_confirmDialog.HandleKeyDown(0x25); // VK_LEFT
+        return;
+    }
+
     if (m_overlayActive && m_overlayItems)
     {
         auto& items = *m_overlayItems;
@@ -1258,6 +1376,12 @@ void FrontendMenu::OnDPadLeft()
 void FrontendMenu::OnDPadRight()
 {
     if (!m_visible) return;
+
+    if (m_confirmDialog.IsVisible())
+    {
+        m_confirmDialog.HandleKeyDown(0x27); // VK_RIGHT
+        return;
+    }
 
     if (m_overlayActive && m_overlayItems)
     {
@@ -1302,6 +1426,20 @@ void FrontendMenu::OnConfirm()
 {
     if (!m_visible) return;
 
+    // Route to ConfirmDialog if visible
+    if (m_confirmDialog.IsVisible())
+    {
+        m_confirmDialog.HandleKeyDown(0x0D); // VK_RETURN
+        return;
+    }
+
+    // Route to AboutDialog if visible
+    if (m_aboutDialog.IsVisible())
+    {
+        m_aboutDialog.OnConfirm();
+        return;
+    }
+
     // Route to FileBrowser if visible
     if (m_fileBrowser.IsVisible())
     {
@@ -1338,6 +1476,12 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::BACK:
         {
+            // Save settings when leaving a settings sub-screen
+            if (m_overlayTitle == "Video" || m_overlayTitle == "Audio" || m_overlayTitle == "Core Options")
+            {
+                SaveCurrentSettings();
+                ShowToast(L"Settings saved...");
+            }
             if (!m_overlayStack.empty())
             {
                 auto& prev = m_overlayStack.back();
@@ -1396,55 +1540,91 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::RESET_DEFAULTS:
         {
-            spdlog::info("[FrontendMenu] RESET_DEFAULTS (overlay, section={})", m_overlayTitle);
-            // Per-section reset: only reset keys belonging to the current section
-            std::vector<std::string> sectionKeys;
-            if (m_overlayTitle == "Video")
+            spdlog::info("[FrontendMenu] RESET_DEFAULTS -> confirm (section={})", m_overlayTitle);
+            std::string title = m_overlayTitle;
+            m_confirmDialog.Open("Reset all " + title + " settings to defaults?",
+                ConfirmDialog::CONFIRM, [this, title](bool confirmed)
             {
-                sectionKeys = { "frontend_vsync", "frontend_scaler",
-                    "dosbox_pure_aspect_correction", "dosbox_pure_machine",
-                    "dosbox_pure_svgamem", "dosbox_pure_overscan" };
-                m_overlayItems = &m_videoItems;
-            }
-            else if (m_overlayTitle == "Audio")
+                if (!confirmed) return;
+                spdlog::info("[FrontendMenu] RESET_DEFAULTS confirmed (section={})", title);
+                std::vector<std::string> sectionKeys;
+                if (title == "Video")
+                {
+                    sectionKeys = { "frontend_vsync", "frontend_scaler",
+                        "dosbox_pure_aspect_correction", "dosbox_pure_machine",
+                        "dosbox_pure_svgamem", "dosbox_pure_overscan" };
+                    m_overlayItems = &m_videoItems;
+                }
+                else if (title == "Audio")
+                {
+                    sectionKeys = { "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
+                        "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
+                        "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker" };
+                    m_overlayItems = &m_audioItems;
+                }
+                else if (title == "Core Options")
+                {
+                    sectionKeys = { "dosbox_pure_aspect_correction", "dosbox_pure_machine",
+                        "dosbox_pure_svgamem", "dosbox_pure_overscan",
+                        "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
+                        "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
+                        "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker",
+                        "dosbox_pure_menu_transparency" };
+                    m_overlayItems = &m_coreOptionItems;
+                }
+                SettingsManager::ResetSectionDefaults(sectionKeys);
+                for (auto& key : sectionKeys)
+                {
+                    std::string val = SettingsManager::GetOption(key.c_str(), "");
+                    RetroCore::SetOptionValue(key.c_str(), val.c_str());
+                }
+                BuildMenuTree();
+                if (title == "Video") m_overlayItems = &m_videoItems;
+                else if (title == "Audio") m_overlayItems = &m_audioItems;
+                else if (title == "Core Options") m_overlayItems = &m_coreOptionItems;
+                m_overlayTitle = title;
+                m_selected = 0;
+                m_scrollOffset = 0;
+                m_confirmDialog.Open(title + " settings reset to defaults.", ConfirmDialog::INFO);
+            });
+            break;
+        }
+
+        case MenuAction::RESET_ALL_SETTINGS:
+        {
+            spdlog::info("[FrontendMenu] RESET_ALL_SETTINGS -> confirm");
+            m_confirmDialog.Open("Reset ALL settings to defaults?\nThis cannot be undone.",
+                ConfirmDialog::CONFIRM, [this](bool confirmed)
             {
-                sectionKeys = { "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
-                    "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
-                    "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker" };
-                m_overlayItems = &m_audioItems;
-            }
-            else if (m_overlayTitle == "Core Options")
+                if (!confirmed) return;
+                spdlog::info("[FrontendMenu] RESET_ALL_SETTINGS confirmed");
+                SettingsManager::ResetToDefaults();
+                BuildMenuTree();
+                m_overlayTitle = "Settings";
+                m_overlayItems = &m_settingsItems;
+                m_selected = 0;
+                m_scrollOffset = 0;
+                m_confirmDialog.Open("All settings reset to defaults.", ConfirmDialog::INFO);
+            });
+            break;
+        }
+
+        case MenuAction::CLEAR_HISTORY:
+        {
+            spdlog::info("[FrontendMenu] CLEAR_HISTORY -> confirm");
+            m_confirmDialog.Open("Clear all history items?\nThis cannot be undone.",
+                ConfirmDialog::CONFIRM, [this](bool confirmed)
             {
-                sectionKeys = { "dosbox_pure_aspect_correction", "dosbox_pure_machine",
-                    "dosbox_pure_svgamem", "dosbox_pure_overscan",
-                    "dosbox_pure_audiorate", "dosbox_pure_sblaster_type",
-                    "dosbox_pure_volume_sb", "dosbox_pure_volume_midi",
-                    "dosbox_pure_volume_adlib", "dosbox_pure_volume_speaker",
-                    "dosbox_pure_menu_transparency" };
-                m_overlayItems = &m_coreOptionItems;
-            }
-            // Reset the option values in SettingsManager
-            SettingsManager::ResetSectionDefaults(sectionKeys);
-            // Apply resets to core via RetroCore (notify each key)
-            for (auto& key : sectionKeys)
-            {
-                std::string val = SettingsManager::GetOption(key.c_str(), "");
-                RetroCore::SetOptionValue(key.c_str(), val.c_str());
-            }
-            // Rebuild the items for this section (re-reads current values from SettingsManager)
-            // We need to save and restore the current section pointer since BuildMenuTree
-            // would overwrite it, but BuildMenuTree only sets m_stack for main menu
-            auto* savedItems = m_overlayItems;
-            std::string savedTitle = m_overlayTitle;
-            // Rebuild items by re-running the relevant BuildMenuTree section
-            // Simpler: just rebuild all and re-acquire
-            BuildMenuTree();
-            if (savedTitle == "Video") m_overlayItems = &m_videoItems;
-            else if (savedTitle == "Audio") m_overlayItems = &m_audioItems;
-            else if (savedTitle == "Core Options") m_overlayItems = &m_coreOptionItems;
-            m_overlayTitle = savedTitle;
-            m_selected = 0;
-            m_scrollOffset = 0;
+                if (!confirmed) return;
+                spdlog::info("[FrontendMenu] CLEAR_HISTORY confirmed");
+                SettingsManager::ClearHistory();
+                // Close history overlay back to main menu
+                m_overlayActive = false;
+                m_overlayItems = nullptr;
+                m_selected = m_panelSavedSelected;
+                m_scrollOffset = m_panelSavedScrollOffset;
+                ShowToast(L"History cleared");
+            });
             break;
         }
 
@@ -1482,16 +1662,24 @@ void FrontendMenu::OnConfirm()
                 {}, {}, 0, true, he.fullPath
             });
         }
-        if (!m_historyItems.empty())
+        if (m_historyItems.empty())
         {
-            m_panelSavedSelected = m_selected;
-            m_panelSavedScrollOffset = m_scrollOffset;
-            m_overlayActive = true;
-            m_overlayTitle = "History";
-            m_overlayItems = &m_historyItems;
-            m_selected = 0;
-            m_scrollOffset = 0;
+            m_historyItems.push_back({
+                "No history items yet",
+                MenuAction::NONE,
+                {}, {}, 0, false
+            });
         }
+        m_historyItems.push_back({ "", MenuAction::NONE });
+        m_historyItems.push_back({ "Clear History", MenuAction::CLEAR_HISTORY });
+        m_historyItems.push_back({ "Back", MenuAction::BACK });
+        m_panelSavedSelected = m_selected;
+        m_panelSavedScrollOffset = m_scrollOffset;
+        m_overlayActive = true;
+        m_overlayTitle = "History";
+        m_overlayItems = &m_historyItems;
+        m_selected = 0;
+        m_scrollOffset = 0;
         break;
     }
 
@@ -1506,8 +1694,20 @@ void FrontendMenu::OnConfirm()
         break;
 
     case MenuAction::EXIT:
-        m_visible = false;
-        if (onExit) onExit();
+        spdlog::info("[FrontendMenu] EXIT -> confirm");
+        m_confirmDialog.Open("Exit DOSBox Pure Unleashed?", ConfirmDialog::CONFIRM,
+            [this](bool confirmed)
+        {
+            if (!confirmed) return;
+            spdlog::info("[FrontendMenu] EXIT confirmed");
+            m_visible = false;
+            if (onExit) onExit();
+        });
+        break;
+
+    case MenuAction::ABOUT:
+        spdlog::info("[FrontendMenu] ABOUT -> AboutDialog.Open()");
+        m_aboutDialog.Open(m_versionStr);
         break;
 
     default:
@@ -1519,6 +1719,18 @@ void FrontendMenu::OnBack()
 {
     if (!m_visible) return;
 
+    if (m_confirmDialog.IsVisible())
+    {
+        m_confirmDialog.OnBack();
+        return;
+    }
+
+    if (m_aboutDialog.IsVisible())
+    {
+        m_aboutDialog.OnBack();
+        return;
+    }
+
     if (m_fileBrowser.IsVisible())
     {
         m_fileBrowser.OnBack();
@@ -1528,6 +1740,12 @@ void FrontendMenu::OnBack()
     // Close overlay — pop stack or close entirely
     if (m_overlayActive)
     {
+        // Save settings when leaving a settings sub-screen
+        if (m_overlayTitle == "Video" || m_overlayTitle == "Audio" || m_overlayTitle == "Core Options")
+        {
+            SaveCurrentSettings();
+            ShowToast(L"Settings saved...");
+        }
         if (!m_overlayStack.empty())
         {
             auto& prev = m_overlayStack.back();
@@ -1566,6 +1784,7 @@ void FrontendMenu::OnPageUp()
         m_fileBrowser.OnPageUp();
         return;
     }
+    if (m_aboutDialog.IsVisible()) return;
     if (m_overlayActive && m_overlayItems)
     {
         m_selected -= (int)MAX_VISIBLE;
@@ -1589,6 +1808,7 @@ void FrontendMenu::OnPageDown()
         m_fileBrowser.OnPageDown();
         return;
     }
+    if (m_aboutDialog.IsVisible()) return;
     if (m_overlayActive && m_overlayItems)
     {
         auto& items = *m_overlayItems;

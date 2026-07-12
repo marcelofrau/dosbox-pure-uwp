@@ -22,6 +22,7 @@ namespace dosbox_uwp
 
         void Open();
         void Close();
+        void ReleaseResources();
         bool IsVisible() const { return m_visible; }
 
         void Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH);

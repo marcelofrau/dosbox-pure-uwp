@@ -236,27 +236,25 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 	picker->FileTypeFilter->Append(".vhd");
 	picker->FileTypeFilter->Append(".conf");
 
+	// StorageFile from picker requires WinRT ReadBufferAsync → WriteBufferAsync (no CopyFileFromAppW).
 	create_task(picker->PickSingleFileAsync()).then([this](Windows::Storage::StorageFile^ file)
 	{
 		if (file == nullptr)
 		{
-			OutputDebugStringA("[dosbox-uwp] Picker cancelled\n");
+			spdlog::info("[Picker] Cancelled");
 			m_main->SetLoadState(dosbox_uwpMain::LOAD_IDLE);
 			return;
 		}
 
 		m_main->SetLoadState(dosbox_uwpMain::LOAD_READING);
-		m_main->ActivateLoadingScreen(); // show loading spinner before I/O
-
-		char buf[256];
-		sprintf_s(buf, "[dosbox-uwp] Picked: %ls\n", file->Name->Data());
-		OutputDebugStringA(buf);
+		m_main->ActivateLoadingScreen();
+		spdlog::info("[Picker] Picked: {}", std::string(file->Name->Data(), file->Name->Data() + file->Name->Length()));
 
 		create_task(Windows::Storage::FileIO::ReadBufferAsync(file)).then([this, file](Windows::Storage::Streams::IBuffer^ buffer)
 		{
 			if (buffer == nullptr || buffer->Length == 0)
 			{
-				OutputDebugStringA("[dosbox-uwp] File read failed or empty\n");
+				spdlog::error("[Picker] Read failed or empty");
 				m_main->SetLoadState(dosbox_uwpMain::LOAD_FAILED);
 				return;
 			}
@@ -277,14 +275,8 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 					.then([this, tempFile]()
 					{
 						std::wstring localPath = tempFile->Path->Data();
-
-						char buf[256];
-						int len = WideCharToMultiByte(CP_UTF8, 0, localPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-						std::string utf8Path(len - 1, '\0');
-						WideCharToMultiByte(CP_UTF8, 0, localPath.c_str(), -1, &utf8Path[0], len, nullptr, nullptr);
-						sprintf_s(buf, "[dosbox-uwp] Local temp: %s\n", utf8Path.c_str());
-						OutputDebugStringA(buf);
-
+						spdlog::info("[Picker] Copied to: '{}'",
+							std::string(localPath.begin(), localPath.end()));
 						m_main->QueueLoadRom(localPath, {});
 					});
 				});
