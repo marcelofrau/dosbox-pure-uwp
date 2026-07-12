@@ -49,6 +49,8 @@ static void log(const char* fmt, ...)
     OutputDebugStringA(buf);
 }
 
+static HANDLE s_drainEvent = nullptr; // manual-reset, signaled when queue < LOW_WATERMARK
+
 class XA2VoiceCallback : public IXAudio2VoiceCallback
 {
 public:
@@ -71,6 +73,9 @@ public:
         {
             InterlockedExchangeAdd(&s_queuedFrames, -(long)sb->frames);
             InterlockedExchangeAdd64(&s_totalConsumed, (long long)sb->frames);
+            // Signal drain event when queue drops below low watermark
+            if (s_drainEvent && s_queuedFrames < XAudio2Output::LOW_WATERMARK)
+                SetEvent(s_drainEvent);
         }
         delete sb;
     }
@@ -91,6 +96,7 @@ XAudio2Output::XAudio2Output()
     , m_pSourceVoice(nullptr)
     , m_initialized(false)
     , m_started(false)
+    , m_drainEvent(nullptr)
 {
 }
 
@@ -106,6 +112,16 @@ XAudio2Output::~XAudio2Output()
     if (m_pSourceVoice) { m_pSourceVoice->DestroyVoice(); m_pSourceVoice = nullptr; }
     if (m_pMasterVoice) { m_pMasterVoice->DestroyVoice(); m_pMasterVoice = nullptr; }
     if (m_pXAudio2)     { m_pXAudio2->Release(); m_pXAudio2 = nullptr; }
+    if (m_drainEvent)   { CloseHandle(m_drainEvent); m_drainEvent = nullptr; s_drainEvent = nullptr; }
+}
+
+void XAudio2Output::EnsureDrainEvent()
+{
+    if (!m_drainEvent)
+    {
+        m_drainEvent = CreateEventW(nullptr, TRUE /*manual-reset*/, TRUE /*initially signaled*/, nullptr);
+        s_drainEvent = m_drainEvent;
+    }
 }
 
 bool XAudio2Output::Initialize()
@@ -117,6 +133,8 @@ bool XAudio2Output::Initialize()
     wfx.wBitsPerSample = 16;
     wfx.nBlockAlign = 4;
     wfx.nAvgBytesPerSec = 176400;
+
+    EnsureDrainEvent();
 
     HRESULT hr = XAudio2Create(&m_pXAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
     if (FAILED(hr))
@@ -218,7 +236,7 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
             (long)s_queuedFrames, (double)s_queuedFrames * 1000.0 / 44100.0);
     }
 
-    // FLUSH cap: bound max latency at ~1s
+    // FLUSH cap: bound max latency at ~500ms
     if (m_started && s_queuedFrames > MAX_QUEUE)
     {
         m_pSourceVoice->Stop();
@@ -266,13 +284,12 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
 
         log("XA2 submit #%lu: frames=%lu queue=%ld (%.0fms) "
             "XA2_BuffersQueued=%lu gap=%.1fms  trend_avg=%.0f trend_delta=%.0f "
-            "consumption=%.0fHz drift=%.1fms underruns=%ld ratio=%.4f "
+            "consumption=%.0fHz drift=%.1fms underruns=%ld "
             "totP=%lld totC=%lld",
             (unsigned long)submitCounter, frames, q2, (double)q2 * 1000.0 / 44100.0,
             (unsigned long)vs.BuffersQueued, sinceLast,
             avgQ, trendDelta,
             consumptionRate, driftMs, urCount,
-            1.0f,
             (long long)s_totalProduced, (long long)s_totalConsumed);
     }
 }
@@ -292,6 +309,30 @@ void XAudio2Output::Stop()
         return;
     m_pSourceVoice->Stop();
     m_started = false;
+    if (m_drainEvent)
+        SetEvent(m_drainEvent);
+}
+
+void XAudio2Output::WaitForDrain()
+{
+    if (!m_started || !m_drainEvent)
+        return;
+
+    long q = s_queuedFrames;
+    if (q <= HIGH_WATERMARK)
+        return;
+
+    ResetEvent(m_drainEvent);
+    if (s_queuedFrames <= HIGH_WATERMARK)
+        return;
+
+    log("XA2 DRAIN: queue=%ld > HIGH=%ld, waiting...", (long)s_queuedFrames, (long)HIGH_WATERMARK);
+    while (s_queuedFrames > LOW_WATERMARK)
+    {
+        DWORD waitResult = WaitForSingleObject(m_drainEvent, 50);
+        if (waitResult == WAIT_TIMEOUT && s_queuedFrames <= LOW_WATERMARK)
+            break;
+    }
 }
 
 void XAudio2Output::Flush()
@@ -304,6 +345,10 @@ void XAudio2Output::Flush()
     s_queuedFrames = 0;
     InterlockedIncrement(&s_flushGen);
     m_started = false;
+
+    // Signal drain event so any blocked Submit() wakes up
+    if (m_drainEvent)
+        SetEvent(m_drainEvent);
 
     log("XA2 Flush: flushed, voice stopped (Submit will auto-start)");
 }

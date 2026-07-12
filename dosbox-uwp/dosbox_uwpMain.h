@@ -129,9 +129,7 @@ namespace dosbox_uwp
         bool m_gamepadMouseMode = false;  // OFF by default; stick→mouse, A→click, B→escape
         bool m_lbrbsPrevHeld = false;     // edge detection for combo press
 
-        // Audio-driven frame pacing state
-        LARGE_INTEGER m_audioLastTick = {};
-        double m_audioTimeAccumulator = 0.0;
+        // Audio-driven pacing (audio backpressure in XAudio2Output handles timing)
         int m_lastRetroRuns = 0;
 
 #ifdef MOUSE_SUPPORT

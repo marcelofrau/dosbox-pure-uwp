@@ -313,10 +313,13 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         }
     };
 
-    // Apply frontend-only settings at startup
-    {
-        auto vsync = SettingsManager::GetOption("frontend_vsync", "On");
-        m_deviceResources->SetVSync(!vsync.empty() && vsync != "Off");
+        // Apply frontend-only settings at startup
+        // VSync OFF by default — audio-driven pacing handles timing.
+        // VSync ON causes stutter: 70fps core vs 60Hz display = every ~6th frame
+        // delayed by extra 16.7ms VSync wait. Audio backpressure paces correctly.
+        {
+            auto vsync = SettingsManager::GetOption("frontend_vsync", "Off");
+            m_deviceResources->SetVSync(!vsync.empty() && vsync != "Off");
         auto scaler = SettingsManager::GetOption("frontend_scaler", "Bilinear");
         D2D1_BITMAP_INTERPOLATION_MODE mode = (scaler == "Nearest")
             ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
@@ -361,7 +364,6 @@ void dosbox_uwpMain::BootCore()
 
 void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
 {
-    m_audioTimeAccumulator = 0.0;
     if (!m_retroCore->IsInitialized())
     {
         if (!m_retroCore->Init())
@@ -704,74 +706,17 @@ void dosbox_uwpMain::Update()
             } // end m_gamepadMouseMode
 #endif
 
-            double targetFps = m_retroCore->GetTargetFps();
-            if (targetFps <= 0) targetFps = 60.0;
-            double audioPeriodMs = 1000.0 / targetFps;
-
-            LARGE_INTEGER _now;
-            QueryPerformanceCounter(&_now);
-            if (m_audioLastTick.QuadPart != 0)
-            {
-                double deltaMs = (double)(_now.QuadPart - m_audioLastTick.QuadPart)
-                                 * 1000.0 / m_qpcFreq.QuadPart;
-                m_audioTimeAccumulator += deltaMs;
-                if (m_audioTimeAccumulator > audioPeriodMs * 5)
-                    m_audioTimeAccumulator = audioPeriodMs;
-
-                int retroRuns = 0;
-                int maxRetroRuns = 60;
-                if (m_xaudio2 && m_xaudio2->IsStarted())
-                {
-                    long q = m_xaudio2->GetQueuedFrames();
-                    long targetQ = XAudio2Output::TARGET_FRAMES;
-                    if (q < targetQ)
-                        maxRetroRuns = (int)((targetQ - q) / 630) + 1;
-                    else
-                        maxRetroRuns = 1;
-                }
-                while (m_audioTimeAccumulator >= audioPeriodMs && retroRuns < maxRetroRuns)
-                {
+            // No pacing wait — the dosbox-pure core self-paces via CPU_CycleMax
+            // adjustment in GFX_AdvanceFrame. Just call RunFrame once per loop iteration.
+            // XAudio2 buffer level stays stable because core produces ~44100 samples/sec
+            // matching the hardware consumption rate.
 #ifndef XB_INSPECTOR_ENABLED
-                    m_retroCore->RunFrame();
+            m_retroCore->RunFrame();
 #else
-                    if (!s_paused)
-                        m_retroCore->RunFrame();
-#endif
-                    m_audioTimeAccumulator -= audioPeriodMs;
-                    retroRuns++;
-                    if (RetroCore::IsShutdownRequested())
-                        break;
-                }
-                if (retroRuns == maxRetroRuns && m_audioTimeAccumulator > audioPeriodMs * maxRetroRuns)
-                    m_audioTimeAccumulator = audioPeriodMs * maxRetroRuns;
-                m_lastRetroRuns = retroRuns;
-
-                // Queue-based accumulator scaling (DRC-free feedback)
-                if (m_xaudio2 && m_xaudio2->IsStarted())
-                {
-                    const long targetQ = XAudio2Output::TARGET_FRAMES;
-                    long q = m_xaudio2->GetQueuedFrames();
-                    if (q > 0)
-                    {
-                        float scale = (float)targetQ / (float)(targetQ + (q - targetQ) * 0.25f);
-                        if (scale < 0.25f) scale = 0.25f;
-                        if (scale > 2.0f) scale = 2.0f;
-                        m_audioTimeAccumulator *= scale;
-                    }
-
-
-                }
-            }
-            else
-            {
-#ifndef XB_INSPECTOR_ENABLED
+            if (!s_paused)
                 m_retroCore->RunFrame();
-#else
-                if (!s_paused)
-                    m_retroCore->RunFrame();
 #endif
-            }
-            m_audioLastTick = _now;
+            m_lastRetroRuns = 1;
 
             if (RetroCore::IsShutdownRequested())
             {
@@ -809,8 +754,8 @@ void dosbox_uwpMain::Update()
                 if (m_xaudio2 && m_xaudio2->IsStarted())
                     audioQueued = m_xaudio2->GetQueuedFrames();
                 char buf[256];
-                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u retroRuns=%d acc=%.2f\n",
-                    targetFps, frameMs, audioQueued, m_lastRetroRuns, m_audioTimeAccumulator);
+                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u retroRuns=%d\n",
+                    targetFps, frameMs, audioQueued, m_lastRetroRuns);
                 OutputDebugStringA(buf);
             }
         }
@@ -1364,8 +1309,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
     m_pendingLoad.reset();
     m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
 
-    // Force-start XAudio2 voice after load — bypass auto-start which needs 3307 queued frames
-    // Fast SSD loads (<50ms) produce too few catch-up retro runs to reach threshold
+    // Force-start XAudio2 voice after load — bypass auto-start which needs TARGET_QUEUE frames
     if (m_xaudio2)
     {
         m_xaudio2->Flush();
@@ -1373,12 +1317,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
         static const int16_t silence[4] = {0, 0, 0, 0};
         m_xaudio2->Submit(silence, 2);
         m_xaudio2->Start();
-        // Boost accumulator so next Tick catches up ~30 frames fast
-        double targetFps = m_retroCore ? m_retroCore->GetTargetFps() : 70.0;
-        if (targetFps <= 0) targetFps = 60.0;
-        m_audioTimeAccumulator = (1000.0 / targetFps) * 8.0;
-        spdlog::info("[dosbox-uwp] XA2 force-started after load, acc boosted to {}",
-            m_audioTimeAccumulator);
+        spdlog::info("[dosbox-uwp] XA2 force-started after load");
     }
     m_loadingActive = false;
     m_loadingDisc.Reset();
@@ -1478,7 +1417,7 @@ void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory
                 discSize * 0.5f, discSize * 0.5f), orangeBrush.Get());
     }
 
-    // "Loading..." text below disc — fixed width, LEADING alignment so "Loading" stays still
+    // "Loading..." text — bottom-left of panel, fixed width so dots don't shift
     static const wchar_t* dotStates[] = { L".", L"..", L"...", L"" };
     wchar_t loadingText[64];
     swprintf_s(loadingText, L"Loading%s", dotStates[m_loadingDots]);
@@ -1489,16 +1428,16 @@ void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory
     if (textFmt)
     {
         textFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        textFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        // Fixed width = "Loading..." (widest) so layout never shifts
+        textFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
         float fixedTextW = 160.0f * dpiscale;
-        float textY = discCenterY + discSize * 0.5f + 34.0f;
+        float textX = panelX + 16.0f;
+        float textY = panelY + panelH - 40.0f;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
         dwrite->CreateTextLayout(loadingText, (UINT32)wcslen(loadingText), textFmt.Get(),
             fixedTextW, 30.0f, &textLayout);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
         d2d->CreateSolidColorBrush(D2D1::ColorF(0xcccccc), &textBrush);
         if (textLayout && textBrush)
-            d2d->DrawTextLayout(D2D1::Point2F(contentCenterX - fixedTextW * 0.5f, textY), textLayout.Get(), textBrush.Get());
+            d2d->DrawTextLayout(D2D1::Point2F(textX, textY), textLayout.Get(), textBrush.Get());
     }
 }
