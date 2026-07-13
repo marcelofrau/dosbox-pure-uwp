@@ -75,6 +75,9 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
     QueryPerformanceFrequency(&m_qpcFreq);
     m_deviceResources->RegisterDeviceNotify(this);
 
+    m_retroD3D11 = std::unique_ptr<RetroD3D11Renderer>(new RetroD3D11Renderer(m_deviceResources));
+    m_retroD3D11->CreateDeviceDependentResources();
+
     m_retroScreen = std::unique_ptr<RetroScreenRenderer>(new RetroScreenRenderer(m_deviceResources));
     m_retroScreen->CreateDeviceDependentResources();
 
@@ -295,6 +298,10 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             samples[i * 2 + 1] = v;
         }
         m_xaudio2->Submit(samples.data(), numFrames);
+        // Beep alone (5292 frames) < TARGET_QUEUE (6615) — voice won't auto-start.
+        // Force-start so the POST beep plays immediately.
+        if (!m_xaudio2->IsStarted())
+            m_xaudio2->Start();
     };
     m_menu.onOptionChanged = [this](const char* key, const char* value) {
         if (!strcmp(key, "frontend_vsync"))
@@ -467,6 +474,24 @@ void dosbox_uwpMain::Update()
     // edge cases like programmatic QueueLoadRom without picker path
     if (m_pendingLoad && !m_loadingActive)
         ActivateLoadingScreen();
+
+    // FPS tracking (rolling 60-frame window)
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (m_fpsLastFrame.QuadPart != 0)
+        {
+            double dt = (double)(now.QuadPart - m_fpsLastFrame.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+            m_fpsFrameTimes[m_fpsFrameIdx] = dt;
+            m_fpsFrameIdx = (m_fpsFrameIdx + 1) % 60;
+            if (m_fpsFrameCount < 60) m_fpsFrameCount++;
+            double sum = 0;
+            for (int i = 0; i < m_fpsFrameCount; i++) sum += m_fpsFrameTimes[i];
+            m_frameTimeMs = sum / m_fpsFrameCount;
+            m_currentFps = (m_frameTimeMs > 0.0) ? 1000.0 / m_frameTimeMs : 0.0;
+        }
+        m_fpsLastFrame = now;
+    }
 
 #ifdef XB_INSPECTOR_ENABLED
     xb::Xray::update();
@@ -706,17 +731,43 @@ void dosbox_uwpMain::Update()
             } // end m_gamepadMouseMode
 #endif
 
-            // No pacing wait — the dosbox-pure core self-paces via CPU_CycleMax
-            // adjustment in GFX_AdvanceFrame. Just call RunFrame once per loop iteration.
-            // XAudio2 buffer level stays stable because core produces ~44100 samples/sec
-            // matching the hardware consumption rate.
+            // Audio-driven pacing: only produce when audio queue has room.
+            // XAudio2 consumes at 44100Hz. Each RunFrame produces ~630 samples (14.28ms).
+            // When queue is full, skip RunFrame to let audio drain. This replaces
+            // QPC sleep pacing which fights against audio consumption rate.
+            uint32_t audioQueue = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+            const uint32_t AUDIO_GATE_THRESHOLD = 630; // ~14.28ms — one buffer ahead
+            if (audioQueue > AUDIO_GATE_THRESHOLD)
+            {
+                // Audio queue has room for at most one more buffer — skip this frame
+                // to let XAudio2 consume. Render will show last frame.
+                m_lastRetroRuns = 0;
+            }
+            else
+            {
+                LARGE_INTEGER _rf0, _rf1;
+                QueryPerformanceCounter(&_rf0);
 #ifndef XB_INSPECTOR_ENABLED
-            m_retroCore->RunFrame();
-#else
-            if (!s_paused)
                 m_retroCore->RunFrame();
+#else
+                if (!s_paused)
+                    m_retroCore->RunFrame();
 #endif
-            m_lastRetroRuns = 1;
+                QueryPerformanceCounter(&_rf1);
+                m_lastRetroRuns = 1;
+
+                // Log retro_run timing every 600 frames
+                {
+                    static int rfLogCounter = 0;
+                    if ((++rfLogCounter % 600) == 0)
+                    {
+                        double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                        uint32_t aq = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+                        spdlog::info("[dosbox-uwp] RUNFRAME#{}: {:.2f}ms audioQ={} fps={:.1f}",
+                            rfLogCounter, rfMs, aq, m_currentFps);
+                    }
+                }
+            }
 
             if (RetroCore::IsShutdownRequested())
             {
@@ -753,10 +804,14 @@ void dosbox_uwpMain::Update()
                 uint32_t audioQueued = 0;
                 if (m_xaudio2 && m_xaudio2->IsStarted())
                     audioQueued = m_xaudio2->GetQueuedFrames();
-                char buf[256];
-                sprintf_s(buf, "[dosbox-uwp] PACE: target=%.0f frame=%.2fms audioQueued=%u retroRuns=%d\n",
-                    targetFps, frameMs, audioQueued, m_lastRetroRuns);
-                OutputDebugStringA(buf);
+                long long totP = *XAudio2Output::TotalProducedPtr();
+                long long totC = *XAudio2Output::TotalConsumedPtr();
+                spdlog::info("[dosbox-uwp] PACE#{}: target={:.0f}fps frame={:.2f}ms "
+                    "audioQ={} retroRuns={} netAudio={}fps",
+                    pacingLogCounter, targetFps, frameMs,
+                    audioQueued, m_lastRetroRuns,
+                    (totP - totC > 0) ? "+" : "",
+                    (totP - totC));
             }
         }
 
@@ -843,14 +898,14 @@ bool dosbox_uwpMain::Render()
         bool haveFrame = m_retroCore->HasFrame();
         if (haveFrame)
         {
-            m_retroScreen->UpdateVideoFrame(
+            m_retroD3D11->UpdateVideoFrame(
                 (const uint8_t*)m_retroCore->GetFrameData(),
                 m_retroCore->GetFrameWidth(),
                 m_retroCore->GetFrameHeight(),
                 m_retroCore->GetFramePitch());
             m_retroCore->ClearFrame();
         }
-        m_retroScreen->Render();
+        m_retroD3D11->Render();
     }
 
     // D2D rendering: single BeginDraw/EndDraw for all overlays
@@ -894,7 +949,49 @@ bool dosbox_uwpMain::Render()
             m_cursorBrush.Get(), 1.5f);
     }
 #endif
-    } // end else (not loading)
+        // FPS overlay (top-right corner)
+        if (m_currentFps > 0.0)
+        {
+            // Get audio queue for overlay
+            uint32_t audioQ = 0;
+            if (m_xaudio2 && m_xaudio2->IsStarted())
+                audioQ = m_xaudio2->GetQueuedFrames();
+
+            wchar_t fpsText[128];
+            swprintf_s(fpsText, L"FPS: %5.1f  Frame: %5.1fms  Audio: %5u",
+                m_currentFps, m_frameTimeMs, audioQ);
+
+            // Create text format (cached)
+            static Microsoft::WRL::ComPtr<IDWriteTextFormat> s_fpsFormat;
+            if (!s_fpsFormat)
+            {
+                dwrite->CreateTextFormat(L"Consolas", nullptr,
+                    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us",
+                    &s_fpsFormat);
+                if (s_fpsFormat) s_fpsFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            }
+
+            if (s_fpsFormat)
+            {
+                static Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> s_fpsBrush;
+                if (!s_fpsBrush)
+                    d2dContext->CreateSolidColorBrush(
+                        D2D1::ColorF(D2D1::ColorF::Yellow, 0.9f), &s_fpsBrush);
+
+                if (s_fpsBrush)
+                {
+                    D2D1_RECT_F layout = {
+                        logicalSize.Width - 350.0f, 8.0f,
+                        logicalSize.Width - 12.0f, 36.0f
+                    };
+                    d2dContext->DrawText(fpsText, (UINT32)wcslen(fpsText),
+                        s_fpsFormat.Get(), &layout, s_fpsBrush.Get());
+                }
+            }
+        }
+
+        } // end else (not loading)
 
     HRESULT hr = d2dContext->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET)

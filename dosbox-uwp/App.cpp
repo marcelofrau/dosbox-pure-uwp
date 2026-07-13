@@ -51,6 +51,11 @@ void App::Initialize(CoreApplicationView^ applicationView)
 		ref new EventHandler<Platform::Object^>(this, &App::OnResuming);
 
 	m_deviceResources = std::make_shared<DX::DeviceResources>();
+
+	QueryPerformanceFrequency(&m_perfFrequency);
+	QueryPerformanceCounter(&m_lastFrameTime);
+	m_targetFrameMs = 1000.0 / 70.0; // default 70fps, updated once core reports timing
+
 	OutputDebugStringA("[dosbox-uwp] App::Initialize done\n");
 }
 
@@ -142,7 +147,9 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
+				// Present(0,0): no vsync blocking. Audio gate is the frame pacer.
+				// Works on any monitor refresh rate (60/120/144/180Hz+).
+				m_deviceResources->Present(0, 0);
 			}
 
 			m_main->ProcessPendingLoad();

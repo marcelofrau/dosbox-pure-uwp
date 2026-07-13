@@ -74,6 +74,12 @@
     <ClCompile Include="Content\ConfirmDialog.cpp">
       <Filter>Content</Filter>
     </ClCompile>
+    <ClInclude Include="Content\RetroD3D11Renderer.h">
+      <Filter>Content</Filter>
+    </ClInclude>
+    <ClCompile Include="Content\RetroD3D11Renderer.cpp">
+      <Filter>Content</Filter>
+    </ClCompile>
 	<FxCompile Include="Content\SamplePixelShader.hlsl">
       <Filter>Content</Filter>
     </FxCompile>

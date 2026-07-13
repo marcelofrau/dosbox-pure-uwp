@@ -214,3 +214,23 @@ See `IMPLEMENTATION-PLAN.md` for the concrete steps.
 The DOSBox Pure port should mirror this controller. The only structural difference:
 our "FIFO fullness" is `s_queuedFrames` (or `SamplesPlayed`-derived), and our target
 is a fixed queue depth rather than 50 % of a fixed FIFO.
+
+### RetroArch's Frame Pacing (verified in source)
+
+RetroArch's primary frame pacer is **audio backpressure**, not QPC sleep:
+
+- `xa_write()` **blocks** on `WaitForSingleObject(hEvent)` when all 16 ring buffers
+  are full. The core runs at the rate audio is consumed — no separate frame limiter needed.
+- QPC-based `retro_sleep(frame_limit_minimum_time)` is only used as **fallback** when:
+  audio_sync is off, fast-forwarding, menu-only, or paused.
+- RetroArch explicitly disables the sleep limiter during normal gameplay:
+  `frame_limit_minimum_time = 0` when `audio_sync && libretro_running`.
+- Key quote from source: *"Layering the refresh-rate retro_sleep() throttle on top
+  of audio backpressure is redundant double-pacing, and retro_sleep() resolves to
+  OS Sleep() whose granularity is ~15ms on Windows — coarser than typical audio
+  low-water marks, so the sleep overshoots and stutters audio."*
+
+**Implication for DOSBox Pure UWP:** If we implement blocking audio submit (like
+RetroArch), the audio driver becomes the frame pacer and we don't need QPC-based
+frame limiting at all. `Present(1,0)` handles visual sync, audio handles emulation
+cadence.

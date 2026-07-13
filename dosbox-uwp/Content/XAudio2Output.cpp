@@ -58,9 +58,15 @@ public:
     {
         if (BytesRequired > 0)
         {
-            InterlockedIncrement(&s_underrunCount);
-            log("XA2 UNDERRUN: BytesRequired=%lu queue=%ld (underrun#%ld)",
-                BytesRequired, (long)s_queuedFrames, (long)s_underrunCount);
+            // BytesRequired>0 fires every ~10ms even during normal playback (XAudio2
+            // callback cadence). Only log as underrun when queue is actually low.
+            long q = s_queuedFrames;
+            if (q < 441) // <10ms @ 44100 — real underrun risk
+            {
+                InterlockedIncrement(&s_underrunCount);
+                log("XA2 UNDERRUN: BytesRequired=%lu queue=%ld (underrun#%ld)",
+                    BytesRequired, q, (long)s_underrunCount);
+            }
         }
     }
     void STDMETHODCALLTYPE OnVoiceProcessingPassEnd() override {}

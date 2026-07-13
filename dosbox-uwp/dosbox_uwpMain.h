@@ -7,6 +7,7 @@
 #include "Content\SdlInput.h"
 #include "Content\RetroCore.h"
 #include "Content\RetroScreenRenderer.h"
+#include "Content\RetroD3D11Renderer.h"
 #include "Content\XAudio2Output.h"
 #include "Content\FrontendMenu.h"
 
@@ -46,6 +47,7 @@ namespace dosbox_uwp
         LoadState GetLoadState() const { return m_loadState; }
         void SetLoadState(LoadState s) { m_loadState = s; }
         bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
+        double GetTargetFps() const { return m_retroCore ? m_retroCore->GetTargetFps() : 60.0; }
         void ActivateLoadingScreen() {
             m_loadState = LOAD_BOOTING;
             m_loadingActive = true;
@@ -64,6 +66,7 @@ namespace dosbox_uwp
         std::unique_ptr<SdlInput> m_sdlInput;
         std::unique_ptr<RetroCore> m_retroCore;
         std::unique_ptr<RetroScreenRenderer> m_retroScreen;
+        std::unique_ptr<RetroD3D11Renderer> m_retroD3D11;
         std::unique_ptr<XAudio2Output> m_xaudio2;
         FrontendMenu m_menu;
 
@@ -119,6 +122,14 @@ namespace dosbox_uwp
         bool m_frameLate = false;
         int m_lateFrameCount = 0;
         LARGE_INTEGER m_qpcFreq = {};
+
+        // FPS overlay tracking
+        double m_fpsFrameTimes[60] = {};
+        int m_fpsFrameIdx = 0;
+        int m_fpsFrameCount = 0;
+        LARGE_INTEGER m_fpsLastFrame = {};
+        double m_currentFps = 0.0;
+        double m_frameTimeMs = 0.0;
 
         // DPad auto-repeat state
         int m_dpadRepeatBtn = -1;       // which button is being held (-1 = none)

@@ -117,6 +117,7 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 ## Reference Projects (local only)
 - `F:\workspace\vs2022\dosbox-pure-unleashed` — ZillaLib-based dosbox-pure frontend (no UWP). Uses `SetFpsLimit(av.timing.fps)` for frame cap (default 70fps), `ZL_ApplicationUpdateTimingFps` for Sleep-based pacing + vsync matching. Main file: `main.cpp` (2147 lines).
 - `F:\workspace\vs2022\ZillaLib` — ZillaLib cross-platform game framework. WP8 UWP path uses D3D11 pure (no D2D), `Present(1,0)` with `BufferCount=1`, `DXGI_SWAP_EFFECT_DISCARD`, `SetMaximumFrameLatency(1)`. Source: `Source/ZL_PlatformWP.cpp`.
+- `F:\workspace\RetroArch` — RetroArch source. Audio backpressure is the primary frame pacer: XAudio2/WASAPI drivers block on `WaitForSingleObject(hEvent)` until buffer consumed. QPC sleep is fallback only. Source: `audio/drivers/xaudio.c`, `runloop.c`.
 
 ## Keyboard & Gamepad Bindings
 

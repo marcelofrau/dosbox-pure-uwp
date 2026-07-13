@@ -53,6 +53,11 @@ namespace dosbox_uwp
 		bool m_windowClosed;
 		bool m_windowVisible;
 		bool m_ctrlHeld = false;
+
+		// Frame pacing
+		LARGE_INTEGER m_perfFrequency;
+		LARGE_INTEGER m_lastFrameTime;
+		double m_targetFrameMs;
 	};
 }
 
