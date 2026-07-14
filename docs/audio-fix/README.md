@@ -45,16 +45,10 @@
 > `stutter-fix-v1` failed on Xbox (core needs frequent retro_run calls). SDL pull
 > model crackling is harder to fix than v0.8.2.0's flush stutter.
 >
-> See `V0.8.2.0-RESTORE-PLAN.md` for the detailed restoration plan.
->
-> Two viable options were specified in `IMPLEMENTATION-PLAN.md`:
->
-> - **Option B — Production-rate nudge (simpler).** No resampler. DRC nudges how
->   fast the core is drained toward a target queue depth. **Deferred** — the
->   accumulator approach in v0.8.2.0 is a simpler version of this.
-> - **Option A — Resampler + DRC (RetroArch-style, most robust).** Sinc resampler
->   converts core output to the DAC rate at a DRC-adjusted ratio. **Future work**
->   if accumulator proves insufficient for heavy games.
->
-> **Current path:** restore v0.8.2.0, fix MAX_QUEUE flush stutter, then evaluate
-> whether DRC is needed on top.
+> **v0.8.3.0 (current):** Fixed critical bugs in the restore:
+> - `DBP_STANDALONE` removed from vcxproj → `audio_batch_cb()` now compiles in
+> - Accumulator: `dt * targetFps` (was missing multiplier)
+> - Stall debt cap: `3.0 * targetFps` (correct units)
+> - **XAudio2 sample rate: 44100 → 48000** (matching core output — music was 8% too slow)
+> - FPS computation fixed, DIAG `runs_ival` added
+> - See `V0.8.3.0-FIX-LOG.md` for complete details.

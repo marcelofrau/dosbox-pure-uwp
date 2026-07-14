@@ -141,6 +141,9 @@ namespace dosbox_uwp
         bool m_gamepadMouseMode = false;  // OFF by default; stick→mouse, A→click, B→escape
         bool m_lbrbsPrevHeld = false;     // edge detection for combo press
 
+        // OSD exit input suppress — holds A/B to false until physical buttons released
+        bool m_osdExitSuppressing = false;
+
         // Frame pacing: accumulator ensures retro_run is called targetFps times/sec
         int m_lastRetroRuns = 0;
         double m_audioTimeAccumulator = 0.0;

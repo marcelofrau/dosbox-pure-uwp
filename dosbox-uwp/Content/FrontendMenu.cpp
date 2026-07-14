@@ -416,6 +416,7 @@ void FrontendMenu::BuildMenuTree()
         std::vector<std::string> transVals;
         for (int i = 10; i <= 100; i += 10)
             transVals.push_back(std::to_string(i));
+        std::vector<std::string> diagVals = { "On", "Off" };
 
         m_generalItems = {
             { "VSync",               MenuAction::TOGGLE_VALUE, {}, vsyncVals, {}, findValDisplay("frontend_vsync", vsyncVals, "On"), true, "frontend_vsync" },
@@ -424,6 +425,7 @@ void FrontendMenu::BuildMenuTree()
             { "Force Output FPS",    MenuAction::TOGGLE_VALUE, {}, fpsVals, fpsCore, findVal("dosbox_pure_force60fps", fpsCore, "false"), true, "dosbox_pure_force60fps" },
             { "Save States Support", MenuAction::TOGGLE_VALUE, {}, saveVals, saveCore, findVal("dosbox_pure_savestate", saveCore, "on"), false, "dosbox_pure_savestate" },
             { "Start Menu",          MenuAction::TOGGLE_VALUE, {}, menuVals, menuCore, findVal("dosbox_pure_menu_time", menuCore, "99"), true, "dosbox_pure_menu_time" },
+            { "Debug Overlay",       MenuAction::TOGGLE_VALUE, {}, diagVals, {}, findValDisplay("frontend_diag", diagVals, "On"), true, "frontend_diag" },
             { "",                    MenuAction::NONE },
             { "Reset to Defaults",   MenuAction::RESET_DEFAULTS },
             { "",                    MenuAction::NONE },

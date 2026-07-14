@@ -247,7 +247,9 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 	picker->FileTypeFilter->Append(".vhd");
 	picker->FileTypeFilter->Append(".conf");
 
-	// StorageFile from picker requires WinRT ReadBufferAsync → WriteBufferAsync (no CopyFileFromAppW).
+	// v0.8.3.0: Try native path first via StorageFile::Path. broadFileSystemAccess
+	// allows CreateFile2FromAppW to open picker-selected paths without copying.
+	// Fallback: if Path is empty (virtual provider), use ReadBufferAsync → WriteBufferAsync.
 	create_task(picker->PickSingleFileAsync()).then([this](Windows::Storage::StorageFile^ file)
 	{
 		if (file == nullptr)
@@ -261,6 +263,19 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 		m_main->ActivateLoadingScreen();
 		spdlog::info("[Picker] Picked: {}", std::string(file->Name->Data(), file->Name->Data() + file->Name->Length()));
 
+		// Try direct path access (no copy needed)
+		Platform::String^ nativePath = file->Path;
+		if (nativePath != nullptr && nativePath->Length() > 0)
+		{
+			std::wstring pathStr(nativePath->Data(), nativePath->Length());
+			spdlog::info("[Picker] Direct path: '{}'", std::string(pathStr.begin(), pathStr.end()));
+			m_main->SetLoadState(dosbox_uwpMain::LOAD_BOOTING);
+			m_main->QueueLoadRom(pathStr, {});
+			return;
+		}
+
+		// Fallback: Path empty (virtual/OneDrive placeholder) → copy via buffer
+		spdlog::info("[Picker] Path empty, falling back to buffer copy");
 		create_task(Windows::Storage::FileIO::ReadBufferAsync(file)).then([this, file](Windows::Storage::Streams::IBuffer^ buffer)
 		{
 			if (buffer == nullptr || buffer->Length == 0)

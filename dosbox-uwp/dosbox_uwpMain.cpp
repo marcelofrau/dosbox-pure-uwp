@@ -8,6 +8,7 @@
 #include <sstream>
 #include <wincodec.h>
 #include <wrl/client.h>
+extern "C" bool g_dbp_osd_active;
 #include <windows.h>
 #include <psapi.h>
 #include <SDL.h>
@@ -222,7 +223,8 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         m_menu.m_fileBrowser.Close();
         ActivateLoadingScreen();
 
-        // Copy to LocalFolder\temp\ via kernel-level copy (no memory allocation).
+        // Copy to LocalFolder\temp\ — broadFileSystemAccess does NOT grant CreateFile2FromAppW
+        // read access to arbitrary paths. Only picker-selected paths (FutureAccessList) work.
         std::wstring srcPath = path;
         CleanupTempFile();
         create_task([srcPath]() -> std::wstring
@@ -251,7 +253,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         ActivateLoadingScreen();
 
         // History stores original path (e.g. E:\Games\Doom\doom.exe).
-        // Re-copy to LocalFolder\temp\ just like file browser does.
+        // Must re-copy to temp — same reason as FileBrowser above.
         std::wstring srcPath = path;
         CleanupTempFile();
         create_task([srcPath]() -> std::wstring
@@ -274,14 +276,14 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         CoreApplication::Exit();
     };
     m_menu.onBeep = [this]() {
-        const int sampleRate = 44100;
+        const int sampleRate = 48000;
         const int numFrames = (int)(sampleRate * 0.12f);
         std::vector<int16_t> samples((size_t)numFrames * 2);
         const int halfPeriod = sampleRate / (1000 * 2);
         for (int i = 0; i < numFrames; i++)
         {
             float t = (float)i / sampleRate;
-            int16_t v = ((i % (halfPeriod * 2)) < halfPeriod) ? 16000 : -16000;
+            int16_t v = ((i % (halfPeriod * 2)) < halfPeriod) ? 8000 : -8000;
             float env = 1.0f;
             if (t < 0.002f) env = t / 0.002f;
             else if (t > 0.115f) env = (0.12f - t) / 0.005f;
@@ -568,6 +570,8 @@ void dosbox_uwpMain::Update()
 
             if (m_sdlInput->WasButtonJustPressed(BUTTON_A))
                 m_menu.OnConfirm();
+            if (m_sdlInput->WasButtonJustPressed(BUTTON_START))
+                m_menu.OnConfirm();
             if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
                 m_menu.OnBack();
             if (m_sdlInput->WasButtonJustPressed(BUTTON_L))
@@ -659,6 +663,24 @@ void dosbox_uwpMain::Update()
             for (auto& m : padMap)
                 RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
 
+            // OSD swap: when PUREMENU/OSK/Mapper is active, swap A↔B so A=confirm, B=back
+            if (g_dbp_osd_active)
+            {
+                bool aHeld = m_sdlInput->IsButtonHeld(BUTTON_A);
+                bool bHeld = m_sdlInput->IsButtonHeld(BUTTON_B);
+                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, bHeld);
+                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, aHeld);
+                m_osdExitSuppressing = true; // suppress after OSD closes
+            }
+            else if (m_osdExitSuppressing)
+            {
+                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, false);
+                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, false);
+                // Only stop suppressing once physical A AND B are both released
+                if (!m_sdlInput->IsButtonHeld(BUTTON_A) && !m_sdlInput->IsButtonHeld(BUTTON_B))
+                    m_osdExitSuppressing = false;
+            }
+
 #ifdef MOUSE_SUPPORT
             // Gamepad mouse simulation — only when m_gamepadMouseMode is ON (LB+RB+Select toggle)
             if (m_gamepadMouseMode)
@@ -709,7 +731,7 @@ void dosbox_uwpMain::Update()
             } // end m_gamepadMouseMode
 #endif
 
-            // v0.8.2.0 accumulator: QPC time-based, multi-retro_run, queue feedback scaling.
+            // v0.8.3.0 accumulator: QPC time-based, multi-retro_run, queue feedback scaling.
             // Produces ~70 retro_runs/sec regardless of visual frame rate (60fps on Xbox).
             // Queue feedback scales accumulator to keep XAudio2 queue near target depth.
             //
@@ -725,11 +747,11 @@ void dosbox_uwpMain::Update()
                 {
                     double dt = (double)(now.QuadPart) / (double)m_qpcFreq.QuadPart - m_audioLastTick;
                     m_audioTimeAccumulator += dt * targetFps;
-                    if (m_audioTimeAccumulator > 3.0 * targetFps)
+                    if (m_audioTimeAccumulator > 2.0 * targetFps)
                     {
                         spdlog::warn("[dosbox-uwp] STALL DEBT CAP: accum {:.2f} → {:.0f} (discarded {:.2f}s of I/O stall debt)",
-                            m_audioTimeAccumulator, 3.0 * targetFps, (m_audioTimeAccumulator - 3.0 * targetFps) / targetFps);
-                        m_audioTimeAccumulator = 3.0 * targetFps;
+                            m_audioTimeAccumulator, 2.0 * targetFps, (m_audioTimeAccumulator - 2.0 * targetFps) / targetFps);
+                        m_audioTimeAccumulator = 2.0 * targetFps;
                     }
                 }
                 m_audioLastTick = (double)now.QuadPart / (double)m_qpcFreq.QuadPart;
@@ -739,6 +761,13 @@ void dosbox_uwpMain::Update()
             int preRuns = maxRetroRuns;
             while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
             {
+                // v0.8.3.1: Prevent queue overshoot → FLUSH → crackle.
+                // During catch-up after I/O stall, 5 runs × 685 frames = 3425/tick
+                // but XAudio2 only consumes ~800/tick. Without guard, queue explodes
+                // past MAX_QUEUE → Stop/FlushSourceBuffers/Start → audible pop.
+                if (m_xaudio2 && m_xaudio2->GetQueuedFrames() > 12000)
+                    break;
+
                 LARGE_INTEGER _rf0, _rf1;
                 QueryPerformanceCounter(&_rf0);
 #ifndef XB_INSPECTOR_ENABLED
@@ -771,9 +800,9 @@ void dosbox_uwpMain::Update()
             {
                 int queueFrames = m_xaudio2->GetQueuedFrames();
                 double targetQ = 6615.0;
-                double scale = targetQ / (targetQ + (queueFrames - targetQ) * 0.25);
-                if (scale < 0.9) scale = 0.9;
-                if (scale > 1.1) scale = 1.1;
+                double scale = targetQ / (targetQ + (queueFrames - targetQ) * 0.5);
+                if (scale < 0.4) scale = 0.4;
+                if (scale > 1.3) scale = 1.3;
                 m_audioTimeAccumulator *= scale;
             }
 
@@ -784,7 +813,29 @@ void dosbox_uwpMain::Update()
                 m_retroRunning = false;
                 m_audioTimeAccumulator = 0.0;
                 m_audioLastTick = 0.0;
+                m_lastRetroRuns = 0;
                 m_clearColor = DirectX::Colors::Black;
+
+                // Reset FPS tracking — stale data from old game leaks into overlay
+                m_currentFps = 0.0;
+                m_frameTimeMs = 0.0;
+                m_fpsFrameCount = 0;
+                m_fpsFrameIdx = 0;
+                memset(m_fpsFrameTimes, 0, sizeof(m_fpsFrameTimes));
+                m_fpsLastFrame = {};
+
+                // Reset input state — prevent carry-over to next game
+                m_gamepadMouseMode = false;
+                m_lbrbsPrevHeld = false;
+                m_dpadRepeatBtn = -1;
+                m_osdExitSuppressing = false;
+
+                // Flush XAudio2 — old audio queue would play briefly with new game
+                if (m_xaudio2) {
+                    m_xaudio2->Stop();
+                    m_xaudio2->Flush();
+                }
+
                 m_menu.Show();
                 return; // return from Tick lambda, render will show menu
         }
@@ -1010,7 +1061,8 @@ bool dosbox_uwpMain::Render()
     }
 #endif
         // Debug overlay (top-right corner) — matches Unleashed ZILLALOG HUD
-        if (m_currentFps > 0.0)
+        // Gated by frontend_diag setting (Settings > General > Debug Overlay)
+        if (m_currentFps > 0.0 && SettingsManager::GetOption("frontend_diag", "On") != "Off")
         {
             int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
             unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
@@ -1472,7 +1524,7 @@ void dosbox_uwpMain::ProcessPendingLoad()
     m_pendingLoad.reset();
     m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
 
-    // Reset accumulator (v0.8.2.0)
+    // Reset accumulator (v0.8.3.0)
     // DON'T force-start XAudio2 here — Submit() auto-starts after TARGET_QUEUE pre-buffering.
     // Force-starting with2 frames causes instant UNDERRUN → OutputDebugStringA flood → freeze.
     m_audioTimeAccumulator = 0.0;

@@ -423,3 +423,78 @@ address this by:
 1. Increasing MAX_QUEUE or removing routine flush (keep only as extreme safety net)
 2. Adding emergency catch-up: if queue < 500 frames, run extra RunFrame() immediately
 3. The queue feedback scaling should prevent drift from reaching MAX_QUEUE in most cases
+
+## v0.8.3.0 Audio Fix — Complete Resolution (Jul 2026)
+
+### Summary
+Restored v0.8.2.0 audio architecture (XAudio2 push + accumulator + queue feedback) on top of HEAD (D3D11, spdlog, FPS overlay). Fixed 7 bugs including the critical `DBP_STANDALONE` compile-out and XAudio2 44100→48000 sample rate mismatch.
+
+### Key Fixes
+
+1. **`DBP_STANDALONE` removed from vcxproj** — compiled out `audio_batch_cb()` calls in core. Without it, `retro_audio()` never received data.
+2. **Accumulator: `dt * targetFps`** — was missing multiplier, grew at 1.0/sec instead of 70/sec.
+3. **Stall debt cap: `3.0 * targetFps`** — correct units (frames, not seconds).
+4. **XAudio2 sample rate: 44100 → 48000** — core outputs 48kHz (`DBP_MIXER_GetFrequency()`). Music was 8% too slow.
+5. **FPS computation** — `m_fpsLastFrame` now only updated when `m_lastRetroRuns > 0`.
+6. **DIAG `runs_ival`** — accumulated retro_runs per interval (useful metric, `runs_last` is always 0).
+7. **DBPS stubs** — `ToggleOSD`, `IsShowingOSD`, `IsGameRunning` added to `dosbox_pure_sta.cpp`.
+
+### Files Changed
+- `dosbox-uwp/dosbox-uwp.vcxproj` — removed `DBP_STANDALONE`
+- `dosbox-uwp/Content/XAudio2Output.cpp` — 44100→48000, TARGET_QUEUE/MAX_QUEUE updated
+- `dosbox-uwp/dosbox_pure_sta.cpp` — DBPS stubs
+- `dosbox-uwp/dosbox_uwpMain.cpp` — accumulator, FPS, DIAG fixes
+- `dosbox-uwp/Content/SdlAudio.cpp/h` — deleted (unused)
+- `dosbox-uwp/Package.appxmanifest` — version 0.8.3.0
+
+### Detailed Log
+See `docs/audio-fix/V0.8.3.0-FIX-LOG.md`.
+
+### Remaining Issue
+QPC-vs-DAC drift still causes queue to grow to MAX_QUEUE (~24000 frames / 500ms) and flush. For Rally Championship (fast-paced), the pre-buffer covers the gap. For music-heavy games, may cause brief stutter. Full fix requires DRC (see `AUDIO-PIPELINE.md`).
+
+## UWP File Access — Eliminating Temp Copy (Jul 2026)
+
+### Problem
+When loading a game, the file is copied to `LocalFolder\temp\` before passing to the core:
+- **FileBrowser path:** `CopyFileFromAppW` — kernel-level copy to temp. Unnecessary for local files.
+- **FileOpenPicker path (Ctrl+L):** `ReadBufferAsync` → `WriteBufferAsync` — loads entire file into managed memory, writes to temp. Catastrophic for large files (4GB ISO = 4GB RAM + 4GB disk).
+
+### Why Other Emulators Don't Copy
+Xenia Canary UWP, XBSX2, Dolphin UWP all use the same pattern:
+1. `FileOpenPicker` → `StorageFile`
+2. Get native path via `StorageFile::Path`
+3. Open directly via `CreateFile2FromAppW` (the `*FromAppW` API family)
+4. No copy needed — `broadFileSystemAccess` capability grants access to picker-selected paths
+
+### How It Works in UWP
+- `StorageFile::Path` returns native NTFS path (e.g., `E:\Games\doom.dosz`) for local filesystem providers
+- `CreateFile2FromAppW` checks if the path is within an authorized scope (ApplicationData, install dir, or picker-granted access)
+- If authorized, opens handle directly — no streaming, no copy
+- The VFS layer (`vfs_implementation_uwp.cpp`) already uses `CreateFile2FromAppW`
+
+### Our Capability
+`Package.appxmanifest` already declares `broadFileSystemAccess`. The FileBrowser already uses `FindFirstFileExFromAppW` to browse directories — proving native path access works.
+
+### Confirmed Finding: broadFileSystemAccess ≠ read access to arbitrary paths
+**Test result (Jul 2026):** Passing native path `E:\PC\DOSBoxPure\Screamer.dosz` directly
+to `QueueLoadRom` (bypassing `CopyFileToTemp`) caused `CreateFile2FromAppW` to fail
+with "Unable to open ZIP file". The core still reported `retro_load_game SUCCESS` but
+PUREMENU showed empty file list (no game content extracted).
+
+**Root cause:** `broadFileSystemAccess` grants `FindFirstFileExFromAppW` directory
+enumeration, but NOT `CreateFile2FromAppW` read access to arbitrary paths. The
+capability only grants read access to:
+1. Paths selected through `FileOpenPicker` (stored via `FutureAccessList`)
+2. Paths explicitly added to `FutureAccessList`
+3. The app's own data folders
+
+The FileBrowser uses `FindFirstFileExFromAppW` (works for listing), but the VFS uses
+`CreateFile2FromAppW` (fails for reading).
+
+**Conclusion:** `CopyFileToTemp` is REQUIRED for FileBrowser and History paths. The temp
+copy cannot be eliminated without a fundamentally different approach (e.g., `FutureAccessList`
+for every file, which requires picker interaction).
+
+**FileOpenPicker (Ctrl+L):** Direct `StorageFile::Path` → `QueueLoadRom` MAY work since
+the picker auto-grants access. Tested: fallback to buffer copy if `Path` is empty.

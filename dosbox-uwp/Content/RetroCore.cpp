@@ -575,7 +575,7 @@ void RetroCore::SetAudioOutput(XAudio2Output* output)
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
     // Push model: core produces audio → Submit() → XAudio2 hardware.
-    // This is the v0.8.2.0 audio path. SDL pull model removed.
+    // This is the v0.8.3.0 audio path. SDL pull model removed.
     if (s_audioOutput)
         s_audioOutput->Submit(data, frames);
     return frames;

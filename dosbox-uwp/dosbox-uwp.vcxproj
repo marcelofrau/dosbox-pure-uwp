@@ -51,10 +51,12 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="uwp-dep.props" />
     <Import Project="uwp-xray-depot.props" />
+    <Import Project="..\version.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="uwp-dep.props" />
+    <Import Project="..\version.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   
@@ -994,6 +996,9 @@
     <Import Project="$(VSINSTALLDIR)\Common7\IDE\Extensions\Microsoft\VsGraphics\MeshContentTask.targets" />
     <Import Project="$(VSINSTALLDIR)\Common7\IDE\Extensions\Microsoft\VsGraphics\ShaderGraphContentTask.targets" />
   </ImportGroup>
+  <Target Name="IncrementBuildNumber" BeforeTargets="ClCompile">
+    <Exec Command="pwsh -NoProfile -NonInteractive -File &quot;$(SolutionDir)tools\increment-version.ps1&quot;" />
+  </Target>
   <PropertyGroup>
     <PostBuildEvent Condition="'$(Configuration)'=='Debug'">
       if exist "$(OutDir)AppX\Assets" xcopy /Y /E /I "$(ProjectDir)Assets\*" "$(OutDir)AppX\Assets\" &gt; nul 2&gt;&amp;1

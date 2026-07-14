@@ -17,7 +17,7 @@ static volatile long s_underrunCount = 0;
 static const long TARGET_QUEUE = 2736; // ~57ms@48000Hz — pre-buffer before voice starts.
 // Voice starts when queue reaches this level. High enough to absorb 60→70fps
 // double-run oscillation (queue swings ±550 samples around mean).
-static const long MAX_QUEUE = 24000;   // ~500ms — generous cap to prevent flush-during-normal-operation
+static const long MAX_QUEUE = 16000;   // ~333ms — safety cap, prevents FLUSH crackle (was 24000/500ms)
 
 static LARGE_INTEGER s_qpcFreq = {};
 static LARGE_INTEGER s_lastSubmit = {};

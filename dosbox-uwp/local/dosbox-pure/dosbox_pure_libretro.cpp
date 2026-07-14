@@ -73,6 +73,9 @@ static retro_time_t dbp_boot_time;
 static size_t dbp_serializesize;
 static Bit16s dbp_content_year, dbp_forcefps;
 
+// UWP: OSD active flag — true when PUREMENU/OSK/Mapper is open
+extern "C" bool g_dbp_osd_active = false;
+
 // DOSBOX AUDIO/VIDEO
 static Bit8u buffer_active, dbp_overscan;
 static bool dbp_doublescan, dbp_padding;
@@ -1286,6 +1289,9 @@ static void DBP_Shutdown()
 		delete control;
 		control = NULL;
 	}
+	// Reset dbp_wasloaded on normal exit so next retro_load_game treats images as new content.
+	// Preserve during BIOS reboot (dbp_biosreboot=true) so images carry over.
+	if (!dbp_biosreboot) dbp_wasloaded = false;
 	dbp_state = DBPSTATE_SHUTDOWN;
 }
 
@@ -3458,6 +3464,10 @@ void retro_run(void)
 
 	if (dbp_message_queue) run_emuthread_notify();
 
+	// UWP: update OSD active flag for input remapping (A↔B swap in PUREMENU)
+	// Exclude mapper — swapping during button remapping would confuse the user
+	g_dbp_osd_active = (DBP_OSD.ptr._all != NULL && DBP_OSD.mode != DBPOSD_MAPPER);
+
 	if (!environ_cb(RETRO_ENVIRONMENT_GET_THROTTLE_STATE, &dbp_throttle))
 	{
 		bool fast_forward = false;
@@ -3568,18 +3578,10 @@ void retro_run(void)
 				#ifdef DBP_STANDALONE
 				environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, 0);
 				#else
-				// On statically linked platforms shutdown would exit the frontend, so don't do that. Just tint the screen red and sleep
-				#ifndef STATIC_LINKING
-				if (dbp_menu_time >= 0 && dbp_menu_time < 99) // only auto shut down for users that want auto shut down in general
-				{
-					environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, 0);
-				}
-				else
-				#endif
-				{
-					for (Bit8u *p = (Bit8u*)buf.video, *pEnd = p + buf.width * buf.height * 4; p < pEnd; p += 56) p[2] = 255;
-					retro_sleep(10);
-				}
+				// UWP patch: always SHUTDOWN — our frontend handles it by returning to menu.
+				// Original code checked dbp_menu_time and fell into infinite red-tint loop
+				// for menu_time=-1 (Always show menu). That freezes UWP.
+				environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, 0);
 				#endif
 			}
 			else if (dbp_state == DBPSTATE_SHUTDOWN)
