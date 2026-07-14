@@ -174,7 +174,7 @@ XA2 submit #400: queue=4404 (100ms) consumption=44261Hz underruns=0
 
 ---
 
-## Where We Ended Up
+## Where We Ended Up (after XAudio2 phases)
 
 **Back at `stutter-fix-v1`.** Reverted all audio changes. Build compiles clean.
 
@@ -189,6 +189,71 @@ The tag represents the cleanest architecture:
 3. Makes tiny corrections (≤±0.5%, inaudible)
 
 **Why we couldn't implement it:** `SamplesPlayed` measurement is unreliable on UWP. Without a reliable clock, DRC steers blind.
+
+---
+
+## Phase 11: SDL Audio (WASAPI) + D3D11 Renderer
+
+**Goal:** Replace XAudio2 with SDL2 audio (WASAPI) for simpler integration. Add D3D11 renderer.
+
+**What was done:**
+- `SdlAudio.cpp/h`: new SDL2 audio output using `SDL_QueueAudio` (queue mode)
+- `retro_audio()` changed to **no-op** — audio pulled via `DBPS_AudioMix()` every ~7ms
+- Frame accumulator added but **capped at 1.0** (max 1 retro_run per tick)
+- `RetroD3D11Renderer.cpp/h`: new D3D11 textured-quad renderer replacing D2D bitmap
+- FPS overlay added (rolling 60-frame window)
+- VSync OFF by default
+- XAudio2Output code **retained but disconnected** from main loop
+
+**Result:** Partial. Some games (Xargon, Tyrian) near-perfect. Rally Championship: crackling persists.
+
+**Root cause of persistent crackling:**
+1. Accumulator cap at 1.0 prevents 70fps aggregate → core produces fewer samples than XAudio2/WASAPI consumes
+2. `DBPS_AudioMix()` pull is time-based (every ~7ms), not queue-driven → pulls even when mixer has stale data
+3. No feedback loop between SDL queue depth and production rate
+
+**Problems discovered:**
+1. `DBP_STANDALONE_AUDIO` enabled → core consumed its own mixer → `DBPS_AudioMix` starved (see discoveries.md)
+2. Reverted to `#ifndef DBP_STANDALONE` (core audio pipeline skipped)
+3. Heavy games not tested (Screamer, etc.)
+
+**Verdict:** SDL path has cleaner architecture (pull model, WASAPI built-in) but the crackling problem is harder to solve without DRC. The accumulator cap is the primary blocker.
+
+---
+
+## Phase 12: Restoration Decision
+
+**Decision:** Restore v0.8.2.0 audio architecture (XAudio2 push + accumulator + queue feedback).
+
+**Rationale:**
+- v0.8.2.0 was the best working state (Xargon, Tyrian clean; Screamer had minor ~50-100ms stutters)
+- `stutter-fix-v1` failed on Xbox (core needs frequent retro_run calls)
+- SDL pull model crackling is harder to fix than v0.8.2.0's flush stutter
+- D3D11 renderer + FPS overlay + spdlog retained from HEAD
+
+**What to restore:**
+- `retro_audio()` → `Submit()` push model
+- QPC accumulator + multi-retro_run (target 70fps aggregate)
+- Queue feedback scaling (`scale = targetQ / (targetQ + (q-targetQ)*0.25)`)
+- XAudio2 initialization in constructor
+- Force-start XAudio2 after load + accumulator boost
+
+**What to keep from HEAD:**
+- `RetroD3D11Renderer` (D3D11 render path)
+- FPS overlay
+- spdlog everywhere
+- Loading screen improvements
+- xb-xray instrumentation
+
+**What to remove:**
+- `SdlAudio.cpp/h` (unused after restore)
+- Frame accumulator cap at 1.0
+- SDL pull logic in Update()
+
+**Remaining problem:** MAX_QUEUE flush causes ~50-100ms audio gaps on heavy games. To fix:
+1. Increase MAX_QUEUE or remove routine flush (safety net only)
+2. Add emergency catch-up: if queue < 500 frames, run extra RunFrame()
+3. Queue feedback scaling should prevent drift from reaching MAX_QUEUE
 
 ---
 

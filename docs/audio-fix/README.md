@@ -39,14 +39,22 @@
 
 ## Decision (chosen direction)
 
-> Fill this in once the maintainer decides. Two viable options are specified in
-> `IMPLEMENTATION-PLAN.md`:
+> **Chosen: Restore v0.8.2.0 audio architecture + keep D3D11/FPS/spdlog from HEAD.**
+>
+> v0.8.2.0 (XAudio2 push + accumulator + queue feedback) was the best working state.
+> `stutter-fix-v1` failed on Xbox (core needs frequent retro_run calls). SDL pull
+> model crackling is harder to fix than v0.8.2.0's flush stutter.
+>
+> See `V0.8.2.0-RESTORE-PLAN.md` for the detailed restoration plan.
+>
+> Two viable options were specified in `IMPLEMENTATION-PLAN.md`:
 >
 > - **Option B — Production-rate nudge (simpler).** No resampler. DRC nudges how
->   fast the core is drained toward a target queue depth. Recommended first step.
+>   fast the core is drained toward a target queue depth. **Deferred** — the
+>   accumulator approach in v0.8.2.0 is a simpler version of this.
 > - **Option A — Resampler + DRC (RetroArch-style, most robust).** Sinc resampler
->   converts core output to the DAC rate at a DRC-adjusted ratio. More code, but
->   survives heavy games and fully decouples audio from video.
+>   converts core output to the DAC rate at a DRC-adjusted ratio. **Future work**
+>   if accumulator proves insufficient for heavy games.
 >
-> **Current recommendation:** start with Option B on top of `stutter-fix-v1`. Move
-> to Option A only if a heavy game proves the nudge insufficient.
+> **Current path:** restore v0.8.2.0, fix MAX_QUEUE flush stutter, then evaluate
+> whether DRC is needed on top.

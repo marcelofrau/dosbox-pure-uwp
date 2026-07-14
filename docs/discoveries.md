@@ -346,3 +346,80 @@ Reverted all audio-related changes to the local copy. With `#ifndef DBP_STANDALO
 
 ### Lesson
 **Never patch the dosbox-pure core's audio pipeline.** Our role is the frontend shell (like ZillaLib/libretro/RetroArch UWP). The core works perfectly; we consume audio via `DBPS_AudioMix()` from the mixer, bypassing `audio_batch_cb` entirely.
+
+## Audio Architecture Investigation — v0.8.2.0 vs HEAD (Jul 2026)
+
+### Context
+v0.8.2.0 (tag `a52f8dc`) was the best working audio state. HEAD switched to SDL Audio
+(WASAPI) + D3D11 renderer. Audio crackling persists. Investigation to decide: restore
+v0.8.2.0 or fix SDL path.
+
+### Three Audio States Compared
+
+#### `stutter-fix-v1` (tag `738d7a0`) — "clean architecture"
+- **Push model**: `retro_audio()` → `XAudio2Output::Submit()` — core pushes audio directly
+- **Single RunFrame()** per loop tick, no accumulator, no pacing
+- **VSync OFF**, DoPacingSleep removed
+- **Queue wanders** 5000–15000 frames (no feedback loop)
+- **Windows**: worked
+- **Xbox + light games**: **FAILED** — audio stopped working
+- **Why it failed on Xbox**: core needs `retro_run()` called frequently enough to maintain
+  `DBP_ThreadControl` semaphore handshake. At 60fps (Xbox compositor), single RunFrame()
+  per tick was insufficient for core's internal 70fps target. Queue drifted to underrun/flush.
+
+#### v0.8.2.0 (tag `a52f8dc`) — best working state
+- **Same push model** as stutter-fix-v1
+- **PLUS**: QPC accumulator + multi-retro_run (~70fps aggregate)
+- **Queue feedback scaling**: `scale = targetQ / (targetQ + (q - targetQ) * 0.25)`
+- **VSync ON** (default), TARGET_QUEUE=6615 (~150ms), MAX_QUEUE=22050
+- **Windows/Xbox, light games** (Xargon, Tyrian): clean audio, queue ~5034, underruns=0
+- **Heavy games** (Screamer): **~50-100ms audio stutter every ~5 seconds**
+  - Cause: QPC-vs-DAC drift → queue grows → hits MAX_QUEUE → Stop/Flush/Start cycle
+  - The flush is audible (50-100ms gap), then recovers
+
+#### HEAD (current) — SDL Audio + D3D11
+- **Pull model**: `retro_audio()` is **no-op**, audio pulled via `DBPS_AudioMix()` every ~7ms
+- **Frame accumulator capped at 1.0** (max 1 retro_run per tick)
+- **SDL QueueAudio** via WASAPI (SdlAudio.cpp)
+- **XAudio2Output exists but disconnected** from main loop
+- **D3D11 renderer** + FPS overlay
+- **Some games** near-perfect, but **crackling persists**
+- **Why crackling**: accumulator cap prevents 70fps aggregate. Pull time-based doesn't
+  react to queue state. `DBPS_AudioMix()` reads from mixer that may have stale/insufficient data.
+
+### Key Discovery: "Core Self-Regulates" Is Incomplete
+
+The `AUDIO-PIPELINE.md` states: "the core self-regulates its sample rate... Stop trying
+to force 70fps." This is **true but incomplete**:
+
+- The core self-regulates **IF** `retro_run()` is called frequently enough
+- At 60fps visual loop, single RunFrame() per tick → core's 70fps target desynchronizes
+- The accumulator in v0.8.2.0 solved this by forcing ~70 retro_runs/sec regardless of visual fps
+- **Without the accumulator** (stutter-fix-v1, HEAD): core falls behind on audio production
+
+### Decision: Restore v0.8.2.0 Audio + Keep D3D11
+
+**Restore**: XAudio2 push model + accumulator + queue feedback scaling
+**Keep**: D3D11 renderer, FPS overlay, spdlog, loading screen, xb-xray
+**Fix**: MAX_QUEUE flush stutter (the50-100ms gap every ~5s on heavy games)
+**Remove**: SDL Audio (SdlAudio.cpp/h) — unused after restore
+
+### Files Changed (v0.8.2.0 vs HEAD)
+
+| File | v0.8.2.0 | HEAD | Action |
+|------|----------|------|--------|
+| `RetroCore.cpp:retro_audio` | `Submit(data, frames)` | no-op | **Restore push** |
+| `dosbox_uwpMain.h` | `m_audioLastTick`, `m_audioTimeAccumulator` | `m_frameAccum`, `m_lastAccumTime` | **Restore accumulator** |
+| `dosbox_uwpMain.cpp` Update() | Multi-retro_run + queue scaling | Single run, cap 1.0, SDL pull | **Restore accumulator loop** |
+| `dosbox_uwpMain.cpp` constructor | `m_xaudio2` init + `SetAudioOutput` | `m_sdlAudio` init | **Restore XA2 init** |
+| `dosbox_uwpMain.cpp` ProcessPendingLoad | XA2 force-start + acc boost | Removed | **Restore** |
+| `XAudio2Output.cpp` | TARGET_QUEUE=6615, MAX_QUEUE=22050 | Same + drain event + WaitForDrain | Keep v0.8.2.0 version |
+| `XAudio2Output.h` | TARGET_FRAMES=6615 | Same + watermarks | Keep v0.8.2.0 version |
+
+### Remaining Problem to Solve After Restore
+
+The MAX_QUEUE flush causes ~50-100ms audio gaps on heavy games. After restoring v0.8.2.0,
+address this by:
+1. Increasing MAX_QUEUE or removing routine flush (keep only as extreme safety net)
+2. Adding emergency catch-up: if queue < 500 frames, run extra RunFrame() immediately
+3. The queue feedback scaling should prevent drift from reaching MAX_QUEUE in most cases
