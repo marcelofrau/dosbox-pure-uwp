@@ -43,6 +43,8 @@ namespace dosbox_uwp
         static void SetOptionValue(const char* key, const char* value);
         static void SetMouseMove(int relX, int relY);
         static void SetPointer(float x, float y, bool down);
+        static void SetAudioOutput(class XAudio2Output* output);
+        static XAudio2Output* s_audioOutput;
 #ifdef MOUSE_SUPPORT
         static void SetMouseButton(unsigned btn, bool down);
         static void SetMouseWheel(int delta);

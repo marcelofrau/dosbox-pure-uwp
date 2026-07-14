@@ -69,7 +69,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir);$(IntermediateOutputPath);$(DBPDir);$(DBPDir)include;$(DBPDir)libretro-common\include;$(DBPDir)src;$(DBPDir)src\cpu;$(DBPDir)src\gui;$(DBPDir)src\misc;$(DBPDir)src\dos;$(LrCommonDir);$(LrCommonDir)include;$(MSBuildThisFileDirectory)..\extern\uwp-xray-depot\external\spdlog\include;$(MSBuildThisFileDirectory)..\extern\uwp-xray-depot\external\json\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <DisableSpecificWarnings>4453;28204;4703</DisableSpecificWarnings>
-	  <PreprocessorDefinitions>MOUSE_SUPPORT;_DEBUG;__LIBRETRO__;DBP_STANDALONE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+	  <PreprocessorDefinitions>MOUSE_SUPPORT;_DEBUG;__LIBRETRO__;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -82,7 +82,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir);$(IntermediateOutputPath);$(DBPDir);$(DBPDir)include;$(DBPDir)libretro-common\include;$(DBPDir)src;$(DBPDir)src\cpu;$(DBPDir)src\gui;$(DBPDir)src\misc;$(DBPDir)src\dos;$(LrCommonDir);$(LrCommonDir)include;$(MSBuildThisFileDirectory)..\extern\uwp-xray-depot\external\spdlog\include;$(MSBuildThisFileDirectory)..\extern\uwp-xray-depot\external\json\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
 	  <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <DisableSpecificWarnings>4453;28204;4703</DisableSpecificWarnings>
-	  <PreprocessorDefinitions>MOUSE_SUPPORT;NDEBUG;__LIBRETRO__;DBP_STANDALONE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+	  <PreprocessorDefinitions>MOUSE_SUPPORT;NDEBUG;__LIBRETRO__;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -130,7 +130,6 @@
     <ClInclude Include="Content\ShaderStructures.h" />
     <ClInclude Include="Content\SdlInput.h" />
 <ClInclude Include="Content\XAudio2Output.h" />
-<ClInclude Include="Content\SdlAudio.h" />
 <ClInclude Include="Content\FrontendMenu.h" />
 <ClInclude Include="Content\FileBrowser.h" />
 <ClInclude Include="Content\AboutDialog.h" />
@@ -148,10 +147,6 @@
     <ClCompile Include="Content\Sample3DSceneRenderer.cpp" />
     <ClCompile Include="Content\SdlInput.cpp" />
     <ClCompile Include="Content\XAudio2Output.cpp">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
-    </ClCompile>
-    <ClCompile Include="Content\SdlAudio.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>

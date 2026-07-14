@@ -14,10 +14,10 @@ static volatile long long s_totalProduced = 0;
 static volatile long long s_totalConsumed = 0;
 static volatile long s_flushGen = 1;
 static volatile long s_underrunCount = 0;
-static const long TARGET_QUEUE = 2517; // ~57ms@44100Hz — 4 buffers.
+static const long TARGET_QUEUE = 2736; // ~57ms@48000Hz — pre-buffer before voice starts.
 // Voice starts when queue reaches this level. High enough to absorb 60→70fps
-// double-run oscillation (queue swings ±525 samples around mean).
-static const long MAX_QUEUE = 22050;   // ~500ms — generous cap to prevent flush-during-normal-operation
+// double-run oscillation (queue swings ±550 samples around mean).
+static const long MAX_QUEUE = 24000;   // ~500ms — generous cap to prevent flush-during-normal-operation
 
 static LARGE_INTEGER s_qpcFreq = {};
 static LARGE_INTEGER s_lastSubmit = {};
@@ -61,14 +61,19 @@ public:
     {
         if (BytesRequired > 0)
         {
-            // BytesRequired>0 fires every ~10ms even during normal playback (XAudio2
-            // callback cadence). Only log as underrun when queue is actually low.
             long q = s_queuedFrames;
-            if (q < 441) // <10ms @ 44100 — real underrun risk
+            if (q < 480)
             {
                 InterlockedIncrement(&s_underrunCount);
-                log("XA2 UNDERRUN: BytesRequired=%lu queue=%ld (underrun#%ld)",
-                    BytesRequired, q, (long)s_underrunCount);
+                // Throttle: log at most 1x per second (callback fires every ~10ms)
+                static DWORD s_lastUnderrunLog = 0;
+                DWORD now = GetTickCount();
+                if (now - s_lastUnderrunLog > 1000)
+                {
+                    s_lastUnderrunLog = now;
+                    log("XA2 UNDERRUN: BytesRequired=%lu queue=%ld (total=%ld)",
+                        BytesRequired, q, (long)s_underrunCount);
+                }
             }
         }
     }
@@ -139,10 +144,10 @@ bool XAudio2Output::Initialize()
     WAVEFORMATEX wfx = {};
     wfx.wFormatTag = WAVE_FORMAT_PCM;
     wfx.nChannels = 2;
-    wfx.nSamplesPerSec = 44100;
+    wfx.nSamplesPerSec = 48000;
     wfx.wBitsPerSample = 16;
     wfx.nBlockAlign = 4;
-    wfx.nAvgBytesPerSec = 176400;
+    wfx.nAvgBytesPerSec = 192000;
 
     EnsureDrainEvent();
 
@@ -154,7 +159,7 @@ bool XAudio2Output::Initialize()
     }
 
     hr = m_pXAudio2->CreateMasteringVoice(
-        &m_pMasterVoice, 2, 44100, 0, nullptr, nullptr, AudioCategory_GameEffects);
+        &m_pMasterVoice, 2, 48000, 0, nullptr, nullptr, AudioCategory_GameEffects);
     if (FAILED(hr))
     {
         log("CreateMasteringVoice FAILED: 0x%08lX", (unsigned long)hr);
@@ -255,7 +260,7 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
         m_started = true;
         m_voiceStartedFlag = true;
         log("XA2 START after pre-buffer: %ld frames (%.0fms)",
-            (long)s_queuedFrames, (double)s_queuedFrames * 1000.0 / 44100.0);
+            (long)s_queuedFrames, (double)s_queuedFrames * 1000.0 / 48000.0);
     }
 
     // FLUSH cap: bound max latency at ~500ms
@@ -267,7 +272,7 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
         InterlockedIncrement(&s_flushGen);
         m_started = false;
         log("XA2 FLUSH cap at %ld frames (%.0fms) — resetting",
-            (long)MAX_QUEUE, (double)MAX_QUEUE * 1000.0 / 44100.0);
+            (long)MAX_QUEUE, (double)MAX_QUEUE * 1000.0 / 48000.0);
     }
 
     static uint32_t submitCounter = 0;
@@ -292,9 +297,9 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
             {
                 ULONGLONG deltaSamples = vs.SamplesPlayed - s_lastSamplesPlayed;
                 consumptionRate = (double)deltaSamples / elapsedSec;
-                double expectedSamples = 44100.0 * elapsedSec;
+                double expectedSamples = 48000.0 * elapsedSec;
                 double driftSamples = (double)deltaSamples - expectedSamples;
-                driftMs = driftSamples * 1000.0 / 44100.0;
+                driftMs = driftSamples * 1000.0 / 48000.0;
             }
         }
         s_lastSampleClock = s_lastSubmit;
@@ -314,7 +319,7 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
             "qMin={} qMax={} trend={:.0f}±{:.0f} "
             "consume={:.0f}Hz drift={:.1f}ms underruns={} "
             "totP={} totC={}",
-            submitCounter, frames, q2, (double)q2 * 1000.0 / 44100.0,
+            submitCounter, frames, q2, (double)q2 * 1000.0 / 48000.0,
             (unsigned long)vs.BuffersQueued, sinceLast,
             s_queueMin, s_queueMax,
             avgQ, trendDelta,

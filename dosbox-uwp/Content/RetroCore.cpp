@@ -62,6 +62,7 @@ bool RetroCore::s_shutdownRequested = false;
 bool RetroCore::s_joypadState[16] = {};
 std::map<std::string, std::string> RetroCore::s_optionValues;
 bool RetroCore::s_optionValuesChanged = false;
+XAudio2Output* RetroCore::s_audioOutput = nullptr;
 static const char* OVERRIDE_MENU_TIME = "-1";
 
 RetroCore::RetroCore() {}
@@ -566,11 +567,17 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
     s_frameValid = true;
 }
 
+void RetroCore::SetAudioOutput(XAudio2Output* output)
+{
+    s_audioOutput = output;
+}
 
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
-    // No-op: SDL2 audio callback reads directly from DOSBox mixer via DBPS_AudioMix.
-    // Audio is pulled by the SDL callback thread, not pushed here.
+    // Push model: core produces audio → Submit() → XAudio2 hardware.
+    // This is the v0.8.2.0 audio path. SDL pull model removed.
+    if (s_audioOutput)
+        s_audioOutput->Submit(data, frames);
     return frames;
 }
 

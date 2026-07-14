@@ -8,6 +8,8 @@
 #include <sstream>
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <windows.h>
+#include <psapi.h>
 #include <SDL.h>
 
 #ifdef XB_INSPECTOR_ENABLED
@@ -17,8 +19,6 @@ struct PerfStats {
     double frame_ms, poll_ms, hud_ms, render_ms, total_ms;
     double target_fps;
     float fps;
-    int audio_queued, audio_underruns;
-    long long audio_produced, audio_consumed;
     char rom_name[256];
 };
 static PerfStats s_perf{};
@@ -83,14 +83,15 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 
     m_retroCore = std::unique_ptr<RetroCore>(new RetroCore());
 
-    m_sdlAudio = std::unique_ptr<SdlAudio>(new SdlAudio());
-    if (m_sdlAudio->Initialize())
+    m_xaudio2 = std::unique_ptr<XAudio2Output>(new XAudio2Output());
+    if (m_xaudio2->Initialize())
     {
-        spdlog::info("[dosbox-uwp] SDL2 audio: initialized OK");
+        RetroCore::SetAudioOutput(m_xaudio2.get());
+        spdlog::info("[dosbox-uwp] XAudio2: initialized OK");
     }
     else
     {
-        spdlog::error("[dosbox-uwp] SDL2 audio: FAILED to initialize");
+        spdlog::error("[dosbox-uwp] XAudio2: FAILED to initialize");
     }
 
     m_sdlInput = std::unique_ptr<SdlInput>(new SdlInput());
@@ -165,9 +166,6 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             WideCharToMultiByte(CP_UTF8, 0, fw.c_str(), -1, buf, sizeof(buf), nullptr, nullptr);
             xb::Xray::set_device_family(buf);
         }
-        xb::Xray::bind("audio_queued", (long*)0); // SDL2: no direct queue counter
-        xb::Xray::bind("audio_produced", (long*)0);
-        xb::Xray::bind("audio_consumed", (long*)0);
         xb::Xray::bind("fps", &s_debug_fps);
         xb::Xray::bind("target_fps", &s_debug_target_fps);
         xb::Xray::bind("frame_ms", &s_debug_frame_ms);
@@ -186,11 +184,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             xb::field("total_ms",     &PerfStats::total_ms),
             xb::field("target_fps",   &PerfStats::target_fps),
             xb::field("fps",          &PerfStats::fps),
-            xb::field("audio_queued",   &PerfStats::audio_queued),
-            xb::field("audio_underruns",&PerfStats::audio_underruns),
-            xb::field("audio_produced", &PerfStats::audio_produced),
-            xb::field("audio_consumed", &PerfStats::audio_consumed),
-            xb::field("rom_name",       &PerfStats::rom_name),
+            xb::field("rom_name",     &PerfStats::rom_name),
         };
         xb::Xray::bind_struct("perf", &s_perf, perf_fields,
             sizeof(perf_fields) / sizeof(perf_fields[0]));
@@ -295,7 +289,11 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             samples[i * 2] = v;
             samples[i * 2 + 1] = v;
         }
-        m_sdlAudio->SubmitBeep(samples.data(), numFrames);
+        // Submit() auto-starts voice when queue >= TARGET_QUEUE (2517 frames).
+        // Beep is 5292 frames (~120ms) → auto-starts after ~57ms pre-buffer.
+        // Auto-stop in Tick kills voice when queue drains to 0.
+        if (m_xaudio2)
+            m_xaudio2->Submit(samples.data(), numFrames);
     };
     m_menu.onOptionChanged = [this](const char* key, const char* value) {
         if (!strcmp(key, "frontend_vsync"))
@@ -485,7 +483,8 @@ void dosbox_uwpMain::Update()
             m_frameTimeMs = sum / m_fpsFrameCount;
             m_currentFps = (m_frameTimeMs > 0.0) ? 1000.0 / m_frameTimeMs : 0.0;
         }
-        m_fpsLastFrame = now;
+        if (m_lastRetroRuns > 0)
+            m_fpsLastFrame = now;
     }
 
 #ifdef XB_INSPECTOR_ENABLED
@@ -494,6 +493,7 @@ void dosbox_uwpMain::Update()
 
     m_timer.Tick([&]()
     {
+        static int s_diagRunsAccum = 0;
         LARGE_INTEGER _t0, _t1, _t2, _t3, _freq;
         QueryPerformanceFrequency(&_freq);
 
@@ -709,27 +709,35 @@ void dosbox_uwpMain::Update()
             } // end m_gamepadMouseMode
 #endif
 
-            // Frame accumulator: time-based, produces retro_run at targetFps.
-            // After each frame, pull audio from mixer and push to SDL queue.
+            // v0.8.2.0 accumulator: QPC time-based, multi-retro_run, queue feedback scaling.
+            // Produces ~70 retro_runs/sec regardless of visual frame rate (60fps on Xbox).
+            // Queue feedback scales accumulator to keep XAudio2 queue near target depth.
+            //
+            // FIX (ZillaLib-inspired): Cap stall debt at 3.0 frames.
+            // Without cap, I/O stall (e.g. Screamer ZIP load) → accumulator grows unbounded →
+            // catch-up burst (5 retro_runs) → audio queue spike → eventual flush → audible stutter.
+            // Cap discards excess debt, like ZillaLib's ZL_TPF_Remain = 0 clamp.
             double targetFps = m_retroCore->GetTargetFps();
             {
                 LARGE_INTEGER now;
                 QueryPerformanceCounter(&now);
-                if (m_lastAccumTime.QuadPart != 0)
+                if (m_audioLastTick > 0.0)
                 {
-                    double dt = (double)(now.QuadPart - m_lastAccumTime.QuadPart)
-                        / (double)m_qpcFreq.QuadPart;
-                    m_frameAccum += targetFps * dt;
+                    double dt = (double)(now.QuadPart) / (double)m_qpcFreq.QuadPart - m_audioLastTick;
+                    m_audioTimeAccumulator += dt * targetFps;
+                    if (m_audioTimeAccumulator > 3.0 * targetFps)
+                    {
+                        spdlog::warn("[dosbox-uwp] STALL DEBT CAP: accum {:.2f} → {:.0f} (discarded {:.2f}s of I/O stall debt)",
+                            m_audioTimeAccumulator, 3.0 * targetFps, (m_audioTimeAccumulator - 3.0 * targetFps) / targetFps);
+                        m_audioTimeAccumulator = 3.0 * targetFps;
+                    }
                 }
-                m_lastAccumTime = now;
+                m_audioLastTick = (double)now.QuadPart / (double)m_qpcFreq.QuadPart;
             }
 
-            // Cap accumulator to 1.0 — only 1 frame per tick, prevents burst processing
-            // (RetroArch/ZillaLib always run 1 frame/tick; 2.0 caused double-frame stalls)
-            if (m_frameAccum > 1.0) m_frameAccum = 1.0;
-
-            int runs = 0;
-            while (m_frameAccum >= 1.0)
+            int maxRetroRuns = 5;
+            int preRuns = maxRetroRuns;
+            while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
             {
                 LARGE_INTEGER _rf0, _rf1;
                 QueryPerformanceCounter(&_rf0);
@@ -743,33 +751,30 @@ void dosbox_uwpMain::Update()
                 double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
                 if (rfMs > 20.0)
                 {
-                    spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame took {:.1f}ms (possible I/O stall)", rfMs);
+                    int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+                    spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame#{}/{} took {:.1f}ms q={} accum={:.2f}",
+                        preRuns - maxRetroRuns + 1, preRuns, rfMs, qf, m_audioTimeAccumulator + 1.0);
                 }
-                runs++;
-                m_frameAccum -= 1.0;
+                m_audioTimeAccumulator -= 1.0;
+                maxRetroRuns--;
             }
+            int runs = preRuns - maxRetroRuns;
             m_lastRetroRuns = runs;
 
-            // Time-based audio pull — decoupled from retro_run timing.
-            // Pulls every ~7ms (half a frame at 70fps) regardless of whether runs>0.
-            // This keeps the SDL queue fed during I/O stalls that delay retro_run.
-            if (m_sdlAudio && m_sdlAudio->IsInitialized() && m_retroCore->IsLoaded())
+            // Accumulate runs for DIAG interval reporting
+            s_diagRunsAccum += runs;
+
+            // Queue feedback scaling: keep XAudio2 queue near TARGET_QUEUE (6615 frames = ~150ms).
+            // If queue is too high → slow down accumulator. If too low → speed up.
+            // This prevents drift that causes periodic flush stutters.
+            if (m_xaudio2 && runs > 0)
             {
-                LARGE_INTEGER audioNow;
-                QueryPerformanceCounter(&audioNow);
-                double audioElapsed = (double)(audioNow.QuadPart - m_lastAudioPullTime.QuadPart)
-                    * 1000.0 / (double)m_qpcFreq.QuadPart;
-                if (audioElapsed >= 7.0)
-                {
-                    // Use ACTUAL elapsed time, not fixed 7ms — timer fires at ~7.1ms
-                    // and fixed sample count causes 1.6% under-production → queue drains.
-                    static double s_sampleAccum = 0.0;
-                    s_sampleAccum += 44100.0 * audioElapsed / 1000.0;
-                    unsigned int samplesPerPull = (unsigned int)s_sampleAccum;
-                    s_sampleAccum -= samplesPerPull;
-                    m_sdlAudio->PullAndQueue(samplesPerPull);
-                    m_lastAudioPullTime = audioNow;
-                }
+                int queueFrames = m_xaudio2->GetQueuedFrames();
+                double targetQ = 6615.0;
+                double scale = targetQ / (targetQ + (queueFrames - targetQ) * 0.25);
+                if (scale < 0.9) scale = 0.9;
+                if (scale > 1.1) scale = 1.1;
+                m_audioTimeAccumulator *= scale;
             }
 
             if (RetroCore::IsShutdownRequested())
@@ -777,14 +782,22 @@ void dosbox_uwpMain::Update()
                 OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, unloading game\n");
                 m_retroCore->UnloadGame();
                 m_retroRunning = false;
-                m_frameAccum = 0.0;
-                QueryPerformanceCounter(&m_lastAccumTime);
-                m_lastAudioPullTime = m_lastAccumTime;
+                m_audioTimeAccumulator = 0.0;
+                m_audioLastTick = 0.0;
                 m_clearColor = DirectX::Colors::Black;
                 m_menu.Show();
                 return; // return from Tick lambda, render will show menu
-            }
         }
+        }
+
+        // Auto-stop XAudio2 voice: if voice is running but queue is empty and no
+        // retro_run produced audio this tick, stop the voice to prevent infinite
+        // UNDERRUN spam (e.g. after beep finishes or before any game loads).
+        if (m_xaudio2 && m_lastRetroRuns == 0 && m_xaudio2->GetQueuedFrames() <= 0)
+        {
+            m_xaudio2->Stop();
+        }
+
         QueryPerformanceCounter(&_t1);
 
         // Frame pacing stats
@@ -799,19 +812,37 @@ void dosbox_uwpMain::Update()
             s_perf.fps = s_debug_fps;
             s_perf.target_fps = s_debug_target_fps;
             s_perf.frame_ms = s_debug_frame_ms;
-            s_perf.audio_queued = 0;
-            s_perf.audio_underruns = 0;
-            s_perf.audio_produced = 0;
-            s_perf.audio_consumed = 0;
 #endif
             static int pacingLogCounter = 0;
             if ((++pacingLogCounter % 3000) == 0)
             {
+                int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+                unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
+                unsigned vh = m_retroCore ? m_retroCore->GetFrameHeight() : 0;
+
+                // Real (Windows) process CPU time
+                FILETIME creation, exit, kernel, user;
+                GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
+                ULARGE_INTEGER uk, uu;
+                uk.LowPart = kernel.dwLowDateTime; uk.HighPart = kernel.dwHighDateTime;
+                uu.LowPart = user.dwLowDateTime; uu.HighPart = user.dwHighDateTime;
+                double cpuMs = (double)(uk.QuadPart + uu.QuadPart) / 10000.0;
+
+                // Real memory
+                PROCESS_MEMORY_COUNTERS pmc;
+                GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+                float memMB = pmc.WorkingSetSize / (1024.0f * 1024.0f);
+
                 spdlog::info(
-                    "[FPS] fps={:.1f} target={:.0f} frame={:.2f}ms "
-                    "runs={} accum={:.2f}",
+                    "[DIAG] fps={:.1f}/{:.0f} frame={:.2f}ms "
+                    "runs_ival={} runs_last={} accum={:.2f} audio_q={} "
+                    "cpu={:.0f}ms mem={:.1f}MB "
+                    "video={}x{}",
                     m_currentFps, targetFps, frameMs,
-                    m_lastRetroRuns, m_frameAccum);
+                    s_diagRunsAccum, m_lastRetroRuns, m_audioTimeAccumulator, qf,
+                    cpuMs, memMB,
+                    vw, vh);
+                s_diagRunsAccum = 0;
 
                 // Frame drop detection: sustained drop below 80% of target
                 static double s_lowFpsSum = 0.0;
@@ -978,12 +1009,23 @@ bool dosbox_uwpMain::Render()
             m_cursorBrush.Get(), 1.5f);
     }
 #endif
-        // FPS overlay (top-right corner)
+        // Debug overlay (top-right corner) — matches Unleashed ZILLALOG HUD
         if (m_currentFps > 0.0)
         {
-            wchar_t fpsText[128];
-            swprintf_s(fpsText, L"FPS: %5.1f  Frame: %5.1fms",
-                m_currentFps, m_frameTimeMs);
+            int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+            unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
+            unsigned vh = m_retroCore ? m_retroCore->GetFrameHeight() : 0;
+            wchar_t fpsText[512];
+            swprintf_s(fpsText,
+                L"FPS: %5.1f  Frame: %5.1fms\n"
+                L"Video: %ux%u  Viewport: %.0fx%.0f\n"
+                L"Runs: %d  Accum: %.2f  Target: %.0f\n"
+                L"Audio Q: %d frames",
+                m_currentFps, m_frameTimeMs,
+                vw, vh, logicalSize.Width, logicalSize.Height,
+                m_lastRetroRuns, m_audioTimeAccumulator,
+                m_retroCore ? m_retroCore->GetTargetFps() : 60.0,
+                qf);
 
             // Create text format (cached)
             static Microsoft::WRL::ComPtr<IDWriteTextFormat> s_fpsFormat;
@@ -1006,8 +1048,8 @@ bool dosbox_uwpMain::Render()
                 if (s_fpsBrush)
                 {
                     D2D1_RECT_F layout = {
-                        logicalSize.Width - 350.0f, 8.0f,
-                        logicalSize.Width - 12.0f, 36.0f
+                        logicalSize.Width - 400.0f, 8.0f,
+                        logicalSize.Width - 12.0f, 84.0f
                     };
                     d2dContext->DrawText(fpsText, (UINT32)wcslen(fpsText),
                         s_fpsFormat.Get(), &layout, s_fpsBrush.Get());
@@ -1430,10 +1472,15 @@ void dosbox_uwpMain::ProcessPendingLoad()
     m_pendingLoad.reset();
     m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
 
-    // Reset frame accumulator — old game's debt must not carry over to new game
-    m_frameAccum = 0.0;
-    QueryPerformanceCounter(&m_lastAccumTime);
-    m_lastAudioPullTime = m_lastAccumTime;
+    // Reset accumulator (v0.8.2.0)
+    // DON'T force-start XAudio2 here — Submit() auto-starts after TARGET_QUEUE pre-buffering.
+    // Force-starting with2 frames causes instant UNDERRUN → OutputDebugStringA flood → freeze.
+    m_audioTimeAccumulator = 0.0;
+    m_audioLastTick = 0.0;
+    if (m_xaudio2) {
+        m_xaudio2->Flush();
+        m_audioTimeAccumulator = 1.0; // boost first frame
+    }
     m_loadingActive = false;
     m_loadingDisc.Reset();
 }

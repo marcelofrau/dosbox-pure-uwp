@@ -8,7 +8,7 @@
 #include "Content\RetroCore.h"
 #include "Content\RetroScreenRenderer.h"
 #include "Content\RetroD3D11Renderer.h"
-#include "Content\SdlAudio.h"
+#include "Content\XAudio2Output.h"
 #include "Content\FrontendMenu.h"
 
 namespace dosbox_uwp
@@ -68,7 +68,7 @@ namespace dosbox_uwp
         std::unique_ptr<RetroCore> m_retroCore;
         std::unique_ptr<RetroScreenRenderer> m_retroScreen;
         std::unique_ptr<RetroD3D11Renderer> m_retroD3D11;
-        std::unique_ptr<SdlAudio> m_sdlAudio;
+        std::unique_ptr<XAudio2Output> m_xaudio2;
         FrontendMenu m_menu;
 
         DX::StepTimer m_timer;
@@ -143,9 +143,8 @@ namespace dosbox_uwp
 
         // Frame pacing: accumulator ensures retro_run is called targetFps times/sec
         int m_lastRetroRuns = 0;
-        double m_frameAccum = 0.0;
-        LARGE_INTEGER m_lastAccumTime = {0};
-        LARGE_INTEGER m_lastAudioPullTime = {0};
+        double m_audioTimeAccumulator = 0.0;
+        double m_audioLastTick = 0.0;
 
 #ifdef MOUSE_SUPPORT
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_cursorBrush;
