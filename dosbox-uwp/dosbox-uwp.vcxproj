@@ -130,6 +130,7 @@
     <ClInclude Include="Content\ShaderStructures.h" />
     <ClInclude Include="Content\SdlInput.h" />
 <ClInclude Include="Content\XAudio2Output.h" />
+<ClInclude Include="Content\SdlAudio.h" />
 <ClInclude Include="Content\FrontendMenu.h" />
 <ClInclude Include="Content\FileBrowser.h" />
 <ClInclude Include="Content\AboutDialog.h" />
@@ -147,6 +148,10 @@
     <ClCompile Include="Content\Sample3DSceneRenderer.cpp" />
     <ClCompile Include="Content\SdlInput.cpp" />
     <ClCompile Include="Content\XAudio2Output.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="Content\SdlAudio.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>

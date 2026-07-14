@@ -113,6 +113,25 @@ void RetroD3D11Renderer::CreateDeviceDependentResources()
     D3D11_SUBRESOURCE_DATA ibData = { indices };
     device->CreateBuffer(&ibDesc, &ibData, &m_indexBuffer);
 
+    // Pre-allocate staging texture at max common DOSBox resolution (1024x768)
+    // Avoids expensive recreation on resolution changes (640x400 ↔ 640x480)
+    {
+        D3D11_TEXTURE2D_DESC stagingDesc = {};
+        stagingDesc.Width = 1024;
+        stagingDesc.Height = 768;
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        device->CreateTexture2D(&stagingDesc, nullptr, &m_stagingTexture);
+        m_stagingWidth = 1024;
+        m_stagingHeight = 768;
+        OutputDebugStringA("[dosbox-uwp] D3D11: pre-allocated staging 1024x768\n");
+    }
+
     OutputDebugStringA("[dosbox-uwp] D3D11 renderer: shaders compiled OK\n");
 }
 
@@ -129,6 +148,8 @@ void RetroD3D11Renderer::ReleaseDeviceDependentResources()
     m_indexBuffer.Reset();
     m_frameWidth = 0;
     m_frameHeight = 0;
+    m_stagingWidth = 0;
+    m_stagingHeight = 0;
 }
 
 void RetroD3D11Renderer::UpdateVideoFrame(const uint8_t* data, unsigned width, unsigned height, unsigned pitch)
@@ -142,9 +163,9 @@ void RetroD3D11Renderer::UpdateVideoFrame(const uint8_t* data, unsigned width, u
     // Recreate textures on resolution change
     if (!m_gpuTexture || m_frameWidth != width || m_frameHeight != height)
     {
+        // Only recreate GPU texture + SRV (staging is pre-allocated at 1024x768)
         m_gpuTexture.Reset();
         m_textureSRV.Reset();
-        m_stagingTexture.Reset();
 
         // GPU texture (default usage, shader resource)
         D3D11_TEXTURE2D_DESC texDesc = {};
@@ -166,12 +187,19 @@ void RetroD3D11Renderer::UpdateVideoFrame(const uint8_t* data, unsigned width, u
         srvDesc.Texture2D.MipLevels = 1;
         device->CreateShaderResourceView(m_gpuTexture.Get(), &srvDesc, &m_textureSRV);
 
-        // Staging texture (CPU-accessible)
-        D3D11_TEXTURE2D_DESC stagingDesc = texDesc;
-        stagingDesc.Usage = D3D11_USAGE_STAGING;
-        stagingDesc.BindFlags = 0;
-        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device->CreateTexture2D(&stagingDesc, nullptr, &m_stagingTexture);
+        // Recreate staging only if frame is larger than pre-allocated (1024x768)
+        if (!m_stagingTexture || width > m_stagingWidth || height > m_stagingHeight)
+        {
+            m_stagingTexture.Reset();
+            D3D11_TEXTURE2D_DESC stagingDesc = texDesc;
+            stagingDesc.Usage = D3D11_USAGE_STAGING;
+            stagingDesc.BindFlags = 0;
+            stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            device->CreateTexture2D(&stagingDesc, nullptr, &m_stagingTexture);
+            m_stagingWidth = width;
+            m_stagingHeight = height;
+            spdlog::info("[D3D11] staging texture recreated {}x{}", width, height);
+        }
 
         m_frameWidth = width;
         m_frameHeight = height;
@@ -229,9 +257,10 @@ void RetroD3D11Renderer::UpdateVideoFrame(const uint8_t* data, unsigned width, u
             }
             context->Unmap(m_stagingTexture.Get(), 0);
 
-            // GPU copy staging → GPU texture
+            // GPU copy staging → GPU texture (clip to frame dimensions since staging may be larger)
+            D3D11_BOX srcBox = { 0, 0, 0, width, height, 1 };
             context->CopySubresourceRegion(m_gpuTexture.Get(), 0, 0, 0, 0,
-                m_stagingTexture.Get(), 0, nullptr);
+                m_stagingTexture.Get(), 0, &srcBox);
         }
     }
 }

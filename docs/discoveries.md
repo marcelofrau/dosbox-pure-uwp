@@ -325,3 +325,24 @@ Loop ran as fast as CPU allowed. Only throttle was audio queue DRC feedback (rea
 - **Slider items** for volume/sensitivity — currently discrete values only
 - **Per-game settings** — `DBPS_ApplyConfigOverrides` (FRONTEND.DBP JSON override) still stub
 - **Settings persistence on shutdown** — currently auto-saves on SetOption, but could batch save
+
+## DBP_STANDALONE_AUDIO Pitfall (Jul 2026)
+
+### Symptom
+Xargon worked perfectly, but heavier games (Rally Championship) had audio crackling/artifacts. Logs showed `have=31` (only 31 samples available when 630 needed).
+
+### Root Cause
+Added `#define DBP_STANDALONE_AUDIO 1` to the local copy of `dosbox_pure_libretro.cpp`, plus changed 4x `#ifndef DBP_STANDALONE` guards to `#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)`.
+
+This **activated the core's internal audio pipeline** even with `DBP_STANDALONE` defined:
+1. Core's `MIXER_CallBack()` consumed mixer samples during `retro_run()`
+2. Sent them to `audio_batch_cb()` → our `retro_audio()` (no-op) → data discarded
+3. After `retro_run()`, our `PullAndQueue()` → `DBPS_AudioMix()` found mixer empty
+
+**Two consumers competing for the same mixer buffer.** Core consumes and discards; our pull gets nothing.
+
+### Fix
+Reverted all audio-related changes to the local copy. With `#ifndef DBP_STANDALONE` (false since DBP_STANDALONE is defined), the core's audio pipeline is skipped. `PullAndQueue()` → `DBPS_AudioMix()` is the sole consumer.
+
+### Lesson
+**Never patch the dosbox-pure core's audio pipeline.** Our role is the frontend shell (like ZillaLib/libretro/RetroArch UWP). The core works perfectly; we consume audio via `DBPS_AudioMix()` from the mixer, bypassing `audio_batch_cb` entirely.

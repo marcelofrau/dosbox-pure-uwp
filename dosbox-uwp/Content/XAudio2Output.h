@@ -28,7 +28,9 @@ namespace dosbox_uwp
         void Stop();
         bool IsReady() const { return m_initialized; }
         bool IsStarted() const { return m_started; }
+        bool ConsumeVoiceStarted(); // returns+clears flag when voice transitions started→true
         uint32_t GetQueuedFrames() const;
+        uint32_t GetAndResetUnderrunCount();
         void WaitForDrain(); // Block until queue drops below HIGH_WATERMARK (call from main loop, not from Submit)
         static const long TARGET_FRAMES = 6615; // ~150ms — pre-buffer threshold
         static const long HIGH_WATERMARK = 4410; // ~100ms — start waiting when queue exceeds this
@@ -46,6 +48,7 @@ namespace dosbox_uwp
         IXAudio2SourceVoice* m_pSourceVoice;
         bool m_initialized;
         bool m_started;
+        bool m_voiceStartedFlag; // set by Submit when voice starts, cleared by ConsumeVoiceStarted
         HANDLE m_drainEvent;   // signaled by OnBufferEnd when queue drops below LOW_WATERMARK
     };
 }

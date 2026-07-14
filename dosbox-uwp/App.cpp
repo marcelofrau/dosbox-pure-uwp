@@ -147,9 +147,13 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				// Present(0,0): no vsync blocking. Audio gate is the frame pacer.
-				// Works on any monitor refresh rate (60/120/144/180Hz+).
+				// Present(0,0): no vsync blocking. SDL2 audio callback drives timing.
 				m_deviceResources->Present(0, 0);
+			}
+			else if (m_main->GetLastRetroRuns() == 0)
+			{
+				// No frame produced this iteration — yield CPU to avoid 100% spin.
+				Sleep(1);
 			}
 
 			m_main->ProcessPendingLoad();

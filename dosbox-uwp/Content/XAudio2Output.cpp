@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <windows.h>
+#include <spdlog/spdlog.h>
 
 using namespace dosbox_uwp;
 
@@ -13,7 +14,9 @@ static volatile long long s_totalProduced = 0;
 static volatile long long s_totalConsumed = 0;
 static volatile long s_flushGen = 1;
 static volatile long s_underrunCount = 0;
-static const long TARGET_QUEUE = 6615; // ~150ms@44100Hz — match TARGET_FRAMES
+static const long TARGET_QUEUE = 2517; // ~57ms@44100Hz — 4 buffers.
+// Voice starts when queue reaches this level. High enough to absorb 60→70fps
+// double-run oscillation (queue swings ±525 samples around mean).
 static const long MAX_QUEUE = 22050;   // ~500ms — generous cap to prevent flush-during-normal-operation
 
 static LARGE_INTEGER s_qpcFreq = {};
@@ -102,6 +105,7 @@ XAudio2Output::XAudio2Output()
     , m_pSourceVoice(nullptr)
     , m_initialized(false)
     , m_started(false)
+    , m_voiceStartedFlag(false)
     , m_drainEvent(nullptr)
 {
 }
@@ -187,6 +191,11 @@ static long s_trendBuf[TREND_SAMPLES] = {};
 static int s_trendIdx = 0;
 static int s_trendCount = 0;
 
+// Queue min/max tracking between submit log intervals
+static uint32_t s_queueMin = 999999;
+static uint32_t s_queueMax = 0;
+static uint32_t s_submitCount = 0;
+
 static void trend_push(long val)
 {
     s_trendBuf[s_trendIdx] = val;
@@ -215,8 +224,14 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
     bool underrun = (s_underrunCount > 0);
     if (m_started && !underrun && s_queuedFrames < 200)
     {
-        log("XA2 LOW: queue=%ld (<200), frames=%lu  gap=%.1fms",
-            (long)s_queuedFrames, frames, sinceLast);
+        static DWORD s_lastLowLog = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastLowLog > 1000) // throttle: once per second max
+        {
+            s_lastLowLog = now;
+            spdlog::info("XA2 LOW: queue={} (<200), frames={} gap={:.1f}ms",
+                (long)s_queuedFrames, frames, sinceLast);
+        }
     }
 
     auto* sb = new XA2SubmittedBuffer();
@@ -238,6 +253,7 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
     {
         m_pSourceVoice->Start(0);
         m_started = true;
+        m_voiceStartedFlag = true;
         log("XA2 START after pre-buffer: %ld frames (%.0fms)",
             (long)s_queuedFrames, (double)s_queuedFrames * 1000.0 / 44100.0);
     }
@@ -255,6 +271,11 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
     }
 
     static uint32_t submitCounter = 0;
+    s_submitCount++;
+    uint32_t qNow = (uint32_t)s_queuedFrames;
+    if (qNow < s_queueMin) s_queueMin = qNow;
+    if (qNow > s_queueMax) s_queueMax = qNow;
+
     if ((++submitCounter % 100) == 0)
     {
         XAUDIO2_VOICE_STATE vs;
@@ -288,15 +309,21 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
         long urCount = s_underrunCount;
         s_underrunCount = 0;
 
-        log("XA2 submit #%lu: frames=%lu queue=%ld (%.0fms) "
-            "XA2_BuffersQueued=%lu gap=%.1fms  trend_avg=%.0f trend_delta=%.0f "
-            "consumption=%.0fHz drift=%.1fms underruns=%ld "
-            "totP=%lld totC=%lld",
-            (unsigned long)submitCounter, frames, q2, (double)q2 * 1000.0 / 44100.0,
+        spdlog::info(
+            "[XA2] sub={} frames={} queue={} ({:.0f}ms) bufs={} gap={:.1f}ms "
+            "qMin={} qMax={} trend={:.0f}±{:.0f} "
+            "consume={:.0f}Hz drift={:.1f}ms underruns={} "
+            "totP={} totC={}",
+            submitCounter, frames, q2, (double)q2 * 1000.0 / 44100.0,
             (unsigned long)vs.BuffersQueued, sinceLast,
+            s_queueMin, s_queueMax,
             avgQ, trendDelta,
             consumptionRate, driftMs, urCount,
             (long long)s_totalProduced, (long long)s_totalConsumed);
+
+        s_queueMin = 999999;
+        s_queueMax = 0;
+        s_submitCount = 0;
     }
 }
 
@@ -362,6 +389,21 @@ void XAudio2Output::Flush()
 uint32_t XAudio2Output::GetQueuedFrames() const
 {
     return (uint32_t)s_queuedFrames;
+}
+
+uint32_t XAudio2Output::GetAndResetUnderrunCount()
+{
+    return (uint32_t)InterlockedExchange(&s_underrunCount, 0);
+}
+
+bool XAudio2Output::ConsumeVoiceStarted()
+{
+    if (m_voiceStartedFlag)
+    {
+        m_voiceStartedFlag = false;
+        return true;
+    }
+    return false;
 }
 
 volatile long* XAudio2Output::QueuedFramesPtr()

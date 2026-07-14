@@ -10,7 +10,6 @@ struct retro_vfs_interface;
 
 namespace dosbox_uwp
 {
-    class XAudio2Output;
     class RetroCore
     {
     public:
@@ -41,7 +40,6 @@ namespace dosbox_uwp
 
         static void SetKeyState(unsigned key, bool down);
         static void SetJoypadButton(unsigned id, bool held);
-        static void SetAudioOutput(XAudio2Output* output);
         static void SetOptionValue(const char* key, const char* value);
         static void SetMouseMove(int relX, int relY);
         static void SetPointer(float x, float y, bool down);
@@ -78,7 +76,6 @@ namespace dosbox_uwp
         static float s_ptrY;
         static bool s_ptrDown;
         static bool s_shutdownRequested;
-        static XAudio2Output* s_audioOutput;
         static std::map<std::string, std::string> s_optionValues;
         static bool s_optionValuesChanged;
 

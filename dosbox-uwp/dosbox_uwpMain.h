@@ -8,7 +8,7 @@
 #include "Content\RetroCore.h"
 #include "Content\RetroScreenRenderer.h"
 #include "Content\RetroD3D11Renderer.h"
-#include "Content\XAudio2Output.h"
+#include "Content\SdlAudio.h"
 #include "Content\FrontendMenu.h"
 
 namespace dosbox_uwp
@@ -47,6 +47,7 @@ namespace dosbox_uwp
         LoadState GetLoadState() const { return m_loadState; }
         void SetLoadState(LoadState s) { m_loadState = s; }
         bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
+        int GetLastRetroRuns() const { return m_lastRetroRuns; }
         double GetTargetFps() const { return m_retroCore ? m_retroCore->GetTargetFps() : 60.0; }
         void ActivateLoadingScreen() {
             m_loadState = LOAD_BOOTING;
@@ -67,7 +68,7 @@ namespace dosbox_uwp
         std::unique_ptr<RetroCore> m_retroCore;
         std::unique_ptr<RetroScreenRenderer> m_retroScreen;
         std::unique_ptr<RetroD3D11Renderer> m_retroD3D11;
-        std::unique_ptr<XAudio2Output> m_xaudio2;
+        std::unique_ptr<SdlAudio> m_sdlAudio;
         FrontendMenu m_menu;
 
         DX::StepTimer m_timer;
@@ -140,8 +141,11 @@ namespace dosbox_uwp
         bool m_gamepadMouseMode = false;  // OFF by default; stick→mouse, A→click, B→escape
         bool m_lbrbsPrevHeld = false;     // edge detection for combo press
 
-        // Audio-driven pacing (audio backpressure in XAudio2Output handles timing)
+        // Frame pacing: accumulator ensures retro_run is called targetFps times/sec
         int m_lastRetroRuns = 0;
+        double m_frameAccum = 0.0;
+        LARGE_INTEGER m_lastAccumTime = {0};
+        LARGE_INTEGER m_lastAudioPullTime = {0};
 
 #ifdef MOUSE_SUPPORT
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_cursorBrush;

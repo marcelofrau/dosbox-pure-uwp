@@ -41,12 +41,6 @@
 #include "libretro-common/include/retro_timers.h"
 #include <string>
 #include <sstream>
-#include "dbp_log.h"
-
-// UWP: always compile audio pipeline even with DBP_STANDALONE
-#define DBP_STANDALONE_AUDIO 1
-// (usage: replace `#ifndef DBP_STANDALONE` with `#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)` for audio-related blocks)
-
 // RETROARCH AUDIO/VIDEO
 #if defined(GEKKO) || defined(MIYOO) // From RetroArch/config.def.h
 #define DBP_DEFAULT_SAMPLERATE 32000.0
@@ -83,7 +77,7 @@ static Bit16s dbp_content_year, dbp_forcefps;
 static Bit8u buffer_active, dbp_overscan;
 static bool dbp_doublescan, dbp_padding;
 static struct DBP_Buffer { Bit32u *video, width, height, cap, pad_x, pad_y, border_color; float ratio; } dbp_buffers[3];
-#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
+#ifndef DBP_STANDALONE
 static struct DBP_Audio { int16_t* audio; Bit32u length; } dbp_audio[2];
 static Bit8u dbp_audio_active;
 #endif
@@ -226,7 +220,7 @@ static void retro_fallback_log(enum retro_log_level level, const char *fmt, ...)
 	(void)level;
 	va_list va;
 	va_start(va, fmt);
-	{ char _b[2048]; vsnprintf(_b, sizeof(_b), fmt, va); dbp_log_info(_b); }
+	vfprintf(stderr, fmt, va);
 	va_end(va);
 }
 #else
@@ -3612,7 +3606,7 @@ void retro_run(void)
 			}
 
 			// submit last frame
-			#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
+			#ifndef DBP_STANDALONE
 			Bit32u numEmptySamples = (Bit32u)(av_info.timing.sample_rate / av_info.timing.fps);
 			DBP_Audio& aud = dbp_audio[dbp_audio_active ^= 1];
 			if (numEmptySamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, numEmptySamples * 4); aud.length = numEmptySamples; }
@@ -3659,15 +3653,10 @@ void retro_run(void)
 		dbp_perf_uniquedraw = dbp_perf_count = dbp_perf_totaltime = 0;
 	}
 
-	#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
+	#ifndef DBP_STANDALONE
 	// mix audio
 	Bit32u haveSamples = DBP_MIXER_DoneSamplesCount(), mixSamples = 0; double numSamples;
-	if (av_info.timing.fps <= 0 || av_info.timing.sample_rate <= 0) {
-		numSamples = 0;
-		dbp_audio_remain = 0.0;
-		if ((dbp_framecount % 600) == 0)
-			OutputDebugStringA("[dosbox-uwp] audio: skip (av_info not ready)\n");
-	} else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
+	if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
 		numSamples = haveSamples;
 	else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD || dbp_throttle.mode == RETRO_THROTTLE_SLOW_MOTION || dbp_throttle.rate < 1)
 		numSamples = (av_info.timing.sample_rate / av_info.timing.fps) + dbp_audio_remain;
@@ -3678,17 +3667,9 @@ void retro_run(void)
 	{
 		mixSamples = (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples);
 		dbp_audio_remain = ((numSamples <= mixSamples || numSamples > haveSamples) ? 0.0 : (numSamples - mixSamples));
-		if ((dbp_framecount % 600) == 0)
-		{
-			char _dbg[256];
-			sprintf_s(_dbg, "[dosbox-uwp] audio: frame=%u need=%.1f have=%u mix=%u remain=%.1f\n",
-				dbp_framecount, numSamples, haveSamples, mixSamples, dbp_audio_remain);
-			OutputDebugStringA(_dbg);
-		}
 		DBP_Audio& aud = dbp_audio[dbp_audio_active ^= 1];
 		if (mixSamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, mixSamples * 4); aud.length = mixSamples; }
-		if (mixSamples)
-			MIXER_CallBack(0, (Bit8u*)aud.audio, mixSamples * 4);
+		MIXER_CallBack(0, (Bit8u*)aud.audio, mixSamples * 4);
 	}
 	#endif
 	const DBP_Buffer& buf = dbp_buffers[buffer_active];
@@ -3698,19 +3679,10 @@ void retro_run(void)
 
 	DBP_ThreadControl(skip_emulate ? TCM_RESUME_FRAME : TCM_NEXT_FRAME);
 
-	#if !defined(DBP_STANDALONE) || defined(DBP_STANDALONE_AUDIO)
+	#ifndef DBP_STANDALONE
 	// submit audio
 	if (mixSamples)
-	{
-		if ((dbp_framecount % 600) == 0)
-		{
-			char _dbg[256];
-			sprintf_s(_dbg, "[dosbox-uwp] audio_submit: frame=%u mix=%u remain=%.1f have=%u\n",
-				dbp_framecount, mixSamples, dbp_audio_remain, DBP_MIXER_DoneSamplesCount());
-			OutputDebugStringA(_dbg);
-		}
 		audio_batch_cb(dbp_audio[dbp_audio_active].audio, mixSamples);
-	}
 	#endif
 
 	if (tpfActual)

@@ -60,7 +60,6 @@ bool RetroCore::s_ptrDown = false;
 double RetroCore::s_targetFps = 60.0;
 bool RetroCore::s_shutdownRequested = false;
 bool RetroCore::s_joypadState[16] = {};
-XAudio2Output* RetroCore::s_audioOutput = nullptr;
 std::map<std::string, std::string> RetroCore::s_optionValues;
 bool RetroCore::s_optionValuesChanged = false;
 static const char* OVERRIDE_MENU_TIME = "-1";
@@ -197,8 +196,6 @@ void RetroCore::UnloadGame()
     if (!m_loaded) return;
     OutputDebugStringA("[dosbox-uwp] UnloadGame\n");
     m_loaded = false;
-    if (s_audioOutput)
-        s_audioOutput->Flush();
     retro_unload_game();
     // Reset all per-game state so next load starts clean
     s_shutdownRequested = false;
@@ -318,10 +315,6 @@ void RetroCore::GetPointer(short& mx, short& my)
 }
 #endif
 
-void RetroCore::SetAudioOutput(XAudio2Output* output)
-{
-    s_audioOutput = output;
-}
 
 void RetroCore::SetOptionValue(const char* key, const char* value)
 {
@@ -576,12 +569,8 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
 
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
-    if (!data || frames == 0)
-        return frames;
-
-    if (s_audioOutput)
-        s_audioOutput->Submit(data, (uint32_t)frames);
-
+    // No-op: SDL2 audio callback reads directly from DOSBox mixer via DBPS_AudioMix.
+    // Audio is pulled by the SDL callback thread, not pushed here.
     return frames;
 }
 

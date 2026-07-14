@@ -37,5 +37,7 @@ namespace dosbox_uwp
 
         unsigned m_frameWidth = 0;
         unsigned m_frameHeight = 0;
+        unsigned m_stagingWidth = 0;
+        unsigned m_stagingHeight = 0;
     };
 }

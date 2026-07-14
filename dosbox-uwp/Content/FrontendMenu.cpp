@@ -961,32 +961,28 @@ void FrontendMenu::DrawValueText(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite
     std::wstring wval = L": " + std::wstring(value.begin(), value.end());
     float maxValW = containerW * VALUE_WIDTH_RATIO;
 
-    ComPtr<IDWriteTextLayout> valLayout;
+    // Measure with unconstrained width to get natural text extent
+    ComPtr<IDWriteTextLayout> measureLayout;
     dwrite->CreateTextLayout(wval.c_str(), (UINT32)wval.size(), m_textFormatItem.Get(),
-        maxValW, ITEM_HEIGHT, &valLayout);
-    if (!valLayout) return;
+        10000.0f, ITEM_HEIGHT, &measureLayout);
+    if (!measureLayout) return;
 
     if (m_fontCollection)
     {
         DWRITE_TEXT_RANGE fr = { 0, (UINT32)wval.size() };
-        valLayout->SetFontCollection(m_fontCollection.Get(), fr);
+        measureLayout->SetFontCollection(m_fontCollection.Get(), fr);
     }
 
-    // Character-level trimming — clean clip, no ellipsis
-    DWRITE_TRIMMING trimming = {};
-    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-    valLayout->SetTrimming(&trimming, nullptr);
-
     DWRITE_TEXT_METRICS tm;
-    valLayout->GetMetrics(&tm);
+    measureLayout->GetMetrics(&tm);
+    float naturalW = tm.width;
 
     float valRight = containerX + containerW - ITEM_INDENT;
-    float valX = valRight - min(tm.width, maxValW);
 
     // Marquee: scroll selected items whose text overflows
-    if (isSelected && tm.width > maxValW)
+    if (isSelected && naturalW > maxValW)
     {
-        float overflow = tm.width - maxValW;
+        float overflow = naturalW - maxValW;
         float speed = 45.0f; // px/sec
         float pauseMs = 1500.0f;
         float scrollMs = (overflow / speed) * 1000.0f;
@@ -1001,15 +997,39 @@ void FrontendMenu::DrawValueText(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite
         else
             offset = overflow;
 
+        float valX = valRight - maxValW;
+
         // Clip to value area, draw at scrolled position
         D2D1_RECT_F clip = { valRight - maxValW, iy, valRight, iy + ITEM_HEIGHT };
         d2d->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        d2d->DrawTextLayout(D2D1::Point2F(valX - offset, iy), valLayout.Get(), brush);
+        d2d->DrawTextLayout(D2D1::Point2F(valX - offset, iy), measureLayout.Get(), brush);
         d2d->PopAxisAlignedClip();
     }
     else
     {
-        d2d->DrawTextLayout(D2D1::Point2F(valX, iy), valLayout.Get(), brush);
+        float valX = valRight - min(naturalW, maxValW);
+
+        // Non-selected overflow: trim with character-level clipping
+        if (naturalW > maxValW)
+        {
+            ComPtr<IDWriteTextLayout> trimLayout;
+            dwrite->CreateTextLayout(wval.c_str(), (UINT32)wval.size(), m_textFormatItem.Get(),
+                maxValW, ITEM_HEIGHT, &trimLayout);
+            if (trimLayout)
+            {
+                if (m_fontCollection)
+                {
+                    DWRITE_TEXT_RANGE fr = { 0, (UINT32)wval.size() };
+                    trimLayout->SetFontCollection(m_fontCollection.Get(), fr);
+                }
+                DWRITE_TRIMMING trimming = {};
+                trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                trimLayout->SetTrimming(&trimming, nullptr);
+                d2d->DrawTextLayout(D2D1::Point2F(valX, iy), trimLayout.Get(), brush);
+                return;
+            }
+        }
+        d2d->DrawTextLayout(D2D1::Point2F(valX, iy), measureLayout.Get(), brush);
     }
 }
 
