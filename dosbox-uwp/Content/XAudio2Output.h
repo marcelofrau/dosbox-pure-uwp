@@ -8,13 +8,6 @@ struct IXAudio2SourceVoice;
 
 namespace dosbox_uwp
 {
-    struct XA2SubmittedBuffer
-    {
-        int16_t* data;
-        uint32_t frames;
-        long flushGen;
-    };
-
     class XAudio2Output
     {
     public:
@@ -31,7 +24,7 @@ namespace dosbox_uwp
         bool ConsumeVoiceStarted(); // returns+clears flag when voice transitions started→true
         uint32_t GetQueuedFrames() const;
         uint32_t GetAndResetUnderrunCount();
-        void WaitForDrain(); // Block until queue drops below HIGH_WATERMARK (call from main loop, not from Submit)
+        void WaitForDrain(); // Block until queue drops below HIGH_WATERMARK (call from main thread, not from Submit)
         static const long TARGET_FRAMES = 6615; // ~150ms — pre-buffer threshold
         static const long HIGH_WATERMARK = 4410; // ~100ms — start waiting when queue exceeds this
         static const long LOW_WATERMARK = 3307;  // ~75ms  — resume when queue drops below this
@@ -39,8 +32,20 @@ namespace dosbox_uwp
         static volatile long long* TotalProducedPtr();
         static volatile long long* TotalConsumedPtr();
 
+        // Buffer pool — pre-allocated slots, zero heap alloc in hot path
+        static const int POOL_SIZE = 32;
+        static const int MAX_FRAME_SIZE = 2048; // max frames per Submit (≈42ms@48kHz)
+
+        struct BufferSlot
+        {
+            int16_t data[MAX_FRAME_SIZE * 2];
+            uint32_t frames;
+            long flushGen;
+            volatile long inUse; // 0=free, 1=claimed by Submit, released by OnBufferEnd
+        };
+
     private:
-        uint32_t GetSampleRate() const { return 44100; }
+        uint32_t GetSampleRate() const { return 48000; }
         void EnsureDrainEvent();
 
         IXAudio2* m_pXAudio2;

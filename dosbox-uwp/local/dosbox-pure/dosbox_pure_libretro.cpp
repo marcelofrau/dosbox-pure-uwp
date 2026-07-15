@@ -2378,11 +2378,7 @@ static bool check_variables()
 	DBP_Option::Apply(sec_dosbox, "memsize", (mem_use_extended ? mem : "16"), false, true, mem_changed);
 
 	bool audiorate_changed = false;
-	#ifndef DBP_STANDALONE
 	const char* audiorate = DBP_Option::Get(DBP_Option::audiorate, &audiorate_changed);
-	#else
-	const char* audiorate = "44100";
-	#endif
 	DBP_Option::Apply(sec_mixer, "rate", audiorate, false, true, audiorate_changed);
 	DBP_Option::GetAndApply(sec_mixer, "swapstereo", DBP_Option::swapstereo);
 	extern bool dbp_swapstereo;

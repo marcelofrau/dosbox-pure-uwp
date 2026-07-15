@@ -25,6 +25,9 @@ static LARGE_INTEGER s_lastSampleClock = {};
 static ULONGLONG s_lastSamplesPlayed = 0;
 static bool s_haveBaseline = false;
 
+// Pre-allocated buffer pool — zero heap allocs in hot path
+static XAudio2Output::BufferSlot s_pool[XAudio2Output::POOL_SIZE];
+
 static void init_qpc()
 {
     if (s_qpcFreq.QuadPart == 0)
@@ -81,17 +84,17 @@ public:
     void STDMETHODCALLTYPE OnBufferEnd(void* pBufferContext) override
     {
         if (!pBufferContext) return;
-        auto* sb = static_cast<XA2SubmittedBuffer*>(pBufferContext);
-        if (sb->data) delete[] sb->data;
-        if (sb->flushGen == s_flushGen)
+        auto* slot = static_cast<XAudio2Output::BufferSlot*>(pBufferContext);
+        if (slot->flushGen == s_flushGen)
         {
-            InterlockedExchangeAdd(&s_queuedFrames, -(long)sb->frames);
-            InterlockedExchangeAdd64(&s_totalConsumed, (long long)sb->frames);
+            InterlockedExchangeAdd(&s_queuedFrames, -(long)slot->frames);
+            InterlockedExchangeAdd64(&s_totalConsumed, (long long)slot->frames);
             // Signal drain event when queue drops below low watermark
             if (s_drainEvent && s_queuedFrames < XAudio2Output::LOW_WATERMARK)
                 SetEvent(s_drainEvent);
         }
-        delete sb;
+        // Release slot back to pool (no heap free needed)
+        InterlockedExchange(&slot->inUse, 0);
     }
     void STDMETHODCALLTYPE OnBufferStart(void*) override {}
     void STDMETHODCALLTYPE OnLoopEnd(void*) override {}
@@ -128,6 +131,10 @@ XAudio2Output::~XAudio2Output()
     if (m_pMasterVoice) { m_pMasterVoice->DestroyVoice(); m_pMasterVoice = nullptr; }
     if (m_pXAudio2)     { m_pXAudio2->Release(); m_pXAudio2 = nullptr; }
     if (m_drainEvent)   { CloseHandle(m_drainEvent); m_drainEvent = nullptr; s_drainEvent = nullptr; }
+
+    // Mark all pool slots free (no heap cleanup needed)
+    for (int i = 0; i < POOL_SIZE; i++)
+        InterlockedExchange(&s_pool[i].inUse, 0);
 }
 
 void XAudio2Output::EnsureDrainEvent()
@@ -187,7 +194,16 @@ bool XAudio2Output::Initialize()
     s_underrunCount = 0;
     s_haveBaseline = false;
 
-    log("XAudio2Output: initialized OK, voice stopped");
+    // Initialize pool — all slots start free
+    for (int i = 0; i < POOL_SIZE; i++)
+    {
+        InterlockedExchange(&s_pool[i].inUse, 0);
+        s_pool[i].frames = 0;
+        s_pool[i].flushGen = 0;
+    }
+
+    log("XAudio2Output: initialized OK (pool=%d slots, maxFrame=%d), voice stopped",
+        POOL_SIZE, MAX_FRAME_SIZE);
     return true;
 }
 
@@ -223,6 +239,13 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
     if (!m_initialized || !data || frames == 0 || !m_pSourceVoice)
         return;
 
+    if (frames > MAX_FRAME_SIZE)
+    {
+        spdlog::warn("XA2 Submit: frames={} exceeds MAX_FRAME_SIZE={}, clamping",
+            frames, MAX_FRAME_SIZE);
+        frames = MAX_FRAME_SIZE;
+    }
+
     init_qpc();
     double sinceLast = elapsed_ms();
 
@@ -239,16 +262,38 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
         }
     }
 
-    auto* sb = new XA2SubmittedBuffer();
-    sb->frames = frames;
-    sb->flushGen = s_flushGen;
-    sb->data = new int16_t[(size_t)frames * 2];
-    memcpy(sb->data, data, (size_t)frames * 2 * sizeof(int16_t));
+    // Grab a free slot from the pool (lock-free CAS)
+    BufferSlot* slot = nullptr;
+    for (int i = 0; i < POOL_SIZE; i++)
+    {
+        if (InterlockedCompareExchange(&s_pool[i].inUse, 1, 0) == 0)
+        {
+            slot = &s_pool[i];
+            break;
+        }
+    }
+    if (!slot)
+    {
+        // All slots in use — drop this batch rather than block
+        static DWORD s_lastPoolFullLog = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastPoolFullLog > 1000)
+        {
+            s_lastPoolFullLog = now;
+            spdlog::warn("XA2 POOL FULL: all {} slots in use, dropping {} frames", POOL_SIZE, frames);
+        }
+        return;
+    }
+
+    // Fill slot — memcpy into pre-allocated inline buffer (no heap alloc)
+    slot->frames = frames;
+    slot->flushGen = s_flushGen;
+    memcpy(slot->data, data, (size_t)frames * 2 * sizeof(int16_t));
 
     XAUDIO2_BUFFER buf = {};
     buf.AudioBytes = (UINT32)(frames * 2 * sizeof(int16_t));
-    buf.pAudioData = (const BYTE*)sb->data;
-    buf.pContext = sb;
+    buf.pAudioData = (const BYTE*)slot->data;
+    buf.pContext = slot;
 
     m_pSourceVoice->SubmitSourceBuffer(&buf);
     InterlockedExchangeAdd(&s_queuedFrames, (long)frames);
@@ -314,17 +359,23 @@ void XAudio2Output::Submit(const int16_t* data, uint32_t frames)
         long urCount = s_underrunCount;
         s_underrunCount = 0;
 
+        // Count free slots for diagnostics
+        int freeSlots = 0;
+        for (int i = 0; i < POOL_SIZE; i++)
+            if (s_pool[i].inUse == 0) freeSlots++;
+
         spdlog::info(
             "[XA2] sub={} frames={} queue={} ({:.0f}ms) bufs={} gap={:.1f}ms "
             "qMin={} qMax={} trend={:.0f}±{:.0f} "
             "consume={:.0f}Hz drift={:.1f}ms underruns={} "
-            "totP={} totC={}",
+            "totP={} totC={} pool={}/{}",
             submitCounter, frames, q2, (double)q2 * 1000.0 / 48000.0,
             (unsigned long)vs.BuffersQueued, sinceLast,
             s_queueMin, s_queueMax,
             avgQ, trendDelta,
             consumptionRate, driftMs, urCount,
-            (long long)s_totalProduced, (long long)s_totalConsumed);
+            (long long)s_totalProduced, (long long)s_totalConsumed,
+            freeSlots, POOL_SIZE);
 
         s_queueMin = 999999;
         s_queueMax = 0;
@@ -384,11 +435,18 @@ void XAudio2Output::Flush()
     InterlockedIncrement(&s_flushGen);
     m_started = false;
 
+    // Do NOT mark pool slots as free here. FlushSourceBuffers() triggers
+    // OnBufferEnd for each queued buffer on the XAudio2 callback thread.
+    // Those callbacks check flushGen (now mismatched → skip queue accounting)
+    // and then release the slot (inUse=0). If we mark slots free here BEFORE
+    // callbacks fire, Submit() could reuse a slot, and the old callback would
+    // read the new flushGen → match → corrupt queue counters (negative queue).
+
     // Signal drain event so any blocked Submit() wakes up
     if (m_drainEvent)
         SetEvent(m_drainEvent);
 
-    log("XA2 Flush: flushed, voice stopped (Submit will auto-start)");
+    log("XA2 Flush: flushed, voice stopped (OnBufferEnd will release slots)");
 }
 
 uint32_t XAudio2Output::GetQueuedFrames() const

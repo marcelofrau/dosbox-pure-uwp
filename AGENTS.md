@@ -29,7 +29,7 @@ Current: 0 errors, ~1500 warnings C4244 (cosmetic).
 |------|---------|
 | `dosbox-uwp/Content/RetroCore.cpp/.h` | libretro bridge: init, load, run, callbacks, retro_env, VFS |
 | `dosbox-uwp/Content/RetroScreenRenderer.cpp/.h` | D2D bitmap render + letterbox |
-| `dosbox-uwp/Content/XAudio2Output.cpp/.h` | XAudio2 audio output: ring buffer, OnBufferEnd, pre-buffer |
+| `dosbox-uwp/Content/XAudio2Output.cpp/.h` | XAudio2 audio output: 32-slot buffer pool (zero heap alloc), OnBufferEnd, pre-buffer, 48kHz |
 | `dosbox-uwp/dosbox_uwpMain.cpp/.h` | Main loop, Update/Render, input routing, audio init |
 | `dosbox-uwp/App.cpp` | Entry point, Ctrl+Alt+F2 → FileOpenPicker → async file read → LoadRom |
 | `dosbox-uwp/dosbox_pure_sta.cpp` | DBPS_* stubs (12 no-ops, 1 real: DBPS_SubmitOSDFrame, DBPS_GetMouse) |
@@ -124,7 +124,7 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 ## Status
 - Phase 0-3 done (scaffold, core compiles, libretro frontend, video pipeline)
 - Phase 4 complete (keyboard callback, GET_LOG_INTERFACE)
-- Phase 5 complete (XAudio2 output replaces SDL audio: alloc-per-submit ring buffer, OnBufferEnd callback, voice starts in Initialize, queue-depth cap at 882 frames/20ms)
+- Phase 5 complete (XAudio2 output replaces SDL audio: 32-slot buffer pool, OnBufferEnd callback, voice starts in Initialize, queue-depth cap at 882 frames/20ms)
 - OSD fix: commented out DBP_STANDALONE separate-buffer path in GFX_EndUpdate. PUREMENU now renders directly onto framebuffer.
 - Dynarec enabled (patched `dyn_cache.h` with `VirtualAllocFromApp`, see `docs/DYNAREC_UWP.md`)
 - Tested on Windows 11 via VS2022. Xbox Series deploy not tested.
@@ -132,3 +132,4 @@ Ignore them — actual build uses MSVC with `/ZW` and compiles fine.
 - Keyboard→joypad state leak fixed: JOYPAD reads `s_joypadState[16]` instead of `s_keyboardState[]`.
 - register-core-options: SET_VARIABLE/GET_VARIABLE/GET_VARIABLE_UPDATE all implemented: PUREMENU changes now propagate to core and persist. Tested: option displays updated value, core applies via check_variables() on next frame. DBPS_ApplyConfigOverrides (FRONTEND.DBP) still stub.
 - xb-xray integrated: submodule + props + start/stop/update + binds (audio_queued, fps, target_fps, frame timing). Debug-only. Connect via `nc <ip> 9000`.
+- Audio v0.8.2.11: sample rate mismatch fixed (DBP_STANDALONE hardcode "44100" → uses option value, matches XAudio2 48kHz). Buffer pool: 32 pre-allocated slots (zero heap alloc per submit), lock-free CAS for slot claim, OnBufferEnd releases slots. Flush race condition fixed (don't mark slots free before callbacks fire).
