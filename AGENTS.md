@@ -8,7 +8,8 @@ All documentation, code, comments, and commit messages MUST be in English.
 (User may converse in Portuguese or English; agent responds accordingly.)
 
 ## Critical Rules
-- **NEVER commit or push** without explicit user request. Stage changes only. Wait for "commit", "push", "faz o commit", etc.
+- **NEVER commit or push** without explicit user request. Stage changes only. Wait for "commit", "push", "faz o commit", etc. This is ABSOLUTE — no exceptions, no "helpful" auto-commits, no "cleaning up". User must ALWAYS explicitly ask.
+- **ALWAYS confirm before commit+push**, even if user already asked. Each request is one-time only. Show files to be committed and ask "Confirmo commit+push?" before proceeding.
 - **NEVER commit to submodule** `extern/dosbox-pure/`. Patches go in `dosbox-uwp/local/dosbox-pure/` mirroring same directory structure.
 - **CAN commit to `extern/uwp-xray-depot/`** — same author/owner as parent repo. Push separately when asked.
 - **Build via .sln** not .vcxproj. `$(SolutionDir)` needed for `uwp-dep.props` SDL paths.

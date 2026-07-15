@@ -34,7 +34,7 @@ namespace dosbox_uwp
 
         // Buffer pool — pre-allocated slots, zero heap alloc in hot path
         static const int POOL_SIZE = 32;
-        static const int MAX_FRAME_SIZE = 2048; // max frames per Submit (≈42ms@48kHz)
+        static const int MAX_FRAME_SIZE = 8192; // max frames per Submit (≈170ms@48kHz, covers beep=5760)
 
         struct BufferSlot
         {

@@ -802,7 +802,7 @@ void dosbox_uwpMain::Update()
                 double targetQ = 6615.0;
                 double scale = targetQ / (targetQ + (queueFrames - targetQ) * 0.5);
                 if (scale < 0.4) scale = 0.4;
-                if (scale > 1.3) scale = 1.3;
+                if (scale > 1.0) scale = 1.0;
                 m_audioTimeAccumulator *= scale;
             }
 
