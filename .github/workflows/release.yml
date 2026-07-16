@@ -21,10 +21,44 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Create signing certificate
+        id: sign-cert
+        shell: pwsh
+        run: |
+          $certDir = "certs"
+          $pfx = "$certDir\dosbox-uwp.pfx"
+          $cer = "$certDir\dosbox-uwp.cer"
+          $certPass = "dev"
+
+          if (-not (Test-Path $pfx)) {
+            New-Item -ItemType Directory -Path $certDir -Force | Out-Null
+            $secPass = ConvertTo-SecureString $certPass -AsPlainText -Force
+            $cert = New-SelfSignedCertificate -Subject "CN=DOSBox Pure UWP CI" -FriendlyName "dosbox-uwp" `
+              -Type CodeSigningCert -KeyUsage DigitalSignature `
+              -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3") `
+              -CertStoreLocation Cert:\CurrentUser\My
+            Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $secPass -Force | Out-Null
+            Export-Certificate -Cert $cert -FilePath $cer -Type CERT -Force | Out-Null
+            Write-Host "Cert created: thumbprint=$($cert.Thumbprint)"
+            echo "cert_thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+          } else {
+            # Import existing pfx to get thumbprint
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfx, $certPass)
+            Write-Host "Cert exists: thumbprint=$($cert.Thumbprint)"
+            echo "cert_thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Build
         shell: pwsh
         run: |
-          msbuild "dosbox-pure-unleashed-uwp.sln" /p:Configuration=Release /p:Platform=x64 /p:AppxPackageSigningEnabled=false /nowarn:MSB4011 /m /nologo
+          $thumb = "${{ steps.sign-cert.outputs.cert_thumbprint }}"
+          msbuild "dosbox-pure-unleashed-uwp.sln" `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:PackageCertificateKeyFile=certs\dosbox-uwp.pfx `
+            /p:PackageCertificatePassword=dev `
+            /p:PackageCertificateThumbprint=$thumb `
+            /nowarn:MSB4011 /m /nologo
 
       - name: Read actual version
         id: version
@@ -40,107 +74,90 @@ jobs:
         id: notes
         shell: pwsh
         run: |
-          # Find the last release tag to diff from
-          $prevTag = git tag --sort=-v:refname | Where-Object { $_ -match '^v\d+\.\d+\.\d+\.\d+$' } | Select-Object -Skip 1 -First 1
-          if (-not $prevTag) {
-            $prevTag = git rev-list --max-parents=0 HEAD | Select-Object -First 1
-            $range = "$prevTag..HEAD"
-          } else {
-            $range = "$prevTag...HEAD"
-          }
-          Write-Host "Comparing: $range"
-
-          # Collect commits
-          $commits = git log $range --pretty=format:"%h|%s|%an" --no-merges
-          $sections = @{
-            features = @()
-            fixes = @()
-            ui = @()
-            audio = @()
-            perf = @()
-            other = @()
-          }
-
-          foreach ($line in $commits) {
-            if (-not $line) { continue }
-            $parts = $line -split '\|', 3
-            $hash = $parts[0]
-            $msg = $parts[1]
-            $author = $parts[2]
-
-            $entry = "- ``$hash`` $msg — @$author"
-
-            if ($msg -match '^feat[\(:]')       { $sections.features += $entry }
-            elseif ($msg -match '^fix\(audio')   { $sections.audio += $entry }
-            elseif ($msg -match '^fix\(ui')      { $sections.ui += $entry }
-            elseif ($msg -match '^fix\(')        { $sections.fixes += $entry }
-            elseif ($msg -match '^perf[\(:]')    { $sections.perf += $entry }
-            else                                 { $sections.other += $entry }
-          }
-
-          # Build markdown body
+          $staticNotes = Join-Path $env:GITHUB_WORKSPACE 'release_notes.md'
           $ver = "${{ steps.version.outputs.version }}"
-          $body = @"
-          ## DOSBox Pure Unleashed $ver
 
-          A DOS emulator for Windows and Xbox, powered by the dosbox-pure libretro core.
+          if (Test-Path $staticNotes) {
+            # Use hand-crafted release notes from repo
+            $body = Get-Content $staticNotes -Raw
+            Write-Host "Using static release_notes.md"
+          } else {
+            # Auto-generate from git log
+            $prevTag = git tag --sort=-v:refname | Where-Object { $_ -match '^v\d+\.\d+\.\d+\.\d+$' } | Select-Object -Skip 1 -First 1
+            if (-not $prevTag) {
+              $prevTag = git rev-list --max-parents=0 HEAD | Select-Object -First 1
+              $range = "$prevTag..HEAD"
+            } else {
+              $range = "$prevTag...HEAD"
+            }
+            Write-Host "Comparing: $range"
 
-          ---
+            $commits = git log $range --pretty=format:"%h|%s|%an|%ae" --no-merges
+            $authorMap = @{ 'Marcelo Frau' = 'marcelofrau' }
+            $sections = [ordered]@{
+              features = [System.Collections.ArrayList]@()
+              fixes    = [System.Collections.ArrayList]@()
+              ui       = [System.Collections.ArrayList]@()
+              audio    = [System.Collections.ArrayList]@()
+              perf     = [System.Collections.ArrayList]@()
+              other    = [System.Collections.ArrayList]@()
+            }
 
-          ### What's New
+            foreach ($line in $commits) {
+              if (-not $line) { continue }
+              $parts = $line -split '\|', 4
+              $hash = $parts[0]; $msg = $parts[1]; $author = $parts[2]
+              $ghUser = if ($authorMap.ContainsKey($author)) { $authorMap[$author] } else { $author }
+              $entry = "- ``$hash`` $msg -- @$ghUser"
+              if ($msg -match '^feat[\(:]')       { [void]$sections.features.Add($entry) }
+              elseif ($msg -match '^fix\(audio')   { [void]$sections.audio.Add($entry) }
+              elseif ($msg -match '^fix\(ui')      { [void]$sections.ui.Add($entry) }
+              elseif ($msg -match '^fix\(')        { [void]$sections.fixes.Add($entry) }
+              elseif ($msg -match '^perf[\(:]')    { [void]$sections.perf.Add($entry) }
+              else                                 { [void]$sections.other.Add($entry) }
+            }
 
-          "@
+            $lines = [System.Collections.ArrayList]@()
+            [void]$lines.Add("## DOSBox Pure UWP $ver")
+            [void]$lines.Add("")
+            [void]$lines.Add("A DOS emulator for Windows and Xbox, powered by the dosbox-pure libretro core.")
+            [void]$lines.Add("")
+            [void]$lines.Add("---")
+            [void]$lines.Add("")
+            [void]$lines.Add("### What's New")
 
-          if ($sections.features.Count -gt 0) {
-              $body += "`n#### Features`n`n"
-              $body += ($sections.features -join "`n") + "`n"
+            $sectionLabels = @{
+              features = "Features"; fixes = "Bug Fixes"; ui = "UI Improvements"
+              audio = "Audio"; perf = "Performance"; other = "Other Changes"
+            }
+            foreach ($key in $sections.Keys) {
+              if ($sections[$key].Count -gt 0) {
+                [void]$lines.Add(""); [void]$lines.Add("#### $($sectionLabels[$key])"); [void]$lines.Add("")
+                foreach ($entry in $sections[$key]) { [void]$lines.Add($entry) }
+              }
+            }
+            [void]$lines.Add(""); [void]$lines.Add("---"); [void]$lines.Add("")
+            [void]$lines.Add("### Installation"); [void]$lines.Add("")
+            [void]$lines.Add("1. Download ``dosbox-uwp_${ver}_x64.zip``")
+            [void]$lines.Add("2. Extract to a folder")
+            [void]$lines.Add("3. Run ``Install.ps1`` (requires PowerShell as Administrator)")
+            [void]$lines.Add("4. Launch from Start Menu")
+            [void]$lines.Add("")
+            [void]$lines.Add("> **Note:** Side-loading requires Developer Mode enabled in Windows Settings.")
+            [void]$lines.Add(""); [void]$lines.Add("---"); [void]$lines.Add("")
+            [void]$lines.Add("### Links"); [void]$lines.Add("")
+            [void]$lines.Add("- [Source Code](https://github.com/marcelofrau/dosbox-pure-uwp/tree/main)")
+            [void]$lines.Add("- [DOSBox Pure Core](https://github.com/schellingb/dosbox-pure)")
+            [void]$lines.Add("- [Libretro](https://www.libretro.com/)")
+            $body = ($lines -join "`n")
           }
-          if ($sections.fixes.Count -gt 0) {
-              $body += "`n#### Bug Fixes`n`n"
-              $body += ($sections.fixes -join "`n") + "`n"
-          }
-          if ($sections.ui.Count -gt 0) {
-              $body += "`n#### UI Improvements`n`n"
-              $body += ($sections.ui -join "`n") + "`n"
-          }
-          if ($sections.audio.Count -gt 0) {
-              $body += "`n#### Audio`n`n"
-              $body += ($sections.audio -join "`n") + "`n"
-          }
-          if ($sections.perf.Count -gt 0) {
-              $body += "`n#### Performance`n`n"
-              $body += ($sections.perf -join "`n") + "`n"
-          }
-          if ($sections.other.Count -gt 0) {
-              $body += "`n#### Other Changes`n`n"
-              $body += ($sections.other -join "`n") + "`n"
-          }
 
-          $body += @"
-
-          ---
-
-          ### Installation
-
-          1. Download ``dosbox-uwp_${ver}_x64.zip``
-          2. Extract to a folder
-          3. Run ``Install.ps1`` (requires PowerShell as Administrator)
-          4. Launch from Start Menu
-
-          > **Note:** Side-loading requires Developer Mode enabled in Windows Settings.
-
-          ---
-
-          ### Links
-
-          - [Source Code](https://github.com/marcelofrau/dosbox-pure-uwp/tree/main)
-          - [DOSBox Pure Core](https://github.com/schellingb/dosbox-pure)
-          - [Libretro](https://www.libretro.com/)
-          "@
-
-          # Write to file for release body
-          Set-Content -Path 'release_notes.md' -Value $body.Trim() -NoNewline
-          Write-Host "Release notes written to release_notes.md"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $env:GITHUB_WORKSPACE 'release_notes.md'),
+            $body,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host "Release notes ready"
           Write-Host $body
 
       - name: Package & Create Distributable
