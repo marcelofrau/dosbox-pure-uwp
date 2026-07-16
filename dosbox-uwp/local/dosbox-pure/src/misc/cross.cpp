@@ -23,6 +23,8 @@
 #include <string>
 #include <limits.h>
 #include <stdlib.h>
+#include <io.h>
+#include <fcntl.h>
 
 #if defined(C_DBP_ENABLE_CONFIG_PROGRAM) || defined(C_DBP_ENABLE_CAPTURE) || defined(C_OPENGL)
 #ifdef WIN32
@@ -31,6 +33,10 @@
 #endif
 #include <shlobj.h>
 #endif
+#endif
+
+#ifdef WIN32
+#include <fileapifromapp.h>
 #endif
 
 #ifdef C_DBP_NATIVE_HOMEDIR
@@ -357,6 +363,58 @@ FILE *fopen_wrap(const char *path, const char *mode) {
 #endif //HAVE_REALPATH
 #endif
 
+#ifdef WIN32
+	{
+		wchar_t *wpath = NULL;
+		int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+		if (wlen > 0) { wpath = (wchar_t*)malloc(wlen * sizeof(wchar_t)); MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen); }
+		if (!wpath) return NULL;
+
+		bool isWrite  = (strchr(mode, 'w') != NULL);
+		bool isAppend = (strchr(mode, 'a') != NULL);
+		bool isPlus   = (strchr(mode, '+') != NULL);
+
+		DWORD access = GENERIC_READ;
+		DWORD creation = OPEN_EXISTING;
+		int   crtFlags = _O_RDONLY;
+		const char* fdopenMode = "rb";
+
+		if (isWrite) {
+			access = isPlus ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_WRITE;
+			creation = CREATE_ALWAYS;
+			crtFlags = isPlus ? _O_RDWR : _O_WRONLY;
+			fdopenMode = isPlus ? "w+b" : "wb";
+		} else if (isAppend) {
+			access = isPlus ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_WRITE;
+			creation = OPEN_ALWAYS;
+			crtFlags = isPlus ? _O_RDWR : _O_WRONLY;
+			fdopenMode = isPlus ? "a+b" : "ab";
+		} else if (isPlus) {
+			access = GENERIC_READ | GENERIC_WRITE;
+			crtFlags = _O_RDWR;
+			fdopenMode = "r+b";
+		}
+
+		HANDLE h = CreateFile2FromAppW(wpath, access,
+			(isWrite || isAppend) ? 0 : FILE_SHARE_READ, creation, NULL);
+		DWORD _fwerr = GetLastError();
+		free(wpath);
+		if (h == INVALID_HANDLE_VALUE)
+		{
+			char _fwb[256];
+			sprintf_s(_fwb, "[fopen_wrap] CreateFile2FromAppW FAILED err=%lu access=%lu creation=%lu path=%s\n",
+				_fwerr, access, creation, path);
+			OutputDebugStringA(_fwb);
+			return NULL;
+		}
+
+		int fd = _open_osfhandle((intptr_t)h, crtFlags);
+		if (fd == -1) { CloseHandle(h); return NULL; }
+
+		return _fdopen(fd, fdopenMode);
+	}
+#else
 	return fopen(path,mode);
+#endif
 }
 #endif

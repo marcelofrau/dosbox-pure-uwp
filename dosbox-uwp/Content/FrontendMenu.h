@@ -34,7 +34,10 @@ namespace dosbox_uwp
         RESET_ALL_SETTINGS,
         CLEAR_HISTORY,
         ABOUT,
-        EXIT
+        EXIT,
+        PICK_FOLDER,
+        RELOAD_SETTINGS,
+        RESTART_APP
     };
 
     struct MenuItem
@@ -82,6 +85,7 @@ namespace dosbox_uwp
         void ReleaseResources();
         void RebuildItems();
         void RefreshMenuItems() { BuildMenuTree(); }  // Re-reads saved values from SettingsManager
+        void RefreshOverlayItems();  // Rebuild + re-point overlay + reset selection
 
         void SetCoreLoaded(bool loaded);
         void LoadLogoBitmap(ID2D1DeviceContext* d2d);
@@ -90,6 +94,7 @@ namespace dosbox_uwp
         bool IsBootAnimComplete() const { return m_animPhase >= ANIM_COMPLETE; }
         bool IsBeepGracePeriod() const { return m_beepPlayed && (GetTickCount64() - m_animCompleteTick) < 300; }
         void ResetBootAnim() { m_animPhase = ANIM_INITIAL_DELAY; m_animStartTick = GetTickCount64(); m_beepPlayed = false; }
+        IDWriteFontCollection* GetFontCollection() const { return m_fontCollection.Get(); }
 
         std::function<void()> onOpenFile;
         std::function<void()> onOpenPuremenu;
@@ -214,5 +219,10 @@ namespace dosbox_uwp
         float m_lastPanelW = 0, m_lastPanelH = 0;
         float m_lastScreenW = 0, m_lastScreenH = 0;
         std::wstring m_versionStr;
+
+        int m_marqueeItemIdx = -1;
+        int m_marqueeValueIdx = -1;
+        ULONGLONG m_marqueeStartTime = 0;
+        ULONGLONG m_wheelCooldownUntil = 0;
     };
 }

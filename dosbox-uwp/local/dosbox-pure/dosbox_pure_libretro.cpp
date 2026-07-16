@@ -3859,6 +3859,9 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info, 
 #include <sys/stat.h>
 
 #ifdef WIN32
+#include <fileapifromapp.h>
+#include <io.h>
+#include <fcntl.h>
 wchar_t* AllocUTF8ToUTF16(const char *str)
 {
 	if (!str || !*str) return NULL;
@@ -3882,39 +3885,67 @@ wchar_t* AllocUTF8ToUTF16(const char *str)
 
 FILE* fopen_wrap(const char* path, const char* mode)
 {
-	#ifdef WIN32
-	for (const char* p = path; *p; p++) { if ((Bit8u)*p > 0x7F) goto needw; }
-	#endif
-	return fopen(path, mode);
-	#ifdef WIN32
-	needw:
-	wchar_t *wpath = AllocUTF8ToUTF16(path), wmode[20], *pwmode = wmode;
+#ifdef WIN32
+	// Use CreateFile2FromAppW for broadFileSystemAccess on UWP Xbox.
+	// Standard _wfopen / fopen may fail even with runFullTrust on Xbox device.
+	wchar_t *wpath = AllocUTF8ToUTF16(path);
 	if (!wpath) return NULL;
-	for (const char* p = mode, *pEnd = p + 19; *p && p != pEnd; p++) *(pwmode++) = *p;
-	*pwmode = '\0';
-	FILE* f = _wfopen(wpath, wmode);
+
+	bool isWrite  = (strchr(mode, 'w') != NULL);
+	bool isAppend = (strchr(mode, 'a') != NULL);
+	bool isPlus   = (strchr(mode, '+') != NULL);
+
+	DWORD access = GENERIC_READ;
+	DWORD creation = OPEN_EXISTING;
+	int   crtFlags = _O_RDONLY;
+	const char* fdopenMode = "rb";
+
+	if (isWrite) {
+		access = isPlus ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_WRITE;
+		creation = CREATE_ALWAYS;
+		crtFlags = isPlus ? _O_RDWR : _O_WRONLY;
+		fdopenMode = isPlus ? "w+b" : "wb";
+	} else if (isAppend) {
+		access = isPlus ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_WRITE;
+		creation = OPEN_ALWAYS;
+		crtFlags = isPlus ? _O_RDWR : _O_WRONLY;
+		fdopenMode = isPlus ? "a+b" : "ab";
+	} else if (isPlus) {
+		access = GENERIC_READ | GENERIC_WRITE;
+		crtFlags = _O_RDWR;
+		fdopenMode = "r+b";
+	}
+
+	HANDLE h = CreateFile2FromAppW(wpath, access,
+		(isWrite || isAppend) ? 0 : FILE_SHARE_READ, creation, NULL);
 	free(wpath);
-	return f;
-	#endif
+	if (h == INVALID_HANDLE_VALUE) return NULL;
+
+	int fd = _open_osfhandle((intptr_t)h, crtFlags);
+	if (fd == -1) { CloseHandle(h); return NULL; }
+
+	return _fdopen(fd, fdopenMode);
+#else
+	return fopen(path, mode);
+#endif
 }
 
 static bool exists_utf8(const char* path, bool* out_is_dir)
 {
 	#ifdef WIN32
-	for (const char* p = path; *p; p++) { if ((Bit8u)*p > 0x7F) goto needw; }
-	#endif
+	// UWP: use GetFileAttributesExFromAppW (broadFileSystemAccess compatible)
+	// instead of stat/_wstat64i32 which use CRT Win32 APIs blocked on Xbox sandbox.
+	wchar_t *wpath = AllocUTF8ToUTF16(path);
+	if (!wpath) return false;
+	WIN32_FILE_ATTRIBUTE_DATA fad{};
+	bool retval = GetFileAttributesExFromAppW(wpath, GetFileExInfoStandard, &fad) != FALSE;
+	free(wpath);
+	if (out_is_dir) *out_is_dir = retval && (fad.dwFileAttributes != INVALID_FILE_ATTRIBUTES) && !!(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+	return retval;
+	#else
 	struct stat test;
 	if (stat(path, &test)) return false;
 	if (out_is_dir) *out_is_dir = !!S_ISDIR(test.st_mode);
-	return true;
-	#ifdef WIN32
-	needw:
-	wchar_t *wpath = AllocUTF8ToUTF16(path);
-	if (!wpath) return NULL;
-	struct _stat64i32 wtest;
-	bool retval = !_wstat64i32(wpath, &wtest);
-	free(wpath);
-	if (out_is_dir && retval) *out_is_dir = !!S_ISDIR(wtest.st_mode);
 	return true;
 	#endif
 }

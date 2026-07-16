@@ -46,8 +46,6 @@ namespace dosbox_uwp
 		void OnDisplayContentsInvalidated(Windows::Graphics::Display::DisplayInformation^ sender, Platform::Object^ args);
 
 	private:
-		void OpenFilePicker();
-
 		std::shared_ptr<DX::DeviceResources> m_deviceResources;
 		std::unique_ptr<dosbox_uwpMain> m_main;
 		bool m_windowClosed;

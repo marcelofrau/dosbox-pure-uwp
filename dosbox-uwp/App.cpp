@@ -141,10 +141,6 @@ void App::Run()
 
 			m_main->Update();
 
-			if (m_main->WasFilePickerRequested()) {
-				OpenFilePicker();
-			}
-
 			if (m_main->Render())
 			{
 				// Present(0,0): no vsync blocking. SDL2 audio callback drives timing.
@@ -228,90 +224,7 @@ void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 	m_windowClosed = true;
 }
 
-	void App::OpenFilePicker()
-{
-	m_main->SetLoadState(dosbox_uwpMain::LOAD_PICKING);
-
-	auto picker = ref new Windows::Storage::Pickers::FileOpenPicker();
-	picker->ViewMode = Windows::Storage::Pickers::PickerViewMode::List;
-	picker->FileTypeFilter->Append(".zip");
-	picker->FileTypeFilter->Append(".dosz");
-	picker->FileTypeFilter->Append(".exe");
-	picker->FileTypeFilter->Append(".com");
-	picker->FileTypeFilter->Append(".bat");
-	picker->FileTypeFilter->Append(".iso");
-	picker->FileTypeFilter->Append(".chd");
-	picker->FileTypeFilter->Append(".cue");
-	picker->FileTypeFilter->Append(".img");
-	picker->FileTypeFilter->Append(".ima");
-	picker->FileTypeFilter->Append(".vhd");
-	picker->FileTypeFilter->Append(".conf");
-
-	// v0.8.3.0: Try native path first via StorageFile::Path. broadFileSystemAccess
-	// allows CreateFile2FromAppW to open picker-selected paths without copying.
-	// Fallback: if Path is empty (virtual provider), use ReadBufferAsync → WriteBufferAsync.
-	create_task(picker->PickSingleFileAsync()).then([this](Windows::Storage::StorageFile^ file)
-	{
-		if (file == nullptr)
-		{
-			spdlog::info("[Picker] Cancelled");
-			m_main->SetLoadState(dosbox_uwpMain::LOAD_IDLE);
-			return;
-		}
-
-		m_main->SetLoadState(dosbox_uwpMain::LOAD_READING);
-		m_main->ActivateLoadingScreen();
-		spdlog::info("[Picker] Picked: {}", std::string(file->Name->Data(), file->Name->Data() + file->Name->Length()));
-
-		// Try direct path access (no copy needed)
-		Platform::String^ nativePath = file->Path;
-		if (nativePath != nullptr && nativePath->Length() > 0)
-		{
-			std::wstring pathStr(nativePath->Data(), nativePath->Length());
-			spdlog::info("[Picker] Direct path: '{}'", std::string(pathStr.begin(), pathStr.end()));
-			m_main->SetLoadState(dosbox_uwpMain::LOAD_BOOTING);
-			m_main->QueueLoadRom(pathStr, {});
-			return;
-		}
-
-		// Fallback: Path empty (virtual/OneDrive placeholder) → copy via buffer
-		spdlog::info("[Picker] Path empty, falling back to buffer copy");
-		create_task(Windows::Storage::FileIO::ReadBufferAsync(file)).then([this, file](Windows::Storage::Streams::IBuffer^ buffer)
-		{
-			if (buffer == nullptr || buffer->Length == 0)
-			{
-				spdlog::error("[Picker] Read failed or empty");
-				m_main->SetLoadState(dosbox_uwpMain::LOAD_FAILED);
-				return;
-			}
-
-			m_main->SetLoadState(dosbox_uwpMain::LOAD_BOOTING);
-
-			auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-
-			create_task(localFolder->CreateFolderAsync(
-				L"temp", Windows::Storage::CreationCollisionOption::OpenIfExists))
-			.then([this, file, buffer](Windows::Storage::StorageFolder^ tempFolder)
-			{
-				create_task(tempFolder->CreateFileAsync(
-					file->Name, Windows::Storage::CreationCollisionOption::ReplaceExisting))
-				.then([this, buffer](Windows::Storage::StorageFile^ tempFile)
-				{
-					create_task(Windows::Storage::FileIO::WriteBufferAsync(tempFile, buffer))
-					.then([this, tempFile]()
-					{
-						std::wstring localPath = tempFile->Path->Data();
-						spdlog::info("[Picker] Copied to: '{}'",
-							std::string(localPath.begin(), localPath.end()));
-						m_main->QueueLoadRom(localPath, {});
-					});
-				});
-			});
-		});
-	});
-}
-
-void App::OnBackRequested(Platform::Object^ sender, Windows::UI::Core::BackRequestedEventArgs^ args)
+	void App::OnBackRequested(Platform::Object^ sender, Windows::UI::Core::BackRequestedEventArgs^ args)
 {
 	args->Handled = true;
 	if (m_main)
@@ -345,12 +258,13 @@ void App::OnKeyDown(CoreWindow^ sender, KeyEventArgs^ args)
 	if (key == VirtualKey::F12)
 		args->Handled = true;
 
-	// Ctrl+L = force system FileOpenPicker fallback
+	// Ctrl+L = open file browser
 	if (key == VirtualKey::L && m_ctrlHeld)
 	{
-		spdlog::info("[App] Ctrl+L -> system FileOpenPicker fallback");
+		spdlog::info("[App] Ctrl+L -> file browser");
 		args->Handled = true;
-		OpenFilePicker();
+		if (m_main)
+			m_main->ShowFileBrowser();
 		return;
 	}
 

@@ -25,6 +25,7 @@ struct ThemeColors
 
     // FileBrowser extras
     uint32_t file_text      = 0xFFd0d0d0;
+    uint32_t col_fav        = 0xFFF4F830;
     float    overlay_alpha  = 0.55f;
 
     // PUREMENU extras

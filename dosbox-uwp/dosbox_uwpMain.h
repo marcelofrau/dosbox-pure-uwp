@@ -43,7 +43,7 @@ namespace dosbox_uwp
         void RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize);
         void EnsureLoadingDisc();
         enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
-        bool WasFilePickerRequested() { bool r = m_requestFilePicker; m_requestFilePicker = false; return r; }
+        void ShowFileBrowser() { m_menu.m_fileBrowser.Open(); }
         LoadState GetLoadState() const { return m_loadState; }
         void SetLoadState(LoadState s) { m_loadState = s; }
         bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
@@ -74,14 +74,10 @@ namespace dosbox_uwp
         DX::StepTimer m_timer;
 
         DirectX::XMVECTORF32 m_clearColor;
-        bool m_requestFilePicker = false;
         bool m_spaceHeld = false;
         bool m_hasController;
 
         bool m_retroRunning = false;
-
-        std::wstring m_currentTempPath;
-        void CleanupTempFile();
 
         // Load state tracking (for hang detection + loading screen)
         LoadState m_loadState = LOAD_IDLE;

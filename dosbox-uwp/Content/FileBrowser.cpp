@@ -50,7 +50,7 @@ FileBrowser::FileBrowser()
 
 void FileBrowser::Open()
 {
-    spdlog::info("[FileBrowser] Open — showing root drive list");
+    spdlog::info("[FileBrowser] Open — showing root drive list (pickMode={})", m_folderPickMode);
     m_visible = true;
     m_selected = 0;
     m_scrollOffset = 0;
@@ -59,10 +59,18 @@ void FileBrowser::Open()
     ScanDirectory(L"");
 }
 
+void FileBrowser::OpenForFolderPick()
+{
+    spdlog::info("[FileBrowser] OpenForFolderPick");
+    m_folderPickMode = true;
+    Open();
+}
+
 void FileBrowser::Close()
 {
     spdlog::info("[FileBrowser] Close");
     m_visible = false;
+    m_folderPickMode = false;
 }
 
 bool FileBrowser::PassesExtensionFilter(const std::wstring& name)
@@ -115,6 +123,52 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
     if (path.empty())
     {
         // Root: enumerate drives + LocalFolder
+        // Read startup folder setting
+        std::string favFolder = SettingsManager::GetOption("frontend_startup_folder", "");
+
+        if (m_folderPickMode)
+        {
+            // Pick mode: [SET] always first, [CLR] if folder exists
+            FileEntry setEntry;
+            setEntry.name = L"Set as Startup Folder";
+            setEntry.isDir = true;
+            setEntry.prefixOverride = L"[SET] ";
+            m_entries.push_back(setEntry);
+            spdlog::info("[FileBrowser]   [SET] entry added");
+
+            if (!favFolder.empty())
+            {
+                FileEntry clearEntry;
+                clearEntry.name = L"Remove Startup Folder";
+                clearEntry.isDir = true;
+                clearEntry.prefixOverride = L"[CLR] ";
+                m_entries.push_back(clearEntry);
+                spdlog::info("[FileBrowser]   [CLR] entry added");
+            }
+
+            // Separator
+            FileEntry sep;
+            sep.name = L"";
+            sep.isDir = false;
+            m_entries.push_back(sep);
+        }
+        else if (!favFolder.empty())
+        {
+            // Normal mode: show favorite folder at top
+            FileEntry favEntry;
+            favEntry.name = std::wstring(favFolder.begin(), favFolder.end());
+            favEntry.isDir = true;
+            favEntry.prefixOverride = L"[FAV] ";
+            m_entries.push_back(favEntry);
+            spdlog::info("[FileBrowser]   [FAV] '{}'", favFolder);
+
+            // Separator
+            FileEntry sep;
+            sep.name = L"";
+            sep.isDir = false;
+            m_entries.push_back(sep);
+        }
+
         DWORD drives = GetLogicalDrives();
         spdlog::info("[FileBrowser] GetLogicalDrives() = 0x{:08X}", (unsigned)drives);
 
@@ -245,6 +299,16 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
     }
 
     // Merge: dirs first, then files
+    // In pick mode, add [SET] entry at top of non-root directories
+    if (m_folderPickMode && !path.empty())
+    {
+        FileEntry setEntry;
+        setEntry.name = L"Set as Startup Folder";
+        setEntry.isDir = true;
+        setEntry.prefixOverride = L"[SET] ";
+        dirs.insert(dirs.begin(), setEntry);
+    }
+
     m_entries = dirs;
     m_entries.insert(m_entries.end(), files.begin(), files.end());
 
@@ -320,6 +384,7 @@ void FileBrowser::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrit
         d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_value), &m_brushPathText);
         d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushFooter);
         d2d->CreateSolidColorBrush(D2D1::ColorF(c.text_disabled), &m_brushDimPrefix);
+        d2d->CreateSolidColorBrush(D2D1::ColorF(c.col_fav), &m_brushFavText);
     }
 
     dwrite->CreateTextFormat(
@@ -506,9 +571,9 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
         titleBg.right - titleBg.left, titleBg.bottom - titleBg.top, theme.title_bg);
     d2d->FillRectangle(titleBg, fbTitleBrush.Get());
 
-    // Title text: "FILE BROWSER"
+    // Title text: "FILE BROWSER" or "SELECT STARTUP FOLDER"
     {
-        const wchar_t* titleText = L"FILE BROWSER";
+        const wchar_t* titleText = m_folderPickMode ? L"SELECT STARTUP FOLDER" : L"FILE BROWSER";
         ComPtr<IDWriteTextLayout> titleLayout;
         dwrite->CreateTextLayout(titleText, (UINT32)wcslen(titleText), m_textFormatTitle.Get(),
             m_panelW * 0.5f, TITLE_HEIGHT, &titleLayout);
@@ -579,8 +644,9 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
             d2d->FillRectangle(selRect, m_brushSelectedBg.Get());
         }
 
-        // Prefix: [DIR] or [   ]
-        const wchar_t* prefix = entry.isDir ? L"[DIR] " : L"[   ] ";
+        // Prefix: use override or default [DIR]/[   ]
+        const wchar_t* prefix = entry.prefixOverride ? entry.prefixOverride :
+            (entry.isDir ? L"[DIR] " : L"[   ] ");
         UINT32 prefixLen = (UINT32)wcslen(prefix);
 
         ComPtr<IDWriteTextLayout> prefixLayout;
@@ -602,7 +668,9 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
 
         // Draw prefix
         auto prefixBrush = isSelected ? m_brushDimPrefix.Get() :
-            (entry.isDir ? m_brushDirText.Get() : m_brushDimPrefix.Get());
+            ((entry.prefixOverride == L"[FAV] " || entry.prefixOverride == L"[SET] " || entry.prefixOverride == L"[CLR] ") ? m_brushFavText.Get() :
+             (entry.prefixOverride ? m_brushDirText.Get() :
+              (entry.isDir ? m_brushDirText.Get() : m_brushDimPrefix.Get())));
         if (prefixLayout)
             d2d->DrawTextLayout(D2D1::Point2F(m_panelX + ITEM_INDENT, iy),
                 prefixLayout.Get(), prefixBrush);
@@ -612,7 +680,9 @@ void FileBrowser::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float 
         float nameMaxW = m_panelW - ITEM_INDENT * 3 - prefixWidth;
 
         auto nameBrush = isSelected ? m_brushSelectedText.Get() :
-            (entry.isDir ? m_brushDirText.Get() : m_brushFileText.Get());
+            ((entry.prefixOverride == L"[FAV] " || entry.prefixOverride == L"[SET] " || entry.prefixOverride == L"[CLR] ") ? m_brushFavText.Get() :
+             (entry.prefixOverride ? m_brushDirText.Get() :
+              (entry.isDir ? m_brushDirText.Get() : m_brushFileText.Get())));
 
         // Track marquee state
         if (isSelected)
@@ -738,7 +808,34 @@ void FileBrowser::OnConfirm()
     if (m_selected < 0 || m_selected >= (int)m_entries.size()) return;
 
     auto& entry = m_entries[m_selected];
-    spdlog::info("[FileBrowser] OnConfirm: '{}' isDir={}", std::string(entry.name.begin(), entry.name.end()), entry.isDir);
+    spdlog::info("[FileBrowser] OnConfirm: '{}' isDir={} prefix={}",
+        std::string(entry.name.begin(), entry.name.end()), entry.isDir,
+        entry.prefixOverride ? "special" : "normal");
+
+    // Handle special entries: [SET], [CLR], [FAV]
+    if (entry.prefixOverride == L"[SET] ")
+    {
+        spdlog::info("[FileBrowser] SET as startup folder: '{}'",
+            m_currentPath.empty() ? "(root)" : std::string(m_currentPath.begin(), m_currentPath.end()));
+        if (onFolderSelected) onFolderSelected(m_currentPath);
+        Close();
+        return;
+    }
+    if (entry.prefixOverride == L"[CLR] ")
+    {
+        spdlog::info("[FileBrowser] CLEAR startup folder");
+        if (onFolderSelected) onFolderSelected(L"");
+        Close();
+        return;
+    }
+    if (entry.prefixOverride == L"[FAV] ")
+    {
+        std::string favFolder = SettingsManager::GetOption("frontend_startup_folder", "");
+        std::wstring wfav(favFolder.begin(), favFolder.end());
+        spdlog::info("[FileBrowser] Navigate to favorite: '{}'", favFolder);
+        ScanDirectory(wfav);
+        return;
+    }
 
     if (entry.isDir)
     {

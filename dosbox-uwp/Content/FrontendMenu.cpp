@@ -417,15 +417,21 @@ void FrontendMenu::BuildMenuTree()
         for (int i = 10; i <= 100; i += 10)
             transVals.push_back(std::to_string(i));
         std::vector<std::string> diagVals = { "On", "Off" };
+        std::string favFolder = SettingsManager::GetOption("frontend_startup_folder", "");
+        std::string favDisplay = favFolder.empty() ? "(none)" : favFolder;
 
         m_generalItems = {
             { "VSync",               MenuAction::TOGGLE_VALUE, {}, vsyncVals, {}, findValDisplay("frontend_vsync", vsyncVals, "On"), true, "frontend_vsync" },
             { "Scaler",              MenuAction::TOGGLE_VALUE, {}, scalerVals, {}, findValDisplay("frontend_scaler", scalerVals, "Bilinear"), true, "frontend_scaler" },
             { "",                    MenuAction::NONE },
+            { "Startup Folder",      MenuAction::PICK_FOLDER, {}, {favDisplay}, {}, 0, true, "frontend_startup_folder" },
             { "Force Output FPS",    MenuAction::TOGGLE_VALUE, {}, fpsVals, fpsCore, findVal("dosbox_pure_force60fps", fpsCore, "false"), true, "dosbox_pure_force60fps" },
             { "Save States Support", MenuAction::TOGGLE_VALUE, {}, saveVals, saveCore, findVal("dosbox_pure_savestate", saveCore, "on"), false, "dosbox_pure_savestate" },
             { "Start Menu",          MenuAction::TOGGLE_VALUE, {}, menuVals, menuCore, findVal("dosbox_pure_menu_time", menuCore, "99"), true, "dosbox_pure_menu_time" },
             { "Debug Overlay",       MenuAction::TOGGLE_VALUE, {}, diagVals, {}, findValDisplay("frontend_diag", diagVals, "On"), true, "frontend_diag" },
+            { "",                    MenuAction::NONE },
+            { "Reload Settings",     MenuAction::RELOAD_SETTINGS },
+            { "Restart App",         MenuAction::RESTART_APP },
             { "",                    MenuAction::NONE },
             { "Reset to Defaults",   MenuAction::RESET_DEFAULTS },
             { "",                    MenuAction::NONE },
@@ -984,18 +990,26 @@ void FrontendMenu::DrawValueText(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite
     // Marquee: scroll selected items whose text overflows
     if (isSelected && naturalW > maxValW)
     {
+        // Reset marquee when selected item or value changes
+        int curVal = m_overlayItems ? (*m_overlayItems)[m_selected].currentValue : -1;
+        if (m_marqueeItemIdx != m_selected || m_marqueeValueIdx != curVal)
+        {
+            m_marqueeItemIdx = m_selected;
+            m_marqueeValueIdx = curVal;
+            m_marqueeStartTime = GetTickCount64();
+        }
+
         float overflow = naturalW - maxValW;
         float speed = 45.0f; // px/sec
         float pauseMs = 1500.0f;
         float scrollMs = (overflow / speed) * 1000.0f;
-        float cycleMs = pauseMs * 2.0f + scrollMs;
 
-        float t = (float)(GetTickCount64() % (ULONGLONG)cycleMs);
+        float elapsed = (float)(GetTickCount64() - m_marqueeStartTime);
         float offset = 0.0f;
-        if (t < pauseMs)
+        if (elapsed < pauseMs)
             offset = 0.0f;
-        else if (t < pauseMs + scrollMs)
-            offset = (t - pauseMs) * speed / 1000.0f;
+        else if (elapsed < pauseMs + scrollMs)
+            offset = (elapsed - pauseMs) * speed / 1000.0f;
         else
             offset = overflow;
 
@@ -1531,6 +1545,21 @@ void FrontendMenu::SaveCurrentSettings()
     spdlog::info("[FrontendMenu] Settings saved to disk + pushed to core");
 }
 
+void FrontendMenu::RefreshOverlayItems()
+{
+    BuildMenuTree();
+    if (m_overlayTitle == "General") m_overlayItems = &m_generalItems;
+    else if (m_overlayTitle == "Input") m_overlayItems = &m_inputItems;
+    else if (m_overlayTitle == "Performance") m_overlayItems = &m_performanceItems;
+    else if (m_overlayTitle == "Video") m_overlayItems = &m_videoItems;
+    else if (m_overlayTitle == "System") m_overlayItems = &m_systemItems;
+    else if (m_overlayTitle == "Audio") m_overlayItems = &m_audioItems;
+    m_selected = 0;
+    m_scrollOffset = 0;
+    spdlog::info("[FrontendMenu] RefreshOverlayItems: '{}' rebuilt ({} items)",
+        m_overlayTitle, m_overlayItems ? (int)m_overlayItems->size() : 0);
+}
+
 void FrontendMenu::ShowToast(const wchar_t* msg)
 {
     m_toastMsg = msg;
@@ -1581,6 +1610,7 @@ int FrontendMenu::HitTest(float sx, float sy)
         float listAvailable = itemAreaBottom - (titleY + TITLE_HEIGHT + 8.0f);
         int maxFit = (int)(listAvailable / ITEM_HEIGHT);
         if (maxFit < 1) maxFit = 1;
+        if (maxFit > (int)MAX_VISIBLE) maxFit = (int)MAX_VISIBLE;
         int visibleCount = min((int)items.size(), maxFit);
         int scroll = m_scrollOffset;
         if (scroll > (int)items.size() - visibleCount) scroll = max(0, (int)items.size() - visibleCount);
@@ -1633,6 +1663,7 @@ void FrontendMenu::HandlePointerMove(float sx, float sy)
         return;
     }
     if (m_aboutDialog.IsVisible()) return;
+    if (GetTickCount64() < m_wheelCooldownUntil) return;
     int idx = HitTest(sx, sy);
     if (idx >= 0) m_selected = idx;
 }
@@ -1683,16 +1714,17 @@ void FrontendMenu::HandlePointerWheel(int delta)
     // Scroll overlay items
     if (m_overlayActive && m_overlayItems)
     {
+        m_wheelCooldownUntil = GetTickCount64() + 300;
         auto& items = *m_overlayItems;
         if (delta < 0)
         {
             m_selected++;
-            if (m_selected >= (int)items.size()) m_selected = 0;
+            if (m_selected >= (int)items.size()) m_selected = (int)items.size() - 1;
         }
         else
         {
             m_selected--;
-            if (m_selected < 0) m_selected = (int)items.size() - 1;
+            if (m_selected < 0) m_selected = 0;
         }
         int visibleCount = (int)MAX_VISIBLE;
         if (m_selected < m_scrollOffset) m_scrollOffset = m_selected;
@@ -2063,6 +2095,50 @@ void FrontendMenu::OnConfirm()
                 m_selected = m_panelSavedSelected;
                 m_scrollOffset = m_panelSavedScrollOffset;
                 ShowToast(L"History cleared");
+            });
+            break;
+        }
+
+        case MenuAction::PICK_FOLDER:
+            spdlog::info("[FrontendMenu] PICK_FOLDER -> FileBrowser.OpenForFolderPick()");
+            m_fileBrowser.OpenForFolderPick();
+            break;
+
+        case MenuAction::RELOAD_SETTINGS:
+        {
+            spdlog::info("[FrontendMenu] RELOAD_SETTINGS -> confirm");
+            m_confirmDialog.Open("Reset all settings to defaults\nand reload?", ConfirmDialog::CONFIRM,
+                [this](bool confirmed)
+            {
+                if (!confirmed) return;
+                spdlog::info("[FrontendMenu] RELOAD_SETTINGS confirmed");
+                SettingsManager::ResetToDefaults();
+                SettingsManager::ForEachOption([](const char* key, const char* value) {
+                    if (strncmp(key, "frontend_", 9) != 0)
+                        RetroCore::SetOptionValue(key, value);
+                });
+                if (onOptionChanged)
+                {
+                    auto vsync = SettingsManager::GetOption("frontend_vsync", "Off");
+                    onOptionChanged("frontend_vsync", vsync.c_str());
+                    auto scaler = SettingsManager::GetOption("frontend_scaler", "Bilinear");
+                    onOptionChanged("frontend_scaler", scaler.c_str());
+                }
+                RefreshOverlayItems();
+                m_confirmDialog.Open("Settings reloaded to defaults.", ConfirmDialog::INFO);
+            });
+            break;
+        }
+
+        case MenuAction::RESTART_APP:
+        {
+            spdlog::info("[FrontendMenu] RESTART_APP -> confirm");
+            m_confirmDialog.Open("Exit now and re-launch?", ConfirmDialog::CONFIRM,
+                [this](bool confirmed)
+            {
+                if (!confirmed) return;
+                spdlog::info("[FrontendMenu] RESTART confirmed — exiting");
+                Windows::ApplicationModel::Core::CoreApplication::Exit();
             });
             break;
         }

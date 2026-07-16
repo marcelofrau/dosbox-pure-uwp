@@ -23,6 +23,7 @@
 #include <ppl.h>
 #include <ppltasks.h>
 #include <stdio.h>
+#include <windows.h>
 #include <wrl.h>
 #include <wrl/implements.h>
 #include <robuffer.h>
@@ -182,6 +183,9 @@ int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file* stream,
         return retro_vfs_file_read_smb(stream, s, len);
 #endif
 
+    LARGE_INTEGER _vfs_t0;
+    QueryPerformanceCounter(&_vfs_t0);
+
     if ((!stream->fp && stream->fh == INVALID_HANDLE_VALUE) || !s)
         return -1;
 
@@ -189,6 +193,22 @@ int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file* stream,
     {
         DWORD _bytes_read;
         ReadFile(stream->fh, (char*)s, len, &_bytes_read, NULL);
+        LARGE_INTEGER _vfs_t1;
+        QueryPerformanceCounter(&_vfs_t1);
+        double elapsedMs = (double)(_vfs_t1.QuadPart - _vfs_t0.QuadPart) * 1000.0 / 10000000.0; /* QPC default 10MHz on Xbox */
+        /* Actually use real QPC freq via QueryPerformanceFrequency... just use approximate: */
+        /* Re-read with proper freq */
+        static double _vfs_qpc_freq = 0.0;
+        if (_vfs_qpc_freq == 0.0) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); _vfs_qpc_freq = (double)f.QuadPart; }
+        elapsedMs = (double)(_vfs_t1.QuadPart - _vfs_t0.QuadPart) * 1000.0 / _vfs_qpc_freq;
+        if (elapsedMs > 10.0)
+        {
+            char _vbuf[384];
+            sprintf_s(_vbuf, "[VFS] read len=%llu -> %lu bytes took %.1fms path=%s\n",
+                (unsigned long long)len, _bytes_read, elapsedMs,
+                stream->orig_path ? stream->orig_path : "?");
+            OutputDebugStringA(_vbuf);
+        }
         return (int64_t)_bytes_read;
     }
 
@@ -396,9 +416,16 @@ libretro_vfs_implementation_file* retro_vfs_file_open_impl(
     }
 #endif
 
+    LARGE_INTEGER _vfs_open_t0;
+    QueryPerformanceCounter(&_vfs_open_t0);
     if ((file_handle = CreateFile2FromAppW(path_wstring.data(), desireAccess,
                 FILE_SHARE_READ, creationDisposition, NULL)) == INVALID_HANDLE_VALUE)
        goto error;
+
+    LARGE_INTEGER _vfs_open_t1;
+    QueryPerformanceCounter(&_vfs_open_t1);
+    { static double _qf = 0.0; if (_qf == 0.0) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); _qf = (double)f.QuadPart; } double ems = (double)(_vfs_open_t1.QuadPart - _vfs_open_t0.QuadPart) * 1000.0 / _qf;
+    if (ems > 10.0) { char _b[256]; sprintf_s(_b, "[VFS] OPEN took %.1fms path=%s\n", ems, path ? path : "?"); OutputDebugStringA(_b); } }
 
     stream->fh      = file_handle;
     if ((stream->fd = _open_osfhandle((uintptr_t)stream->fh, flags)) == -1)

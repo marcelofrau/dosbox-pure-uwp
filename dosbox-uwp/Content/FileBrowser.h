@@ -13,6 +13,7 @@ namespace dosbox_uwp
     {
         std::wstring name;
         bool isDir;
+        const wchar_t* prefixOverride = nullptr; // L"[SET]", L"[CLR]", L"[FAV]"
     };
 
     class FileBrowser
@@ -21,6 +22,7 @@ namespace dosbox_uwp
         FileBrowser();
 
         void Open();
+        void OpenForFolderPick();
         void Close();
         void ReleaseResources();
         bool IsVisible() const { return m_visible; }
@@ -39,6 +41,7 @@ namespace dosbox_uwp
         void HandlePointerWheel(int delta);
 
         std::function<void(const std::wstring&)> onFileSelected;
+        std::function<void(const std::wstring&)> onFolderSelected;
         std::function<void()> onBeep;
         ULONGLONG m_wheelIgnoreUntil = 0;
 
@@ -54,6 +57,7 @@ namespace dosbox_uwp
 
         bool m_visible = false;
         bool m_resourcesCreated = false;
+        bool m_folderPickMode = false;
 
         std::wstring m_currentPath;
         std::vector<FileEntry> m_entries;
@@ -81,6 +85,7 @@ namespace dosbox_uwp
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushFooter;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushBlack;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushDimPrefix;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushFavText;
 
         // Text formats
         Microsoft::WRL::ComPtr<IDWriteTextFormat> m_textFormatTitle;

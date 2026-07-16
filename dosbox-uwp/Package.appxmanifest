@@ -10,7 +10,7 @@
   <Identity
     Name="81ef2129-2f08-4d22-9816-050b2b62b308"
     Publisher="CN=Marcelo Frau"
-    Version="0.8.2.22" />
+    Version="0.9.3.91" />
 
   <mp:PhoneIdentity PhoneProductId="81ef2129-2f08-4d22-9816-050b2b62b308" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -22,7 +22,6 @@
 
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
-    <TargetDeviceFamily Name="Windows.Xbox" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>

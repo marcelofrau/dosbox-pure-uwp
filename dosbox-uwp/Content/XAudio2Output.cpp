@@ -424,6 +424,7 @@ void XAudio2Output::WaitForDrain()
     }
 }
 
+
 void XAudio2Output::Flush()
 {
     if (!m_initialized || !m_pSourceVoice)

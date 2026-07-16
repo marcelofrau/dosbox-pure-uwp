@@ -300,6 +300,7 @@ static const char* GetDefaultForOption(const char* key)
     // Frontend-only
     if (strcmp(key, "frontend_vsync") == 0) return "On";
     if (strcmp(key, "frontend_scaler") == 0) return "Bilinear";
+    if (strcmp(key, "frontend_startup_folder") == 0) return "";
     // General
     if (strcmp(key, "dosbox_pure_force60fps") == 0) return "false";
     if (strcmp(key, "dosbox_pure_savestate") == 0) return "on";

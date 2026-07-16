@@ -130,7 +130,7 @@ bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>
     OutputDebugStringA("[dosbox-uwp] retro_load_game call\n");
     if (!retro_load_game(&info))
     {
-        OutputDebugStringA("[dosbox-uwp] retro_load_game FAILED\n");
+        spdlog::error("[RetroCore] retro_load_game FAILED");
         return false;
     }
 

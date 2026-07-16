@@ -40,3 +40,16 @@ Set-Content -Path $manifestPath -Value $manifest -NoNewline
 Set-Content -Path $versionTxtPath -Value $fullVersion -NoNewline
 
 Write-Host "[version] $fullVersion (build $buildNum)"
+
+# Clean old AppPackages — keep only last 3 builds
+$appPackagesDir = Join-Path $solutionDir 'AppPackages' 'dosbox-uwp'
+if (Test-Path $appPackagesDir) {
+    Get-ChildItem $appPackagesDir -File | Remove-Item -Force
+    $dirs = Get-ChildItem $appPackagesDir -Directory | Sort-Object LastWriteTime -Descending
+    if ($dirs.Count -gt 3) {
+        $dirs | Select-Object -Skip 3 | ForEach-Object {
+            Write-Host "[version] Removing old package: $($_.Name)"
+            Remove-Item $_.FullName -Recurse -Force
+        }
+    }
+}

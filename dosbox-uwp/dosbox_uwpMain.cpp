@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 extern "C" bool g_dbp_osd_active;
 #include <windows.h>
+#include <fileapifromapp.h>
 #include <psapi.h>
 #include <SDL.h>
 
@@ -41,31 +42,21 @@ using namespace Windows::System::Profile;
 using namespace Windows::ApplicationModel::Core;
 using namespace Concurrency;
 
-// Copy a file to LocalFolder\temp\ via Win32 kernel copy (0 heap allocation).
-// Returns dest path on success, empty string on failure.
-static std::wstring CopyFileToTemp(const std::wstring& srcPath)
+// UWP-safe file existence + size check (replaces _wstat64 / _waccess which use CRT
+// Win32 APIs blocked by Xbox sandbox even with broadFileSystemAccess).
+static bool uwp_file_exists(const wchar_t* path, int64_t* outSize = nullptr)
 {
-    auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-    std::wstring tempDir = std::wstring(localFolder->Path->Data()) + L"\\temp";
-    CreateDirectoryFromAppW(tempDir.c_str(), nullptr);
-
-    auto slash = srcPath.find_last_of(L'\\');
-    std::wstring filename = (slash != std::wstring::npos) ? srcPath.substr(slash + 1) : srcPath;
-    std::wstring destPath = tempDir + L"\\" + filename;
-
-    std::string srcUtf8(srcPath.begin(), srcPath.end());
-    std::string destUtf8(destPath.begin(), destPath.end());
-
-    BOOL ok = CopyFileFromAppW(srcPath.c_str(), destPath.c_str(), FALSE);
-    if (!ok)
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExFromAppW(path, GetFileExInfoStandard, &fad))
+        return false;
+    if (outSize)
     {
-        spdlog::error("[CopyFileToTemp] CopyFileFromAppW failed '{}' -> '{}', error={}",
-            srcUtf8, destUtf8, GetLastError());
-        return {};
+        LARGE_INTEGER li;
+        li.HighPart = fad.nFileSizeHigh;
+        li.LowPart = fad.nFileSizeLow;
+        *outSize = li.QuadPart;
     }
-
-    spdlog::info("[CopyFileToTemp] '{}' -> '{}'", srcUtf8, destUtf8);
-    return destPath;
+    return true;
 }
 
 dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& deviceResources)
@@ -217,30 +208,22 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
 #endif
 
     // Wire FrontendMenu callbacks
-    m_menu.onOpenFile = [this]() { m_requestFilePicker = true; };
+    m_menu.onOpenFile = [this]() { m_menu.m_fileBrowser.Open(); };
     m_menu.m_fileBrowser.onFileSelected = [this](const std::wstring& path) {
-        spdlog::info("[FileBrowser] onFileSelected: '{}'", std::string(path.begin(), path.end()));
+        std::string pathUtf8(path.begin(), path.end());
+        int64_t fileSize = -1;
+        bool exists = uwp_file_exists(path.c_str(), &fileSize);
+        spdlog::info("[FileBrowser] onFileSelected: '{}' exists={} size={}",
+            pathUtf8, exists ? 1 : 0, exists ? fileSize : -1);
         m_menu.m_fileBrowser.Close();
         ActivateLoadingScreen();
-
-        // Copy to LocalFolder\temp\ — broadFileSystemAccess does NOT grant CreateFile2FromAppW
-        // read access to arbitrary paths. Only picker-selected paths (FutureAccessList) work.
-        std::wstring srcPath = path;
-        CleanupTempFile();
-        create_task([srcPath]() -> std::wstring
-        {
-            return CopyFileToTemp(srcPath);
-        }).then([this, srcPath](std::wstring tempPath)
-        {
-            if (tempPath.empty())
-            {
-                spdlog::error("[FileBrowser] Copy failed, re-opening picker");
-                m_loadingActive = false;
-                m_requestFilePicker = true;
-                return;
-            }
-            QueueLoadRom(tempPath, {}, srcPath);
-        });
+        QueueLoadRom(path, {}, path);
+    };
+    m_menu.m_fileBrowser.onFolderSelected = [this](const std::wstring& path) {
+        std::string pathUtf8(path.begin(), path.end());
+        spdlog::info("[StartupFolder] Set to: '{}'", pathUtf8.empty() ? "(cleared)" : pathUtf8);
+        SettingsManager::SetOption("frontend_startup_folder", pathUtf8.c_str());
+        m_menu.RefreshOverlayItems();
     };
     m_menu.onOpenPuremenu = [this]() {
         if (m_retroCore && m_retroCore->IsLoaded()) {
@@ -249,28 +232,13 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
         }
     };
     m_menu.onFileSelectedHistory = [this](const std::wstring& path) {
-        spdlog::info("[History] Loading '{}'", std::string(path.begin(), path.end()));
+        std::string pathUtf8(path.begin(), path.end());
+        int64_t fileSize = -1;
+        bool exists = uwp_file_exists(path.c_str(), &fileSize);
+        spdlog::info("[History] Loading '{}' exists={} size={}",
+            pathUtf8, exists ? 1 : 0, exists ? fileSize : -1);
         ActivateLoadingScreen();
-
-        // History stores original path (e.g. E:\Games\Doom\doom.exe).
-        // Must re-copy to temp — same reason as FileBrowser above.
-        std::wstring srcPath = path;
-        CleanupTempFile();
-        create_task([srcPath]() -> std::wstring
-        {
-            return CopyFileToTemp(srcPath);
-        }).then([this, srcPath](std::wstring tempPath)
-        {
-            if (tempPath.empty())
-            {
-                spdlog::error("[History] Copy failed from original path, file may be missing");
-                m_loadingActive = false;
-                m_menu.Show();
-                m_menu.RebuildItems();
-                return;
-            }
-            QueueLoadRom(tempPath, {}, srcPath);
-        });
+        QueueLoadRom(path, {}, path);
     };
     m_menu.onExit = []() {
         CoreApplication::Exit();
@@ -336,7 +304,6 @@ dosbox_uwpMain::~dosbox_uwpMain()
 #ifdef XB_INSPECTOR_ENABLED
     xb::Xray::stop();
 #endif
-    CleanupTempFile();
     m_retroCore->Shutdown();
     m_deviceResources->RegisterDeviceNotify(nullptr);
     // DoPacingSleep removed — visual frame rate (Present) handles timing; audio pacing via DRC
@@ -365,43 +332,49 @@ void dosbox_uwpMain::BootCore()
 
 void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
 {
+    int _len = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string pathUtf8(_len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &pathUtf8[0], _len, nullptr, nullptr);
+    std::string origUtf8;
+    if (!originalPath.empty() && originalPath != path) {
+        int olen = WideCharToMultiByte(CP_UTF8, 0, originalPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        origUtf8.resize(olen - 1);
+        WideCharToMultiByte(CP_UTF8, 0, originalPath.c_str(), -1, &origUtf8[0], olen, nullptr, nullptr);
+    }
+    bool pathExists = uwp_file_exists(path.c_str());
+    if (!pathExists)
+        spdlog::error("[LoadRom] path='{}' data={} bytes original='{}' PATH DOES NOT EXIST",
+            pathUtf8, romData.size(), origUtf8.empty() ? "(same)" : origUtf8);
+    else
+        spdlog::info("[LoadRom] path='{}' data={} bytes original='{}'",
+            pathUtf8, romData.size(), origUtf8.empty() ? "(same)" : origUtf8);
+
     if (!m_retroCore->IsInitialized())
     {
         if (!m_retroCore->Init())
         {
-            OutputDebugStringA("[dosbox-uwp] retro_init FAILED\n");
+            spdlog::error("[LoadRom] retro_init FAILED");
             return;
         }
     }
     else
     {
-        OutputDebugStringA("[dosbox-uwp] LoadRom: core already initialized, skipping retro_init\n");
+        spdlog::info("[LoadRom] core already initialized, skipping retro_init");
     }
 
-    {
-        char buf[512];
-        int len = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        std::string pathUtf8(len - 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
-        sprintf_s(buf, "[dosbox-uwp] LoadRom path=%s data=%zu\n", pathUtf8.c_str(), romData.size());
-        OutputDebugStringA(buf);
-
-        // Extract filename for xray binding
-        auto slash = pathUtf8.find_last_of("/\\");
-        std::string fname = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
+    // Extract filename for xray binding
+    auto slash = pathUtf8.find_last_of("/\\");
+    std::string fname = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
 #ifdef XB_INSPECTOR_ENABLED
-        strncpy_s(s_rom_name, fname.c_str(), sizeof(s_rom_name) - 1);
-        s_rom_name[sizeof(s_rom_name) - 1] = '\0';
-        strncpy_s(s_perf.rom_name, fname.c_str(), sizeof(s_perf.rom_name) - 1);
-        s_perf.rom_name[sizeof(s_perf.rom_name) - 1] = '\0';
+    strncpy_s(s_rom_name, fname.c_str(), sizeof(s_rom_name) - 1);
+    s_rom_name[sizeof(s_rom_name) - 1] = '\0';
+    strncpy_s(s_perf.rom_name, fname.c_str(), sizeof(s_perf.rom_name) - 1);
+    s_perf.rom_name[sizeof(s_perf.rom_name) - 1] = '\0';
 #endif
-    }
-
-    m_currentTempPath = path;
 
     if (m_retroCore->LoadGame(path, romData))
     {
-        OutputDebugStringA("[dosbox-uwp] Game loaded OK\n");
+        spdlog::info("[LoadRom] Game loaded OK");
         m_retroRunning = true;
         m_clearColor = DirectX::Colors::Black;
         m_menu.Hide();
@@ -429,7 +402,7 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     }
     else
     {
-        OutputDebugStringA("[dosbox-uwp] retro_load_game FAILED\n");
+        spdlog::error("[LoadRom] retro_load_game FAILED");
     }
 }
 
@@ -439,22 +412,6 @@ void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t>
     m_pendingLoad->path = path;
     m_pendingLoad->originalPath = originalPath;
     m_pendingLoad->data = std::move(romData);
-}
-
-void dosbox_uwpMain::CleanupTempFile()
-{
-    if (m_currentTempPath.empty())
-        return;
-
-    char buf[256];
-    int len = WideCharToMultiByte(CP_UTF8, 0, m_currentTempPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string pathUtf8(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, m_currentTempPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
-    sprintf_s(buf, "[dosbox-uwp] Cleanup temp: %s\n", pathUtf8.c_str());
-    OutputDebugStringA(buf);
-
-    _wremove(m_currentTempPath.c_str());
-    m_currentTempPath.clear();
 }
 
 void dosbox_uwpMain::CreateWindowSizeDependentResources()
@@ -761,6 +718,19 @@ void dosbox_uwpMain::Update()
             int preRuns = maxRetroRuns;
             while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
             {
+                // v0.9.0: Tick budget — if we've already spent too much time
+                // in this tick's retro_run loop, break to let Present run.
+                // This prevents a single SLOW FRAME (e.g. D3D11 texture
+                // recreation taking 280ms) from starving audio and triggering
+                // underrun→stall death spiral.
+                {
+                    LARGE_INTEGER _now;
+                    QueryPerformanceCounter(&_now);
+                    double tickElapsedMs = (double)(_now.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
+                    if (tickElapsedMs > 25.0)
+                        break;
+                }
+
                 // v0.8.3.1: Prevent queue overshoot → FLUSH → crackle.
                 // During catch-up after I/O stall, 5 runs × 685 frames = 3425/tick
                 // but XAudio2 only consumes ~800/tick. Without guard, queue explodes
@@ -789,6 +759,28 @@ void dosbox_uwpMain::Update()
             }
             int runs = preRuns - maxRetroRuns;
             m_lastRetroRuns = runs;
+
+            // Audio backpressure: if queue is empty and nothing was produced,
+            // force at least one retro_run to fill the buffer. If still empty
+            // after that, block and wait (like RetroArch's WaitForSingleObject
+            // in xa_write). This prevents underrun→stall→recovery death spiral.
+            if (m_xaudio2 && runs == 0 && m_xaudio2->GetQueuedFrames() == 0 && m_audioTimeAccumulator > 0.0)
+            {
+                spdlog::warn("[dosbox-uwp] BACKPRESSURE: queue=0 forcing 1 retro_run");
+                LARGE_INTEGER _s0, _s1;
+                QueryPerformanceCounter(&_s0);
+                m_retroCore->RunFrame();
+                QueryPerformanceCounter(&_s1);
+                double sMs = (double)(_s1.QuadPart - _s0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+                m_audioTimeAccumulator -= 1.0;
+                runs = 1;
+                m_lastRetroRuns = 1;
+                if (sMs > 50.0)
+                    spdlog::warn("[dosbox-uwp] BACKPRESSURE force frame took {:.1f}ms", sMs);
+                // After forcing one frame, let the main loop continue to Present.
+                // XAudio2 will consume this new audio and the next Tick will
+                // find a non-empty queue.
+            }
 
             // Accumulate runs for DIAG interval reporting
             s_diagRunsAccum += runs;
@@ -964,7 +956,7 @@ void dosbox_uwpMain::Update()
         s_debug_poll_ms = (double)(_t0.QuadPart) * 1000.0 / _freq.QuadPart;
         s_debug_hud_ms = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
         s_debug_render_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
-        s_debug_total_ms = (double)(_t3.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_debug_total_ms = (double)(_t3.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
         s_perf.poll_ms = s_debug_poll_ms;
         s_perf.hud_ms = s_debug_hud_ms;
         s_perf.render_ms = s_debug_render_ms;
@@ -972,21 +964,31 @@ void dosbox_uwpMain::Update()
 #endif
         {
             static unsigned _tc = 0;
-            if ((++_tc % 6000) == 0)
+            _tc++;
+            // Micro-skip detection: log any individual tick where total exceeds 40ms
+            // (~3 frame periods at 70fps). Catches the 50ms skip every ~10s on Xbox.
+            double tickMs = (double)(_t3.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
+            double frameMs = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
+            double hudMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+            double sceneMs = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
+            if (tickMs > 20.0 && m_lastRetroRuns > 0 && !m_menu.IsVisible())
             {
-                double poll_ms  = (double)(_t0.QuadPart) * 1000.0 / _freq.QuadPart;
-                double frame_ms = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-                double hud_ms   = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
-                double scene_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
-                double total_ms = (double)(_t3.QuadPart) * 1000.0 / _freq.QuadPart;
+                int qf2 = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+                spdlog::warn("[SKIP] tick={} total={:.1f}ms frame={:.1f} hud={:.1f} scene={:.1f} "
+                    "runs={} q={}",
+                    _tc, tickMs, frameMs, hudMs, sceneMs, m_lastRetroRuns, qf2);
+            }
+            if ((_tc % 6000) == 0)
+            {
+                double total_ms = tickMs;
                 float fps       = m_timer.GetFramesPerSecond();
                 unsigned long long memBytes = 0;
                 try { memBytes = Windows::System::MemoryManager::AppMemoryUsage; } catch (...) { }
                 char _dbg[512];
                 sprintf_s(_dbg, "[dosbox-uwp] TICK #%u: frame=%.1fms hud=%.1f scene=%.1f fps=%.0f "
                     "MEM=%lluMB total=%.1f\n",
-                    _tc, frame_ms, hud_ms, scene_ms, fps,
-                    memBytes / (1024*1024), total_ms);
+                    _tc, frameMs, hudMs, sceneMs, fps,
+                    memBytes / (1024 * 1024), total_ms);
                 OutputDebugStringA(_dbg);
             }
         }
@@ -1594,6 +1596,11 @@ void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory
         float titleBarW = panelW - 32.0f;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> titleLayout;
         dwrite->CreateTextLayout(L"LOADING", 7, titleFmt.Get(), titleBarW, TITLE_H, &titleLayout);
+        if (titleLayout && m_menu.GetFontCollection())
+        {
+            DWRITE_TEXT_RANGE r = { 0, 7 };
+            titleLayout->SetFontCollection(m_menu.GetFontCollection(), r);
+        }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> titleTextBrush;
         d2d->CreateSolidColorBrush(D2D1::ColorF(theme.text_title), &titleTextBrush);
         if (titleLayout && titleTextBrush)
@@ -1649,6 +1656,11 @@ void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory
         Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
         dwrite->CreateTextLayout(loadingText, (UINT32)wcslen(loadingText), textFmt.Get(),
             fixedTextW, 30.0f, &textLayout);
+        if (textLayout && m_menu.GetFontCollection())
+        {
+            DWRITE_TEXT_RANGE r = { 0, (UINT32)wcslen(loadingText) };
+            textLayout->SetFontCollection(m_menu.GetFontCollection(), r);
+        }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
         d2d->CreateSolidColorBrush(D2D1::ColorF(0xcccccc), &textBrush);
         if (textLayout && textBrush)
