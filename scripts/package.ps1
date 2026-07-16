@@ -6,11 +6,6 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 
-# Read version from version.txt
-$versionFile = Join-Path $root 'version.txt'
-if (-not (Test-Path $versionFile)) { Write-Error "version.txt not found"; exit 1 }
-$version = (Get-Content $versionFile -Raw).Trim()
-
 # ensure signing certificate
 $pfx = Join-Path $root 'certs\dosbox-uwp.pfx'
 $cerPath = Join-Path $root 'certs\dosbox-uwp.cer'
@@ -29,26 +24,45 @@ if (-not (Test-Path $pfx)) {
     Write-Host "  IMPORTANT: Update PackageCertificateThumbprint in .vcxproj to $($cert.Thumbprint)" -ForegroundColor Yellow
 }
 
-# build
+# build (PreBuildEvent increments version)
 if (-not $SkipBuild) {
     & "$PSScriptRoot\build.ps1" -Configuration $Configuration -Platform $Platform
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+# Read version AFTER build (PreBuildEvent wrote it)
+$versionFile = Join-Path $root 'version.txt'
+if (-not (Test-Path $versionFile)) { Write-Error "version.txt not found"; exit 1 }
+$version = (Get-Content $versionFile -Raw).Trim()
+
 # locate msix
 $pkgRoot = Join-Path $root "AppPackages\dosbox-uwp"
+$msix = $null
+$pkgDir = $null
+
 $msixDirs = @(
     "dosbox-uwp_${version}_${Platform}_${Configuration}_Test",
     "dosbox-uwp_${version}_${Platform}_Test",
     "dosbox-uwp_${version}_${Platform}_${Configuration}"
 )
-$msix = $null
 foreach ($d in $msixDirs) {
     $candidate = Join-Path $pkgRoot "$d\dosbox-uwp_${version}_${Platform}.msix"
     if (Test-Path $candidate) { $msix = $candidate; $pkgDir = Join-Path $pkgRoot $d; break }
     $candidate2 = Join-Path $pkgRoot "$d\dosbox-uwp_${version}_${Platform}_${Configuration}.msix"
     if (Test-Path $candidate2) { $msix = $candidate2; $pkgDir = Join-Path $pkgRoot $d; break }
 }
+
+# Fallback: glob for any recent MSIX package dir
+if (-not $msix) {
+    $found = Get-ChildItem $pkgRoot -Directory -Filter "dosbox-uwp_*_${Platform}_*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($found) {
+        $f = Get-ChildItem $found.FullName -Filter "*.msix" | Select-Object -First 1
+        if ($f) { $msix = $f.FullName; $pkgDir = $found.FullName }
+    }
+}
+
+# Final fallback: x64 output layout
 if (-not $msix) {
     $layoutDir = Join-Path $root "x64\$Configuration\dosbox-uwp"
     $candidate = Join-Path $layoutDir "dosbox-uwp.msix"

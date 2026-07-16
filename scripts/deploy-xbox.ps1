@@ -28,7 +28,7 @@ $base64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${xboxUser}
 $headers = @{ Authorization = "Basic $base64" }
 $baseUri = "https://${xboxIp}:11443"
 
-# ── Build ──
+# ── Build (PreBuildEvent increments version) ──
 $root = Split-Path -Parent $PSScriptRoot
 $sln = Join-Path $root 'dosbox-pure-unleashed-uwp.sln'
 $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
@@ -39,11 +39,25 @@ Write-Host "=== Build $Configuration|x64 ===" -ForegroundColor Cyan
 & $msbuild $sln /p:Configuration=$Configuration /p:Platform=$Platform /nowarn:MSB4011 /nologo
 if ($LASTEXITCODE -ne 0) { Write-Error "Build failed"; exit 1 }
 
+# ── Read version AFTER build ──
+$version = (Get-Content $versionFile -Raw).Trim()
+
 # ── Locate MSIX ──
 $configSuffix = if ($Configuration -eq 'Debug') { '_Debug' } else { '' }
 $pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_${version}_${Platform}${configSuffix}_Test"
 $msix = Join-Path $pkgDir "dosbox-uwp_${version}_${Platform}${configSuffix}.msix"
-if (!(Test-Path $msix)) { Write-Error "MSIX not found: $msix"; exit 1 }
+
+# Fallback: glob
+if (!(Test-Path $msix)) {
+    $found = Get-ChildItem (Join-Path $root "AppPackages\dosbox-uwp") -Directory -Filter "dosbox-uwp_*_${Platform}_*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($found) {
+        $f = Get-ChildItem $found.FullName -Filter "*.msix" | Select-Object -First 1
+        if ($f) { $msix = $f.FullName; $pkgDir = $found.FullName }
+    }
+}
+
+if (!(Test-Path $msix)) { Write-Error "MSIX not found after build"; exit 1 }
 Write-Host "MSIX: $msix" -ForegroundColor Cyan
 
 # ── Upload via WDP REST API ──

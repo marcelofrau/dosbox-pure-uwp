@@ -13,9 +13,25 @@ $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
 Write-Host '=== Build ===' -ForegroundColor Cyan
 & $msbuild $sln /p:Configuration=$Configuration /p:Platform=$Platform /nowarn:MSB4011
 
+# Read version AFTER build
+$versionFile = Join-Path $root 'version.txt'
+$version = (Get-Content $versionFile -Raw).Trim()
+
 $configSuffix = if ($Configuration -eq 'Debug') { '_Debug' } else { '' }
-$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_1.0.0.0_${Platform}${configSuffix}_Test"
-$msix = Join-Path $pkgDir "dosbox-uwp_1.0.0.0_${Platform}${configSuffix}.msix"
+$pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_${version}_${Platform}${configSuffix}_Test"
+$msix = Join-Path $pkgDir "dosbox-uwp_${version}_${Platform}${configSuffix}.msix"
+
+# Fallback: glob
+if (!(Test-Path $msix)) {
+    $found = Get-ChildItem (Join-Path $root "AppPackages\dosbox-uwp") -Directory -Filter "dosbox-uwp_*_${Platform}_*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($found) {
+        $f = Get-ChildItem $found.FullName -Filter "*.msix" | Select-Object -First 1
+        if ($f) { $msix = $f.FullName; $pkgDir = $found.FullName }
+    }
+}
+
+if (!(Test-Path $msix)) { Write-Error "MSIX not found after build"; exit 1 }
 
 $extractDir = Join-Path $env:TEMP "dosbox-uwp-${Configuration}"
 if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force; Start-Sleep -Milliseconds 200 }

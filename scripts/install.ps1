@@ -16,6 +16,23 @@ $pkgDir = Join-Path $root "AppPackages\dosbox-uwp\dosbox-uwp_${version}_${Platfo
 $msix = Join-Path $pkgDir "dosbox-uwp_${version}_${Platform}_${Configuration}.msix"
 $extractDir = Join-Path $pkgDir "extracted"
 
+# Fallback: glob for any recent MSIX
+if (-not (Test-Path $msix)) {
+    $pkgRoot = Join-Path $root "AppPackages\dosbox-uwp"
+    $found = Get-ChildItem $pkgRoot -Directory -Filter "dosbox-uwp_*_${Platform}_*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($found) {
+        $f = Get-ChildItem $found.FullName -Filter "*.msix" | Select-Object -First 1
+        if ($f) {
+            $msix = $f.FullName
+            $pkgDir = $found.FullName
+            $extractDir = Join-Path $pkgDir "extracted"
+            # Extract version from filename
+            if ($f.Name -match 'dosbox-uwp_(\d+\.\d+\.\d+\.\d+)_') { $version = $Matches[1] }
+        }
+    }
+}
+
 if (-not (Test-Path $msix)) {
     Write-Error "Package not found at $msix. Build first."
     exit 1
