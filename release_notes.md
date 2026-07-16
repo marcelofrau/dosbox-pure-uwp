@@ -1,4 +1,4 @@
-## 🎮 DOSBox Pure UWP 0.9.5.135
+## 🎮 DOSBox Pure UWP 0.9.5.136
 
 Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cycle clamping, frame limiter, and full XAudio2 pipeline rewrite.
 
@@ -51,7 +51,7 @@ Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cyc
 
 ### 📦 Installation
 
-1. Download `dosbox-uwp_0.9.5.135_x64.zip`
+1. Download `dosbox-uwp_0.9.5.136_x64.zip`
 2. Extract to a folder on your Xbox/PC
 3. Run `Install.ps1` (installs cert + dependencies + app)
 4. Launch from Start Menu or Xbox Dev Mode
@@ -68,4 +68,4 @@ Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cyc
 
 ---
 
-**Full Changelog**: https://github.com/marcelofrau/dosbox-pure-uwp/compare/v0.8.2.0...v0.9.5.135
+**Full Changelog**: https://github.com/marcelofrau/dosbox-pure-uwp/compare/v0.8.2.0...v0.9.5.136
