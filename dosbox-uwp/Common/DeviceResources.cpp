@@ -317,6 +317,28 @@ void DX::DeviceResources::CreateWindowSizeDependentResources()
 			swapChain.As(&m_swapChain)
 			);
 
+		// Query display refresh rate from DXGI for auto-cycle pacing.
+		{
+			ComPtr<IDXGIOutput> dxgiOutput;
+			if (SUCCEEDED(m_swapChain->GetContainingOutput(&dxgiOutput)))
+			{
+				DXGI_OUTPUT_DESC outputDesc;
+				if (SUCCEEDED(dxgiOutput->GetDesc(&outputDesc)))
+				{
+					// Get the current display mode to extract refresh rate
+					DXGI_MODE_DESC mode = {};
+					mode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+					mode.Width = lround(m_d3dRenderTargetSize.Width);
+					mode.Height = lround(m_d3dRenderTargetSize.Height);
+					DXGI_MODE_DESC closest = {};
+					if (SUCCEEDED(dxgiOutput->FindClosestMatchingMode(&mode, &closest, nullptr)) && closest.RefreshRate.Numerator > 0)
+					{
+						m_displayRefreshRate = (float)closest.RefreshRate.Numerator / (float)closest.RefreshRate.Denominator;
+					}
+				}
+			}
+		}
+
 		// Ensure that DXGI does not queue more than one frame at a time. This both reduces latency and
 		// ensures that the application will only render after each VSync, minimizing power consumption.
 		DX::ThrowIfFailed(

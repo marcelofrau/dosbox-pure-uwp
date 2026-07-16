@@ -37,6 +37,9 @@ namespace dosbox_uwp
         double GetTargetFps() const { return s_targetFps; }
 
         static bool IsShutdownRequested() { return s_shutdownRequested; }
+        static bool s_vsyncEnabled;
+        static float s_displayRefreshRate;
+        static int GetCyclesMax();
 
         static void SetKeyState(unsigned key, bool down);
         static void SetJoypadButton(unsigned id, bool held);

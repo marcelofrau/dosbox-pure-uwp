@@ -31,8 +31,12 @@ IFrameworkView^ Direct3DApplicationSource::CreateView()
 
 App::App() :
 	m_windowClosed(false),
-	m_windowVisible(true)
+	m_windowVisible(true),
+	m_perfFrequency{},
+	m_lastFrameTime{},
+	m_targetFrameMs(0.0)
 {
+	QueryPerformanceFrequency(&m_perfFrequency);
 }
 
 // The first method called when the IFrameworkView is being created.
@@ -143,8 +147,36 @@ void App::Run()
 
 			if (m_main->Render())
 			{
-				// Present(0,0): no vsync blocking. SDL2 audio callback drives timing.
-				m_deviceResources->Present(0, 0);
+				m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
+
+				// Software frame limiter: when 60/70Hz is set, Present(0,0) is non-blocking.
+				// Sleep+spin to target the right frame period. Vsync OFF = syncInterval 0.
+				int flFps = m_main->GetFrameLimitFps();
+				if (flFps > 0 && m_deviceResources->GetSyncInterval() == 0)
+				{
+					LARGE_INTEGER now;
+					QueryPerformanceCounter(&now);
+					double elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
+					double targetSec = 1.0 / (double)flFps;
+					double remaining = targetSec - elapsed;
+					if (remaining > 0.001)
+					{
+						// Sleep for most of the remaining time (leave 2ms for spin)
+						DWORD sleepMs = (DWORD)((remaining - 0.002) * 1000.0);
+						if (sleepMs > 0) Sleep(sleepMs);
+						// Spin for the last ~2ms for precision
+						QueryPerformanceCounter(&now);
+						elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
+						while (elapsed < targetSec)
+						{
+							Sleep(0);
+							QueryPerformanceCounter(&now);
+							elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
+						}
+					}
+				}
+				m_lastFrameTime = {};
+				QueryPerformanceCounter(&m_lastFrameTime);
 			}
 			else if (m_main->GetLastRetroRuns() == 0)
 			{

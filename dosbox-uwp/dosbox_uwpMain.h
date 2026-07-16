@@ -49,6 +49,7 @@ namespace dosbox_uwp
         bool IsLoaded() const { return m_retroCore && m_retroCore->IsLoaded(); }
         int GetLastRetroRuns() const { return m_lastRetroRuns; }
         double GetTargetFps() const { return m_retroCore ? m_retroCore->GetTargetFps() : 60.0; }
+        int GetFrameLimitFps() const { return m_frameLimitFps; }
         void ActivateLoadingScreen() {
             m_loadState = LOAD_BOOTING;
             m_loadingActive = true;
@@ -144,6 +145,9 @@ namespace dosbox_uwp
         int m_lastRetroRuns = 0;
         double m_audioTimeAccumulator = 0.0;
         double m_audioLastTick = 0.0;
+
+        // Software frame limiter (0=off, 60=60Hz, 70=70Hz)
+        int m_frameLimitFps = 0;
 
 #ifdef MOUSE_SUPPORT
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_cursorBrush;

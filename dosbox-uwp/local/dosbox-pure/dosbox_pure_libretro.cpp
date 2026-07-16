@@ -248,7 +248,7 @@ static Bit32u dbp_wait_pause, dbp_wait_finish, dbp_wait_paused, dbp_wait_continu
 #endif
 
 // PERF FPS COUNTERS
-//#define DBP_ENABLE_FPS_COUNTERS
+#define DBP_ENABLE_FPS_COUNTERS
 #ifdef DBP_ENABLE_FPS_COUNTERS
 static Bit32u dbp_lastfpstick, dbp_fpscount_retro, dbp_fpscount_gfxstart, dbp_fpscount_gfxend, dbp_fpscount_event, dbp_fpscount_skip_run, dbp_fpscount_skip_render;
 #define DBP_FPSCOUNT(DBP_FPSCOUNT_VARNAME) DBP_FPSCOUNT_VARNAME++;
@@ -1680,6 +1680,7 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 		retro_time_t TimeLast, TimeSleepUntil;
 		double LastModeHash;
 		Bit32u LastFrameCount, FrameTicks, HistoryCycles[HISTORY_SIZE], HistoryEmulator[HISTORY_SIZE], HistoryFrame[HISTORY_SIZE], HistoryCursor;
+		Bit32u LastCycleMax;
 	} St;
 
 	St.FrameTicks++;
@@ -1789,7 +1790,7 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 			ratio = frameTime * 1024 / recentEmulator;
 			ratio = (Bit32s)((double)ratio * ratio_not_removed);
 
-			// Don't allow very high ratio which can cause us to lock as we don't scale down
+		// Don't allow very high ratio which can cause us to lock as we don't scale down
 			// for very low ratios. High ratio might result because of timing resolution
 			if (ratio > 16384)
 				ratio = 16384;
@@ -1816,6 +1817,21 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 				CPU_CycleMax = 1 + (Bit32s)(CPU_CycleMax * r);
 			}
 
+			// Clamp: ±30% per evaluation step to prevent oscillation.
+			// Without this, auto-cycle can jump 22k↔660k in a single step.
+			{
+				Bit32u oldCmax = St.LastCycleMax;
+				if (oldCmax > 0)
+				{
+					Bit32u lo = (Bit32u)(oldCmax * 0.7);
+					Bit32u hi = (Bit32u)(oldCmax * 1.3);
+					if (hi < lo) hi = 0xFFFFFFFFu; // overflow guard
+					if (CPU_CycleMax < (Bit32s)lo) CPU_CycleMax = lo;
+					if (CPU_CycleMax > (Bit32s)hi) CPU_CycleMax = hi;
+				}
+				St.LastCycleMax = CPU_CycleMax;
+			}
+
 			Bit32s limit = 4000000;
 			if (CPU_CycleLimit > 0) limit = CPU_CycleLimit;
 			else if (!cpu.pmode && dbp_content_year >= 1995) limit = DBP_CyclesForYear(dbp_content_year, 1996); // enforce max from DBP_SetRealModeCycles
@@ -1824,9 +1840,9 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 			if (CPU_CycleMax < (cpu.pmode ? 10000 : 1000)) CPU_CycleMax = (cpu.pmode ? 10000 : 1000);
 		}
 
-		//log_cb(RETRO_LOG_INFO, "[DBPTIMERS%4d] - EMU: %5d - FE: %5d - TARGET: %5d - EffectiveCycles: %6d - Limit: %6d|%6d - CycleMax: %6d - Scale: %5d\n",
-		//	St.HistoryCursor, (int)recentEmulator, (int)((recentFrameSum / recentCount) - recentEmulator), frameTime, 
-		//	recentCyclesSum / recentCount, (cpu.pmode ? 10000 : 1000), recentEmulator * 280, CPU_CycleMax, ratio);
+		log_cb(RETRO_LOG_INFO, "[DBPTIMERS%4d] - EMU: %5d - FE: %5d - TARGET: %5d - EffectiveCycles: %6d - Limit: %6d|%6d - CycleMax: %6d - Scale: %5d\n",
+			St.HistoryCursor, (int)recentEmulator, (int)((recentFrameSum / recentCount) - recentEmulator), frameTime, 
+			recentCyclesSum / recentCount, (cpu.pmode ? 10000 : 1000), recentEmulator * 280, CPU_CycleMax, ratio);
 	}
 	goto return_true;
 }
@@ -2536,6 +2552,32 @@ static bool check_variables()
 
 	dbp_alphablend_base = (Bit8u)((atoi(DBP_Option::Get(DBP_Option::menu_transparency)) + 30) * 0xFF / 130);
 	dbp_joy_analog_deadzone = (int)((float)atoi(DBP_Option::Get(DBP_Option::joystick_analog_deadzone)) * 0.01f * (float)DBP_JOY_ANALOG_RANGE);
+
+	// Config dump: log key settings once after first full apply
+	{
+		static bool s_dumped = false;
+		if (!s_dumped && dbp_state != DBPSTATE_BOOT)
+		{
+			s_dumped = true;
+			log_cb(RETRO_LOG_INFO,
+				"[CONFIG] machine=%s mem=%s core=%s cputype=%s\n"
+				"[CONFIG] cycles=%s cycledown=%s cyclescale=%s cyclelimit=%s\n"
+				"[CONFIG] sblaster=%s oplrate=%d aspect=%s\n"
+				"[CONFIG] savestate=%s\n",
+				DBP_Option::Get(DBP_Option::machine),
+				DBP_Option::Get(DBP_Option::memory_size),
+				DBP_Option::Get(DBP_Option::cpu_core),
+				DBP_Option::Get(DBP_Option::cpu_type),
+				DBP_Option::Get(DBP_Option::cycles),
+				DBP_Option::Get(DBP_Option::cycles_max),
+				DBP_Option::Get(DBP_Option::cycles_scale),
+				DBP_Option::Get(DBP_Option::cycle_limit),
+				DBP_Option::Get(DBP_Option::sblaster_conf),
+				audiorate,
+				DBP_Option::Get(DBP_Option::aspect_correction),
+				DBP_Option::Get(DBP_Option::savestate));
+		}
+	}
 
 	return visibility_changed;
 }
@@ -4120,4 +4162,9 @@ unsigned DBP_Build_GL_Program(int vertex_shader_srcs_count, const char** vertex_
 		prog = 0;
 	}
 	return prog;
+}
+
+extern "C" int DBPS_GetCyclesMax()
+{
+	return (int)CPU_CycleMax;
 }

@@ -103,5 +103,11 @@ namespace DX
 
 		// VSync: 1 = enabled (sync to vblank), 0 = disabled (immediate present)
 		int m_syncInterval = 1;
+
+		// Display refresh rate (60/120/144 Hz) queried from DXGI at swap chain creation.
+		float m_displayRefreshRate = 60.0f;
+
+	public:
+		float GetDisplayRefreshRate() const { return m_displayRefreshRate; }
 	};
 }

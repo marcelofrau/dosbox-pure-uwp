@@ -406,6 +406,8 @@ void FrontendMenu::BuildMenuTree()
     // === General ===
     {
         std::vector<std::string> vsyncVals = { "Off", "On" };
+        std::vector<std::string> limiterVals = { "Off", "60 Hz", "70 Hz" };
+        std::vector<std::string> limiterCore = { "off", "60", "70" };
         std::vector<std::string> scalerVals = { "Nearest", "Bilinear" };
         std::vector<std::string> fpsVals = { "Off", "On (10 FPS)", "On (15 FPS)", "On (20 FPS)", "On (30 FPS)", "On (35 FPS)", "On (50 FPS)", "On (60 FPS)", "On (70 FPS)", "On (90 FPS)", "On (120 FPS)", "On (144 FPS)", "On (240 FPS)", "On (360 FPS)" };
         std::vector<std::string> fpsCore = { "false", "10", "15", "20", "30", "35", "50", "true", "70", "90", "120", "144", "240", "360" };
@@ -421,7 +423,8 @@ void FrontendMenu::BuildMenuTree()
         std::string favDisplay = favFolder.empty() ? "(none)" : favFolder;
 
         m_generalItems = {
-            { "VSync",               MenuAction::TOGGLE_VALUE, {}, vsyncVals, {}, findValDisplay("frontend_vsync", vsyncVals, "On"), true, "frontend_vsync" },
+            { "VSync",               MenuAction::TOGGLE_VALUE, {}, vsyncVals, {}, findValDisplay("frontend_vsync", vsyncVals, "Off"), true, "frontend_vsync" },
+            { "Frame Limiter",       MenuAction::TOGGLE_VALUE, {}, limiterVals, {}, findValDisplay("frontend_framelimit", limiterVals, "Off"), true, "frontend_framelimit" },
             { "Scaler",              MenuAction::TOGGLE_VALUE, {}, scalerVals, {}, findValDisplay("frontend_scaler", scalerVals, "Bilinear"), true, "frontend_scaler" },
             { "",                    MenuAction::NONE },
             { "Startup Folder",      MenuAction::PICK_FOLDER, {}, {favDisplay}, {}, 0, true, "frontend_startup_folder" },
@@ -1188,26 +1191,14 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
         d2d->DrawBitmap(m_dosboxLogo.Get(), dbRect, 1.0f);
     }
 
-    // Version bottom-right (replaced by toast when active)
+    // Version bottom-right
     {
-        const wchar_t* footerText = m_versionStr.c_str();
-        size_t footerLen = m_versionStr.size();
-        std::wstring toastBuf;
-        if (m_toastTick != 0 && (GetTickCount64() - m_toastTick) < TOAST_DURATION_MS)
-        {
-            footerText = m_toastMsg.c_str();
-            footerLen = m_toastMsg.size();
-        }
-        else
-        {
-            m_toastTick = 0;
-        }
         ComPtr<IDWriteTextLayout> verLayout;
-        dwrite->CreateTextLayout(footerText, (UINT32)footerLen, m_textFormatFooter.Get(),
+        dwrite->CreateTextLayout(m_versionStr.c_str(), (UINT32)m_versionStr.size(), m_textFormatFooter.Get(),
             300.0f, FOOTER_HEIGHT, &verLayout);
         if (verLayout && m_fontCollection)
         {
-            DWRITE_TEXT_RANGE fr = { 0, (UINT32)footerLen };
+            DWRITE_TEXT_RANGE fr = { 0, (UINT32)m_versionStr.size() };
             verLayout->SetFontCollection(m_fontCollection.Get(), fr);
         }
         if (verLayout)
@@ -1519,6 +1510,39 @@ void FrontendMenu::RenderFullScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
 
     // Confirm dialog (drawn on top of everything)
     m_confirmDialog.Render(d2d, dwrite, screenW, screenH);
+
+    // Toast (drawn ABOVE overlays + confirm dialog, bottom-right)
+    if (m_toastTick != 0 && (GetTickCount64() - m_toastTick) < TOAST_DURATION_MS)
+    {
+        ComPtr<IDWriteTextLayout> toastLayout;
+        dwrite->CreateTextLayout(m_toastMsg.c_str(), (UINT32)m_toastMsg.size(), m_textFormatFooter.Get(),
+            300.0f, FOOTER_HEIGHT, &toastLayout);
+        if (toastLayout && m_fontCollection)
+        {
+            DWRITE_TEXT_RANGE fr = { 0, (UINT32)m_toastMsg.size() };
+            toastLayout->SetFontCollection(m_fontCollection.Get(), fr);
+        }
+        if (toastLayout)
+        {
+            DWRITE_TEXT_METRICS tm;
+            toastLayout->GetMetrics(&tm);
+            float tx = screenW - tm.width - LOGO_MARGIN;
+            float ty = screenH - tm.height - LOGO_MARGIN;
+            ComPtr<ID2D1SolidColorBrush> toastBg;
+            d2d->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.85f)), &toastBg);
+            if (toastBg)
+                d2d->FillRectangle(D2D1::RectF(tx - 6.0f, ty - 2.0f, tx + tm.width + 6.0f, ty + tm.height + 2.0f), toastBg.Get());
+            ComPtr<ID2D1SolidColorBrush> toastFg;
+            d2d->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF(1.0f, 0.85f, 0.0f)), &toastFg);
+            d2d->DrawTextLayout(
+                D2D1::Point2F(tx, ty),
+                toastLayout.Get(), toastFg ? toastFg.Get() : m_brushFooter.Get());
+        }
+    }
+    else
+    {
+        m_toastTick = 0;
+    }
 }
 
 void FrontendMenu::SaveCurrentSettings()
@@ -2256,7 +2280,9 @@ void FrontendMenu::OnBack()
     if (m_overlayActive)
     {
         // Save settings when leaving a settings sub-screen
-        if (m_overlayTitle == "Video" || m_overlayTitle == "Audio" || m_overlayTitle == "Core Options")
+        if (m_overlayTitle == "General" || m_overlayTitle == "Input" || m_overlayTitle == "Performance"
+            || m_overlayTitle == "Video" || m_overlayTitle == "Audio" || m_overlayTitle == "System"
+            || m_overlayTitle == "Core Options")
         {
             SaveCurrentSettings();
             ShowToast(L"Settings saved...");

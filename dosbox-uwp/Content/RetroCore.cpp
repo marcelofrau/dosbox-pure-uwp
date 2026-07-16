@@ -59,6 +59,15 @@ float RetroCore::s_ptrY = 0;
 bool RetroCore::s_ptrDown = false;
 double RetroCore::s_targetFps = 60.0;
 bool RetroCore::s_shutdownRequested = false;
+bool RetroCore::s_vsyncEnabled = true;
+float RetroCore::s_displayRefreshRate = 60.0f;
+
+extern "C" int DBPS_GetCyclesMax();
+
+int RetroCore::GetCyclesMax()
+{
+    return DBPS_GetCyclesMax();
+}
 bool RetroCore::s_joypadState[16] = {};
 std::map<std::string, std::string> RetroCore::s_optionValues;
 bool RetroCore::s_optionValuesChanged = false;
@@ -409,15 +418,15 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
     {
         auto* state = static_cast<retro_throttle_state*>(data);
-        // Report VSYNC throttle when vsync is enabled (syncInterval=1)
-        // so core knows there's external frame pacing
-        state->mode = RETRO_THROTTLE_VSYNC;
-        state->rate = (float)s_targetFps;
-#ifdef FRAME_TRACE
-        char buf[128];
-        sprintf_s(buf, "[dosbox-uwp]   THROTTLE_STATE: VSYNC rate=%.0f\n", s_targetFps);
-        OutputDebugStringA(buf);
-#endif
+        if (s_vsyncEnabled)
+        {
+            state->mode = RETRO_THROTTLE_VSYNC;
+        }
+        else
+        {
+            state->mode = RETRO_THROTTLE_NONE;
+        }
+        state->rate = (float)s_targetFps;  // Always target game FPS (70), not display Hz (180)
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
