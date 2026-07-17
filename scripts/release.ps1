@@ -111,15 +111,6 @@ if (Test-Path $depDir) {
     }
 }
 
-# Copy Install.ps1 (patched with release version)
-$installSrc = Join-Path $PSScriptRoot 'install.ps1'
-if (Test-Path $installSrc) {
-    $installContent = Get-Content $installSrc -Raw
-    $installContent = $installContent -replace '_1\.0\.0\.0\.', "_${releaseVersion}."
-    Set-Content (Join-Path $distribDir 'Install.ps1') $installContent -NoNewline
-    Write-Host "  Install.ps1" -ForegroundColor Gray
-}
-
 # Copy cert
 $cerPath = Join-Path $root 'certs\dosbox-uwp.cer'
 if (Test-Path $cerPath) {

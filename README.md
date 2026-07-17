@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>DOS games on Windows and Xbox — no RetroArch, no fuss.</strong>
+  <strong>🎮 DOS games on Windows and Xbox — no RetroArch, no fuss.</strong>
 </p>
 
 <p align="center">
@@ -15,29 +15,29 @@
 
 ---
 
-## What is DOSBox Pure Unleashed UWP?
+## 🕹️ What is DOSBox Pure Unleashed UWP?
 
 A standalone UWP port of [DOSBox Pure](https://github.com/schellingb/dosbox-pure) — the best DOS emulator for retro gaming. Runs natively on **Windows 11** and **Xbox Series (Dev Mode)** without needing RetroArch or any other frontend.
 
 The emulation core is identical to the one used in RetroArch. What's different is everything around it: a custom menu system, an in-app file browser, native audio, and gamepad/keyboard/mouse input — all built specifically for the UWP platform.
 
-> **Current Focus:** The project's main priority right now is compatibility and performance — making sure DOSBox Pure runs as fast and as well as possible on Windows and Xbox. New features will come after the core experience is solid and optimized.
+> **🎯 Current Focus:** The project's main priority right now is compatibility and performance — making sure DOSBox Pure runs as fast and as well as possible on Windows and Xbox. New features will come after the core experience is solid and optimized.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Install
+### 1. 📥 Install
 
 **Windows:**
-Download the latest release from [Releases](https://github.com/marcelofrau/dosbox-pure-unleashed-uwp/releases). Extract and run `Install.ps1` — or sideload the `.msix` directly (sideloading must be enabled in Windows Settings).
+Download the latest release from [Releases](https://github.com/marcelofrau/dosbox-pure-unleashed-uwp/releases). Sideload the `.msix` (sideloading must be enabled in Windows Settings → Developer Mode).
 
 **Xbox:**
 Enable Dev Mode on your Xbox. Download the `.msix` from [Releases](https://github.com/marcelofrau/dosbox-pure-unleashed-uwp/releases) and deploy via one of these methods:
 - **Xbox Device Portal** — open `https://<your-xbox-ip>:11443` in a browser and upload the package
 - **[XB Homebrew Vault](https://github.com/marcelofrau/xb-homebrew-vault)** — GUI tool for deploying homebrew to Xbox Dev Mode
 
-### 2. Add Games
+### 2. 🎮 Add Games
 
 The app includes a built-in file browser. Press **A** on "Load Game" to browse your storage. Supported formats:
 
@@ -55,13 +55,13 @@ The app includes a built-in file browser. Press **A** on "Load Game" to browse y
 | `.vhd` | Virtual Hard Disk | `WINDOWS31.VHD` |
 | `.conf` | DOSBox configuration file | `custom.conf` |
 
-### 3. Play
+### 3. 🕹️ Play
 
 Connect a gamepad or use keyboard and mouse. See [Controls](#controls) below.
 
 ---
 
-## Creating Compatible ZIP Files
+## 📦 Creating Compatible ZIP Files
 
 The easiest way to package a DOS game is as a `.zip` file. DOSBox Pure mounts the ZIP as a virtual C: drive.
 
@@ -118,7 +118,7 @@ KQ5.ZIP
 
 DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
 
-### Best practices
+### 💡 Best practices
 
 - **Use UPPERCASE** for filenames and extensions — most DOS games expect this
 - **Include the launcher** — if the game has `INSTALL.BAT` or `SETUP.EXE`, include it
@@ -128,7 +128,7 @@ DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
 
 ---
 
-## Controls
+## 🎮 Controls
 
 ### Gamepad
 
@@ -146,15 +146,15 @@ DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
 | **Start** | PUREMENU (in-game settings) |
 | **Back** | Close menu / exit |
 
-### Keyboard
+### ⌨️ Keyboard
 
 Standard DOS keyboard mapping. All keys work as expected: arrows, Enter, Escape, F1-F12, Ctrl, Shift, Alt, Tab, etc.
 
-### Mouse
+### 🖱️ Mouse
 
-Connected via USB or emulated through left stick. Works in all DOS games that use mouse input (Doom, Duke Nukem 3D, etc.).
+On **Windows**, USB mice work directly. On **Xbox**, mouse input is emulated through the left analog stick — USB mice are not supported due to UWP platform limitations. Works in all DOS games that use mouse input (Doom, Duke Nukem 3D, etc.).
 
-### Keyboard Shortcuts
+### ⌨️ Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
@@ -163,32 +163,32 @@ Connected via USB or emulated through left stick. Works in all DOS games that us
 
 ---
 
-## Features
+## ✨ Features
 
 | Feature | Status |
 |---------|--------|
-| DOS emulation (CPU, memory, sound) | ✅ Done |
-| Dynamic recompiler (JIT, 5-10x speedup) | ✅ Done |
-| D2D/D3D11 video pipeline with letterbox | ✅ Done |
-| XAudio2 audio output (low latency) | ✅ Done |
-| In-app file browser (gamepad + mouse) | ✅ Done |
-| FrontendMenu (DOS-style BIOS menu) | ✅ Done |
-| Gamepad input (Xbox controller) | ✅ Done |
-| Keyboard input (full DOS mapping) | ✅ Done |
-| Mouse input (USB + stick emulation) | ✅ Done |
-| PUREMENU (in-game OSD settings) | ✅ Done |
-| ZIP/ISO/CHD/IMG mounting | ✅ Done |
-| Self-signed MSIX packaging | ✅ Done |
-| Save states | ⏳ Planned |
-| Multi-disc eject/swap (disk control) | ⏳ Planned |
-| Shader support | ⏳ Planned |
-| CRT display filters | ⏳ Planned |
-| Video scale modes (pixel-perfect, integer) | ⏳ Planned |
-| Network play (IPX tunneling) | ⏳ Planned |
+| 🖥️ DOS emulation (CPU, memory, sound) | ✅ Done |
+| ⚡ Dynamic recompiler (JIT, 5-10x speedup) | ✅ Done |
+| 🖼️ D2D/D3D11 video pipeline with letterbox | ✅ Done |
+| 🔊 XAudio2 audio output (low latency) | ✅ Done |
+| 📂 In-app file browser (gamepad + mouse) | ✅ Done |
+| 📋 FrontendMenu (DOS-style BIOS menu) | ✅ Done |
+| 🎮 Gamepad input (Xbox controller) | ✅ Done |
+| ⌨️ Keyboard input (full DOS mapping) | ✅ Done |
+| 🖱️ Mouse input (stick emulation on Xbox, USB on PC) | ✅ Done |
+| 🍔 PUREMENU (in-game OSD settings) | ✅ Done |
+| 💾 ZIP/ISO/CHD/IMG mounting | ✅ Done |
+| 📦 Self-signed MSIX packaging | ✅ Done |
+| 💾 Save states | ⏳ Planned |
+| 💿 Multi-disc eject/swap (disk control) | ⏳ Planned |
+| 🎨 Shader support | ⏳ Planned |
+| 📺 CRT display filters | ⏳ Planned |
+| 🔍 Video scale modes (pixel-perfect, integer) | ⏳ Planned |
+| 🌐 Network play (IPX tunneling) | ⏳ Planned |
 
 ---
 
-## Credits
+## 🙏 Credits
 
 This project stands on the shoulders of amazing open-source work.
 
@@ -214,26 +214,26 @@ This project stands on the shoulders of amazing open-source work.
 
 ---
 
-## Special Thanks
+## ❤️ Special Thanks
 
 ### Emulation Revival Community
 
 Huge thanks to the [Emulation Revival](https://www.youtube.com/@EmulationRevival) community for the amazing support, testing, and feedback:
 
-- **MewLew** — for the enthusiasm and community engagement
-- **DanP142** — for testing and feedback
-- **Caorthann** — for support and contributions
-- **alouisious** — for being part of the journey
+- 🎉 **MewLew** — for the enthusiasm and community engagement
+- 🧪 **DanP142** — for testing and feedback
+- 💪 **Caorthann** — for support and contributions
+- 🚀 **alouisious** — for being part of the journey
 
 Your energy and passion for retro gaming make projects like this worthwhile.
 
 ---
 
-## For Developers
+## 🛠️ For Developers
 
 This section covers build instructions and technical architecture for contributors.
 
-### Building from Source
+### 🔨 Building from Source
 
 #### Prerequisites
 
@@ -253,7 +253,7 @@ Or use the build script:
 .\scripts\build.ps1 -Configuration Release -Platform x64
 ```
 
-#### Package (MSIX)
+#### 📦 Package (MSIX)
 
 ```powershell
 .\scripts\package.ps1 -Configuration Release -Platform x64
@@ -261,7 +261,7 @@ Or use the build script:
 
 Auto-creates a self-signed certificate if none exists.
 
-#### Run (Windows)
+#### ▶️ Run (Windows)
 
 ```powershell
 .\scripts\run.ps1 -Configuration Release -Platform x64
@@ -269,26 +269,26 @@ Auto-creates a self-signed certificate if none exists.
 
 Builds, registers, and launches the app.
 
-#### Deploy (Xbox)
+#### 📱 Deploy (Xbox)
 
 For deploying to Xbox, use one of these methods:
 
 - **Xbox Device Portal** — open `https://<your-xbox-ip>:11443` in a browser, navigate to Apps, and upload the `.msix` package
 - **[XB Homebrew Vault](https://github.com/marcelofrau/xb-homebrew-vault)** — GUI tool for deploying homebrew to Xbox Dev Mode
 
-### How It Works
+### 🔍 How It Works
 
 The app is a **libretro frontend**. The dosbox-pure core (in `extern/dosbox-pure/`) handles all emulation. Our code provides:
 
-1. **Video** — Core calls `retro_video_refresh_cb()` with an XRGB8888 framebuffer. We copy it to a D2D bitmap or D3D11 texture and render with letterboxing.
+1. **🎬 Video** — Core calls `retro_video_refresh_cb()` with an XRGB8888 framebuffer. We copy it to a D2D bitmap or D3D11 texture and render with letterboxing.
 
-2. **Audio** — Core calls `retro_audio_sample_batch()` with stereo PCM16. We submit to XAudio2 with a 32-slot buffer pool and queue-depth cap (~20ms max latency).
+2. **🔊 Audio** — Core calls `retro_audio_sample_batch()` with stereo PCM16. We submit to XAudio2 with a 32-slot buffer pool and queue-depth cap (~20ms max latency).
 
-3. **Input** — `retro_input_poll()` reads gamepad/keyboard/mouse state. `retro_input_state()` returns button states.
+3. **🎮 Input** — `retro_input_poll()` reads gamepad/keyboard/mouse state. `retro_input_state()` returns button states.
 
-4. **Environment** — `retro_environment()` handles VFS, configuration, hardware render rejection (SW path forced), and keyboard callbacks.
+4. **⚙️ Environment** — `retro_environment()` handles VFS, configuration, hardware render rejection (SW path forced), and keyboard callbacks.
 
-### Project Structure
+### 📁 Project Structure
 
 ```
 dosbox-pure-unleashed-uwp/
@@ -317,7 +317,7 @@ dosbox-pure-unleashed-uwp/
 └── dosbox-pure-unleashed-uwp.sln     Solution file
 ```
 
-### Documentation
+### 📚 Documentation
 
 | Document | Description |
 |----------|-------------|
@@ -326,7 +326,7 @@ dosbox-pure-unleashed-uwp/
 | [Dynarec on UWP](docs/DYNAREC_UWP.md) | JIT compiler setup and performance |
 | [Discoveries](docs/discoveries.md) | Bug investigations, audio pacing analysis, technical debt |
 
-### xb-xray (Developer Diagnostics)
+### 🔬 xb-xray (Developer Diagnostics)
 
 Debug builds include [xb-xray](https://github.com/marcelofrau/uwp-xray-depot) — a TCP diagnostics tool for Xbox Dev Mode. When enabled, the app opens a TCP socket on port 9000-9009.
 
@@ -339,7 +339,7 @@ Features: live logs, variable inspection (`fps`, `audio_queued`, `frame_ms`), an
 
 ---
 
-## License
+## 📄 License
 
 This project is based on [DOSBox Pure](https://github.com/schellingb/dosbox-pure) by [@schellingb](https://github.com/schellingb).
 

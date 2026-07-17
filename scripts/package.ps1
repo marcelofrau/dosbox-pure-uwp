@@ -75,7 +75,7 @@ if (-not $msix) {
 
 Write-Host "`n=== Generated files ===" -ForegroundColor Green
 Write-Host "  MSIX:       $msix" -ForegroundColor Green
-Write-Host "  INSTALL:    $pkgDir\Install.ps1" -ForegroundColor Green
+
 
 $depDir = Join-Path $pkgDir 'Dependencies'
 if (Test-Path $depDir) {
@@ -88,5 +88,5 @@ if (Test-Path $depDir) {
 
 Write-Host "`n=== Deploy on Xbox ===" -ForegroundColor Cyan
 Write-Host "  1. Copy $pkgDir to Xbox" -ForegroundColor Gray
-Write-Host "  2. Run Install.ps1 (installs cert + deps + app)" -ForegroundColor Gray
+Write-Host "  2. Sideload the .msix (Developer Mode required)" -ForegroundColor Gray
 Write-Host ""

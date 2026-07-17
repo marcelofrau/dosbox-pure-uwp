@@ -52,11 +52,10 @@ Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cyc
 ### 📦 Installation
 
 1. Download `dosbox-uwp_0.9.5.136_x64.zip`
-2. Extract to a folder on your Xbox/PC
-3. Run `Install.ps1` (installs cert + dependencies + app)
-4. Launch from Start Menu or Xbox Dev Mode
+2. Extract to a folder
+3. Sideload the `.msix` (Developer Mode required)
 
-> **Note:** Side-loading requires Developer Mode enabled in Windows Settings.
+> **Xbox:** Deploy via [Xbox Device Portal](https://learn.microsoft.com/en-us/gaming/gdk/_content/gc/features/live/testing-on-xbox-devkits) or [XB Homebrew Vault](https://github.com/marcelofrau/xb-homebrew-vault).
 
 ---
 

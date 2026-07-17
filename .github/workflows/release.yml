@@ -140,10 +140,9 @@ jobs:
             [void]$lines.Add("### Installation"); [void]$lines.Add("")
             [void]$lines.Add("1. Download ``dosbox-uwp_${ver}_x64.zip``")
             [void]$lines.Add("2. Extract to a folder")
-            [void]$lines.Add("3. Run ``Install.ps1`` (requires PowerShell as Administrator)")
-            [void]$lines.Add("4. Launch from Start Menu")
+            [void]$lines.Add("3. Sideload the ``.msix`` (Developer Mode required in Windows Settings)")
             [void]$lines.Add("")
-            [void]$lines.Add("> **Note:** Side-loading requires Developer Mode enabled in Windows Settings.")
+            [void]$lines.Add("> **Xbox:** Deploy via [Xbox Device Portal](https://learn.microsoft.com/en-us/gaming/gdk/_content/gc/features/live/testing-on-xbox-devkits) or [XB Homebrew Vault](https://github.com/marcelofrau/xb-homebrew-vault).")
             [void]$lines.Add(""); [void]$lines.Add("---"); [void]$lines.Add("")
             [void]$lines.Add("### Links"); [void]$lines.Add("")
             [void]$lines.Add("- [Source Code](https://github.com/marcelofrau/dosbox-pure-uwp/tree/main)")
@@ -229,13 +228,6 @@ jobs:
             $dest = Join-Path $dist 'Dependencies\x64'
             New-Item -ItemType Directory -Path $dest -Force | Out-Null
             Get-ChildItem $depDir -Filter "*.appx" | Copy-Item -Destination $dest
-          }
-
-          # Copy Install.ps1 (patched with version)
-          if (Test-Path 'scripts\install.ps1') {
-            $ic = Get-Content 'scripts\install.ps1' -Raw
-            $ic = $ic -replace '_1\.0\.0\.0\.', "_${ver}."
-            Set-Content (Join-Path $dist 'Install.ps1') $ic -NoNewline
           }
 
           # Copy cert
