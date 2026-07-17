@@ -220,12 +220,12 @@ This project stands on the shoulders of amazing open-source work.
 
 Huge thanks to the [Emulation Revival](https://www.youtube.com/@EmulationRevival) community for the amazing support, testing, and feedback:
 
-- 🎉 **MewLew** 
-- 🧪 **DanP142** 
-- 💪 **Caorthann** 
-- 🚀 **alouisious** 
+- **MewLew** 
+- **DanP142** 
+- **Caorthann** 
+- **alouisious** 
 
-Your energy and passion for retro gaming make projects like this worthwhile.
+Your energy and passion in the community make projects like this worthwhile.
 
 ---
 
