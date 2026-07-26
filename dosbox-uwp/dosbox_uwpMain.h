@@ -141,10 +141,8 @@ namespace dosbox_uwp
         // OSD exit input suppress — holds A/B to false until physical buttons released
         bool m_osdExitSuppressing = false;
 
-        // Frame pacing: accumulator ensures retro_run is called targetFps times/sec
+        // Frame pacing
         int m_lastRetroRuns = 0;
-        double m_audioTimeAccumulator = 0.0;
-        double m_audioLastTick = 0.0;
 
         // Software frame limiter (0=off, 60=60Hz, 70=70Hz)
         int m_frameLimitFps = 0;

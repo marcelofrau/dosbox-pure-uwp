@@ -2,6 +2,7 @@
 #include "App.h"
 
 #include <ppltasks.h>
+#include <Windows.System.Display.h>
 
 using namespace dosbox_uwp;
 
@@ -31,12 +32,8 @@ IFrameworkView^ Direct3DApplicationSource::CreateView()
 
 App::App() :
 	m_windowClosed(false),
-	m_windowVisible(true),
-	m_perfFrequency{},
-	m_lastFrameTime{},
-	m_targetFrameMs(0.0)
+	m_windowVisible(true)
 {
-	QueryPerformanceFrequency(&m_perfFrequency);
 }
 
 // The first method called when the IFrameworkView is being created.
@@ -55,10 +52,6 @@ void App::Initialize(CoreApplicationView^ applicationView)
 		ref new EventHandler<Platform::Object^>(this, &App::OnResuming);
 
 	m_deviceResources = std::make_shared<DX::DeviceResources>();
-
-	QueryPerformanceFrequency(&m_perfFrequency);
-	QueryPerformanceCounter(&m_lastFrameTime);
-	m_targetFrameMs = 1000.0 / 70.0; // default 70fps, updated once core reports timing
 
 	OutputDebugStringA("[dosbox-uwp] App::Initialize done\n");
 }
@@ -129,6 +122,19 @@ void App::Load(Platform::String^ entryPoint)
 	{
 		m_main = std::unique_ptr<dosbox_uwpMain>(new dosbox_uwpMain(m_deviceResources));
 	}
+
+	// Prevent screen dim/suspend during gameplay
+	m_displayRequest = ref new Windows::System::Display::DisplayRequest();
+	try
+	{
+		m_displayRequest->RequestActive();
+		OutputDebugStringA("[dosbox-uwp] DisplayRequest: active (screen won't dim)\n");
+	}
+	catch (Platform::Exception^ ex)
+	{
+		OutputDebugStringA("[dosbox-uwp] DisplayRequest: RequestActive failed (non-fatal)\n");
+	}
+
 	OutputDebugStringA("[dosbox-uwp] App::Load done\n");
 }
 
@@ -143,46 +149,9 @@ void App::Run()
 		{
 			CoreWindow::GetForCurrentThread()->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
 
+			// Update() runs the full frame cycle:
+			// input → retro_run() → audio submit (blocks for pacing) → render → present.
 			m_main->Update();
-
-			if (m_main->Render())
-			{
-				m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
-
-				// Software frame limiter: when 60/70Hz is set, Present(0,0) is non-blocking.
-				// Sleep+spin to target the right frame period. Vsync OFF = syncInterval 0.
-				int flFps = m_main->GetFrameLimitFps();
-				if (flFps > 0 && m_deviceResources->GetSyncInterval() == 0)
-				{
-					LARGE_INTEGER now;
-					QueryPerformanceCounter(&now);
-					double elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-					double targetSec = 1.0 / (double)flFps;
-					double remaining = targetSec - elapsed;
-					if (remaining > 0.001)
-					{
-						// Sleep for most of the remaining time (leave 2ms for spin)
-						DWORD sleepMs = (DWORD)((remaining - 0.002) * 1000.0);
-						if (sleepMs > 0) Sleep(sleepMs);
-						// Spin for the last ~2ms for precision
-						QueryPerformanceCounter(&now);
-						elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-						while (elapsed < targetSec)
-						{
-							Sleep(0);
-							QueryPerformanceCounter(&now);
-							elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-						}
-					}
-				}
-				m_lastFrameTime = {};
-				QueryPerformanceCounter(&m_lastFrameTime);
-			}
-			else if (m_main->GetLastRetroRuns() == 0)
-			{
-				// No frame produced this iteration — yield CPU to avoid 100% spin.
-				Sleep(1);
-			}
 
 			m_main->ProcessPendingLoad();
 		}
@@ -212,6 +181,14 @@ void App::OnActivated(CoreApplicationView^ applicationView, IActivatedEventArgs^
 
 void App::OnSuspending(Platform::Object^ sender, SuspendingEventArgs^ args)
 {
+	// Release display request — system can dim/suspend now
+	if (m_displayRequest)
+	{
+		try { m_displayRequest->RequestRelease(); }
+		catch (...) {}
+		OutputDebugStringA("[dosbox-uwp] DisplayRequest: released (suspend)\n");
+	}
+
 	// Save app state asynchronously after requesting a deferral. Holding a deferral
 	// indicates that the application is busy performing suspending operations. Be
 	// aware that a deferral may not be held indefinitely. After about five seconds,
@@ -230,11 +207,13 @@ void App::OnSuspending(Platform::Object^ sender, SuspendingEventArgs^ args)
 
 void App::OnResuming(Platform::Object^ sender, Platform::Object^ args)
 {
-	// Restore any data or state that was unloaded on suspend. By default, data
-	// and state are persisted when resuming from suspend. Note that this event
-	// does not occur if the app was previously terminated.
-
-	// Insert your code here.
+	// Re-acquire display request after suspend
+	if (m_displayRequest)
+	{
+		try { m_displayRequest->RequestActive(); }
+		catch (...) {}
+		OutputDebugStringA("[dosbox-uwp] DisplayRequest: re-acquired (resume)\n");
+	}
 }
 
 // Window event handlers.

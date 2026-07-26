@@ -5,6 +5,7 @@
 #include "dosbox_pure_sta.h"
 #include "Common\DirectXHelper.h"
 #include <cmath>
+#include <algorithm>
 #include <sstream>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -446,164 +447,128 @@ void dosbox_uwpMain::CreateWindowSizeDependentResources()
 void dosbox_uwpMain::Update()
 {
     // Process queued load — set flag so Render() shows loading screen, defer actual load
-    // Loading screen already activated in OpenFilePicker before I/O; this guards
-    // edge cases like programmatic QueueLoadRom without picker path
     if (m_pendingLoad && !m_loadingActive)
         ActivateLoadingScreen();
 
-    // FPS tracking — only update when frames were produced (not on skip iterations).
-    // This prevents the FPS counter from showing 4000fps on Windows when Present(0,0) spins.
+    LARGE_INTEGER _updateStart, _freq;
+    QueryPerformanceCounter(&_updateStart);
+    QueryPerformanceFrequency(&_freq);
+
+    m_frameLate = false;
+    m_sdlInput->PollEvents();
+
+    // Read gamepad analog stick always — used for splash cursor + in-game
+    float sx = 0.0f, sy = 0.0f;
+    m_sdlInput->GetLeftStick(sx, sy);
+    const float GAMEPAD_DEADZONE = 0.15f;
+    if (fabs(sx) < GAMEPAD_DEADZONE) sx = 0.0f;
+    if (fabs(sy) < GAMEPAD_DEADZONE) sy = 0.0f;
+
+    // Update frontend menu core-loaded state
+    m_menu.SetCoreLoaded(m_retroCore && m_retroCore->IsLoaded());
+
+    // Menu navigation (absorbs gamepad input while visible)
+    if (m_menu.IsVisible())
     {
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-        if (m_fpsLastFrame.QuadPart != 0 && m_lastRetroRuns > 0)
-        {
-            double dt = (double)(now.QuadPart - m_fpsLastFrame.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-            m_fpsFrameTimes[m_fpsFrameIdx] = dt;
-            m_fpsFrameIdx = (m_fpsFrameIdx + 1) % 60;
-            if (m_fpsFrameCount < 60) m_fpsFrameCount++;
-            double sum = 0;
-            for (int i = 0; i < m_fpsFrameCount; i++) sum += m_fpsFrameTimes[i];
-            m_frameTimeMs = sum / m_fpsFrameCount;
-            m_currentFps = (m_frameTimeMs > 0.0) ? 1000.0 / m_frameTimeMs : 0.0;
-        }
-        if (m_lastRetroRuns > 0)
-            m_fpsLastFrame = now;
+        const int DPAD_INITIAL_DELAY_MS = 300;
+        const int DPAD_REPEAT_RATE_MS = 50;
+
+        auto dpadRepeat = [&](int btn, bool up) {
+            bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
+            bool held = m_sdlInput->IsButtonHeld(btn);
+            ULONGLONG now = GetTickCount64();
+            if (justPressed) {
+                m_menu.OnDPad(up);
+                m_dpadRepeatBtn = btn;
+                m_dpadRepeatStart = now;
+                m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
+                return;
+            }
+            if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
+                m_menu.OnDPad(up);
+                m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
+            }
+            if (!held && m_dpadRepeatBtn == btn)
+                m_dpadRepeatBtn = -1;
+        };
+        dpadRepeat(BUTTON_DPAD_UP, true);
+        dpadRepeat(BUTTON_DPAD_DOWN, false);
+
+        auto dpadLeftRight = [&](int btn, bool left) {
+            bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
+            bool held = m_sdlInput->IsButtonHeld(btn);
+            ULONGLONG now = GetTickCount64();
+            if (justPressed) {
+                if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
+                m_dpadRepeatBtn = btn;
+                m_dpadRepeatStart = now;
+                m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
+                return;
+            }
+            if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
+                if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
+                m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
+            }
+            if (!held && m_dpadRepeatBtn == btn)
+                m_dpadRepeatBtn = -1;
+        };
+        dpadLeftRight(BUTTON_DPAD_LEFT, true);
+        dpadLeftRight(BUTTON_DPAD_RIGHT, false);
+
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_A))
+            m_menu.OnConfirm();
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_START))
+            m_menu.OnConfirm();
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
+            m_menu.OnBack();
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_L))
+            m_menu.OnPageUp();
+        if (m_sdlInput->WasButtonJustPressed(BUTTON_R))
+            m_menu.OnPageDown();
+    }
+    else
+    {
+        m_dpadRepeatBtn = -1;
     }
 
-#ifdef XB_INSPECTOR_ENABLED
-    xb::Xray::update();
-#endif
+    // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
+    if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) && m_retroCore && m_retroCore->IsLoaded()) {
+        spdlog::info("[input] R3 -> toggle PUREMENU");
+        m_retroCore->ToggleOSD();
+    }
 
-    m_timer.Tick([&]()
+    // LB+RB+Select simultaneous press → toggle gamepad mouse mode
     {
-        static int s_diagRunsAccum = 0;
-        LARGE_INTEGER _t0, _t1, _t2, _t3, _freq;
-        QueryPerformanceFrequency(&_freq);
-
-        m_frameLate = false;
-        m_sdlInput->PollEvents();
-        QueryPerformanceCounter(&_t0);
-
-        // Read gamepad analog stick always — used for splash cursor + in-game
-        float sx = 0.0f, sy = 0.0f;
-        m_sdlInput->GetLeftStick(sx, sy);
-        const float GAMEPAD_DEADZONE = 0.15f;
-        if (fabs(sx) < GAMEPAD_DEADZONE) sx = 0.0f;
-        if (fabs(sy) < GAMEPAD_DEADZONE) sy = 0.0f;
-
-        // Update frontend menu core-loaded state
-        m_menu.SetCoreLoaded(m_retroCore && m_retroCore->IsLoaded());
-
-        // Menu navigation (absorbs gamepad input while visible)
-        if (m_menu.IsVisible())
-        {
-            // DPad auto-repeat: first press fires immediately, then repeats after delay
-            const int DPAD_INITIAL_DELAY_MS = 300;
-            const int DPAD_REPEAT_RATE_MS = 50;
-
-            auto dpadRepeat = [&](int btn, bool up) {
-                bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
-                bool held = m_sdlInput->IsButtonHeld(btn);
-                ULONGLONG now = GetTickCount64();
-
-                if (justPressed) {
-                    // First press: fire immediately, start repeat timer
-                    m_menu.OnDPad(up);
-                    m_dpadRepeatBtn = btn;
-                    m_dpadRepeatStart = now;
-                    m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
-                    return;
-                }
-                if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
-                    // Repeat: fire and schedule next
-                    m_menu.OnDPad(up);
-                    m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
-                }
-                if (!held && m_dpadRepeatBtn == btn) {
-                    m_dpadRepeatBtn = -1;
-                }
-            };
-            dpadRepeat(BUTTON_DPAD_UP, true);
-            dpadRepeat(BUTTON_DPAD_DOWN, false);
-
-            // DPad Left/Right: toggle option values
-            auto dpadLeftRight = [&](int btn, bool left) {
-                bool justPressed = m_sdlInput->WasButtonJustPressed(btn);
-                bool held = m_sdlInput->IsButtonHeld(btn);
-                ULONGLONG now = GetTickCount64();
-                if (justPressed) {
-                    if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
-                    m_dpadRepeatBtn = btn;
-                    m_dpadRepeatStart = now;
-                    m_dpadRepeatNext = now + DPAD_INITIAL_DELAY_MS;
-                    return;
-                }
-                if (held && m_dpadRepeatBtn == btn && now >= m_dpadRepeatNext) {
-                    if (left) m_menu.OnDPadLeft(); else m_menu.OnDPadRight();
-                    m_dpadRepeatNext = now + DPAD_REPEAT_RATE_MS;
-                }
-                if (!held && m_dpadRepeatBtn == btn) {
-                    m_dpadRepeatBtn = -1;
-                }
-            };
-            dpadLeftRight(BUTTON_DPAD_LEFT, true);
-            dpadLeftRight(BUTTON_DPAD_RIGHT, false);
-
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_A))
-                m_menu.OnConfirm();
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_START))
-                m_menu.OnConfirm();
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_B))
-                m_menu.OnBack();
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_L))
-                m_menu.OnPageUp();
-            if (m_sdlInput->WasButtonJustPressed(BUTTON_R))
-                m_menu.OnPageDown();
+        bool lb = m_sdlInput->IsButtonHeld(BUTTON_L);
+        bool rb = m_sdlInput->IsButtonHeld(BUTTON_R);
+        bool sel = m_sdlInput->IsButtonHeld(BUTTON_SELECT);
+        bool allThree = lb && rb && sel;
+        if (allThree && !m_lbrbsPrevHeld && m_retroCore && m_retroCore->IsLoaded()) {
+            m_gamepadMouseMode = !m_gamepadMouseMode;
+            spdlog::info("[input] Gamepad mouse mode: {}", m_gamepadMouseMode ? "ON" : "OFF");
         }
-        else
-        {
-            // Reset repeat state when menu is hidden
-            m_dpadRepeatBtn = -1;
-        }
+        m_lbrbsPrevHeld = allThree;
+    }
 
-        // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
-        if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) && m_retroCore && m_retroCore->IsLoaded()) {
-            spdlog::info("[input] R3 -> toggle PUREMENU");
-            m_retroCore->ToggleOSD();
-        }
-
-        // LB+RB+Select simultaneous press → toggle gamepad mouse mode
-        // Mouse mode OFF (default): stick does NOT simulate mouse in DOSBox/Puremenu
-        // Mouse mode ON: stick → relative mouse, A→Enter, B→Escape for Puremenu
-        {
-            bool lb = m_sdlInput->IsButtonHeld(BUTTON_L);
-            bool rb = m_sdlInput->IsButtonHeld(BUTTON_R);
-            bool sel = m_sdlInput->IsButtonHeld(BUTTON_SELECT);
-            bool allThree = lb && rb && sel;
-            if (allThree && !m_lbrbsPrevHeld && m_retroCore && m_retroCore->IsLoaded()) {
-                m_gamepadMouseMode = !m_gamepadMouseMode;
-                spdlog::info("[input] Gamepad mouse mode: {}", m_gamepadMouseMode ? "ON" : "OFF");
-            }
-            m_lbrbsPrevHeld = allThree;
-        }
-
-        // Log every gamepad button press (after all handlers consume their events)
-        struct { int btn; const char* name; } btns[] = {
-            { BUTTON_A, "A" }, { BUTTON_B, "B" }, { BUTTON_X, "X" }, { BUTTON_Y, "Y" },
-            { BUTTON_L, "L" }, { BUTTON_R, "R" }, { BUTTON_L2, "L2" }, { BUTTON_R2, "R2" },
-            { BUTTON_START, "START" }, { BUTTON_SELECT, "SELECT" },
-            { BUTTON_L3, "L3" }, { BUTTON_R3, "R3" },
-            { BUTTON_DPAD_UP, "DPAD_UP" }, { BUTTON_DPAD_DOWN, "DPAD_DOWN" },
-            { BUTTON_DPAD_LEFT, "DPAD_LEFT" }, { BUTTON_DPAD_RIGHT, "DPAD_RIGHT" },
-        };
-        for (auto& b : btns)
-            if (m_sdlInput->WasButtonJustPressed(b.btn))
-                spdlog::info("[input] {} pressed", b.name);
+    // Log every gamepad button press
+    struct { int btn; const char* name; } btns[] = {
+        { BUTTON_A, "A" }, { BUTTON_B, "B" }, { BUTTON_X, "X" }, { BUTTON_Y, "Y" },
+        { BUTTON_L, "L" }, { BUTTON_R, "R" }, { BUTTON_L2, "L2" }, { BUTTON_R2, "R2" },
+        { BUTTON_START, "START" }, { BUTTON_SELECT, "SELECT" },
+        { BUTTON_L3, "L3" }, { BUTTON_R3, "R3" },
+        { BUTTON_DPAD_UP, "DPAD_UP" }, { BUTTON_DPAD_DOWN, "DPAD_DOWN" },
+        { BUTTON_DPAD_LEFT, "DPAD_LEFT" }, { BUTTON_DPAD_RIGHT, "DPAD_RIGHT" },
+    };
+    for (auto& b : btns)
+        if (m_sdlInput->WasButtonJustPressed(b.btn))
+            spdlog::info("[input] {} pressed", b.name);
 
 #ifdef MOUSE_SUPPORT
-        // Splash screen + menu: gamepad moves D2D cursor directly
-        float dtSec = (float)m_timer.GetElapsedSeconds();
+    // Splash screen + menu: gamepad moves D2D cursor directly
+    {
+        LARGE_INTEGER _now;
+        QueryPerformanceCounter(&_now);
+        float dtSec = (float)((double)(_now.QuadPart - _updateStart.QuadPart) / (double)_freq.QuadPart);
         if (!m_retroCore->IsLoaded() || m_menu.IsVisible())
         {
             m_pointerX += sx * 1.34f * dtSec;
@@ -613,237 +578,216 @@ void dosbox_uwpMain::Update()
             if (m_pointerY < 0.0f) m_pointerY = 0.0f;
             if (m_pointerY > 1.0f) m_pointerY = 1.0f;
         }
+    }
 #endif
 
-        // Gamepad → RetroPad (GENERICKEYBOARD preset) for core to translate to DOS keys
-        if (!m_menu.IsVisible() && m_retroRunning && m_retroCore->IsLoaded())
+    // Gamepad → RetroPad (GENERICKEYBOARD preset) — input polled once, shared by all runs
+    if (!m_menu.IsVisible() && m_retroRunning && m_retroCore->IsLoaded())
+    {
+        PollMouseButtons();
+        PollKeyboard();
+        for (unsigned i = 0; i < 16; i++)
+            RetroCore::SetJoypadButton(i, false);
+
+        struct { int btn; unsigned retroId; } padMap[] = {
+            { BUTTON_DPAD_UP,    RETRO_DEVICE_ID_JOYPAD_UP },
+            { BUTTON_DPAD_DOWN,  RETRO_DEVICE_ID_JOYPAD_DOWN },
+            { BUTTON_DPAD_LEFT,  RETRO_DEVICE_ID_JOYPAD_LEFT },
+            { BUTTON_DPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT },
+            { BUTTON_A,          RETRO_DEVICE_ID_JOYPAD_A },
+            { BUTTON_B,          RETRO_DEVICE_ID_JOYPAD_B },
+            { BUTTON_X,          RETRO_DEVICE_ID_JOYPAD_X },
+            { BUTTON_Y,          RETRO_DEVICE_ID_JOYPAD_Y },
+            { BUTTON_SELECT,     RETRO_DEVICE_ID_JOYPAD_SELECT },
+            { BUTTON_START,      RETRO_DEVICE_ID_JOYPAD_START },
+            { BUTTON_L,          RETRO_DEVICE_ID_JOYPAD_L },
+            { BUTTON_R,          RETRO_DEVICE_ID_JOYPAD_R },
+            { BUTTON_L2,         RETRO_DEVICE_ID_JOYPAD_L2 },
+            { BUTTON_R2,         RETRO_DEVICE_ID_JOYPAD_R2 },
+            { BUTTON_L3,         RETRO_DEVICE_ID_JOYPAD_L3 },
+            { BUTTON_R3,         RETRO_DEVICE_ID_JOYPAD_R3 },
+        };
+        for (auto& m : padMap)
+            RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
+
+        // OSD swap: when PUREMENU/OSK/Mapper is active, swap A↔B so A=confirm, B=back
+        if (g_dbp_osd_active)
         {
-            PollMouseButtons();
-            PollKeyboard();
-            for (unsigned i = 0; i < 16; i++)
-                RetroCore::SetJoypadButton(i, false);
-
-            // Generic keyboard preset: gamepad buttons → RetroPad IDs
-            struct { int btn; unsigned retroId; } padMap[] = {
-                { BUTTON_DPAD_UP,    RETRO_DEVICE_ID_JOYPAD_UP },
-                { BUTTON_DPAD_DOWN,  RETRO_DEVICE_ID_JOYPAD_DOWN },
-                { BUTTON_DPAD_LEFT,  RETRO_DEVICE_ID_JOYPAD_LEFT },
-                { BUTTON_DPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT },
-                { BUTTON_A,          RETRO_DEVICE_ID_JOYPAD_A },
-                { BUTTON_B,          RETRO_DEVICE_ID_JOYPAD_B },
-                { BUTTON_X,          RETRO_DEVICE_ID_JOYPAD_X },
-                { BUTTON_Y,          RETRO_DEVICE_ID_JOYPAD_Y },
-                { BUTTON_SELECT,     RETRO_DEVICE_ID_JOYPAD_SELECT },
-                { BUTTON_START,      RETRO_DEVICE_ID_JOYPAD_START },
-                { BUTTON_L,          RETRO_DEVICE_ID_JOYPAD_L },
-                { BUTTON_R,          RETRO_DEVICE_ID_JOYPAD_R },
-                { BUTTON_L2,         RETRO_DEVICE_ID_JOYPAD_L2 },
-                { BUTTON_R2,         RETRO_DEVICE_ID_JOYPAD_R2 },
-                { BUTTON_L3,         RETRO_DEVICE_ID_JOYPAD_L3 },
-                { BUTTON_R3,         RETRO_DEVICE_ID_JOYPAD_R3 },
-            };
-            for (auto& m : padMap)
-                RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
-
-            // OSD swap: when PUREMENU/OSK/Mapper is active, swap A↔B so A=confirm, B=back
-            if (g_dbp_osd_active)
-            {
-                bool aHeld = m_sdlInput->IsButtonHeld(BUTTON_A);
-                bool bHeld = m_sdlInput->IsButtonHeld(BUTTON_B);
-                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, bHeld);
-                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, aHeld);
-                m_osdExitSuppressing = true; // suppress after OSD closes
-            }
-            else if (m_osdExitSuppressing)
-            {
-                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, false);
-                RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, false);
-                // Only stop suppressing once physical A AND B are both released
-                if (!m_sdlInput->IsButtonHeld(BUTTON_A) && !m_sdlInput->IsButtonHeld(BUTTON_B))
-                    m_osdExitSuppressing = false;
-            }
+            bool aHeld = m_sdlInput->IsButtonHeld(BUTTON_A);
+            bool bHeld = m_sdlInput->IsButtonHeld(BUTTON_B);
+            RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, bHeld);
+            RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, aHeld);
+            m_osdExitSuppressing = true;
+        }
+        else if (m_osdExitSuppressing)
+        {
+            RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_A, false);
+            RetroCore::SetJoypadButton(RETRO_DEVICE_ID_JOYPAD_B, false);
+            if (!m_sdlInput->IsButtonHeld(BUTTON_A) && !m_sdlInput->IsButtonHeld(BUTTON_B))
+                m_osdExitSuppressing = false;
+        }
 
 #ifdef MOUSE_SUPPORT
-            // Gamepad mouse simulation — only when m_gamepadMouseMode is ON (LB+RB+Select toggle)
-            if (m_gamepadMouseMode)
+        // Gamepad mouse simulation — only when m_gamepadMouseMode is ON
+        if (m_gamepadMouseMode)
+        {
+            LARGE_INTEGER _now;
+            QueryPerformanceCounter(&_now);
+            float dtSec = (float)((double)(_now.QuadPart - _updateStart.QuadPart) / (double)_freq.QuadPart);
+
+            if (sx != 0.0f || sy != 0.0f)
             {
-                // Phase 2: Gamepad left stick → relative mouse
-                if (sx != 0.0f || sy != 0.0f)
-                {
-                    float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
-                    float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
-                    float inPixelsPerSec = 800.0f;
-                    int dx = (int)(curveX * inPixelsPerSec * dtSec);
-                    int dy = (int)(curveY * inPixelsPerSec * dtSec);
-                    if (dx == 0 && sx != 0) dx = (sx > 0 ? 1 : -1);
-                    if (dy == 0 && sy != 0) dy = (sy > 0 ? 1 : -1);
-                    m_retroCore->SetMouseMove(dx, dy);
-                }
+                float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
+                float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
+                float inPixelsPerSec = 800.0f;
+                int dx = (int)(curveX * inPixelsPerSec * dtSec);
+                int dy = (int)(curveY * inPixelsPerSec * dtSec);
+                if (dx == 0 && sx != 0) dx = (sx > 0 ? 1 : -1);
+                if (dy == 0 && sy != 0) dy = (sy > 0 ? 1 : -1);
+                m_retroCore->SetMouseMove(dx, dy);
+            }
 
-                // Gamepad buttons → PUREMENU keyboard (A=Enter, B=Escape)
-                // Only when OSD visible and menu NOT visible — prevents spurious input in DOS
-                if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
-                {
-                    static bool prevA = false, prevB = false;
-                    bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
-                    bool nowB = m_sdlInput->IsButtonHeld(BUTTON_B);
-                    if (nowA != prevA) { RetroCore::SetKeyState(RETROK_RETURN, nowA); prevA = nowA; }
-                    if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
-                }
+            if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
+            {
+                static bool prevA = false, prevB = false;
+                bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
+                bool nowB = m_sdlInput->IsButtonHeld(BUTTON_B);
+                if (nowA != prevA) { RetroCore::SetKeyState(RETROK_RETURN, nowA); prevA = nowA; }
+                if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
+            }
 
-                // Phase 3: Gamepad → absolute pointer for PUREMENU
-                LARGE_INTEGER _gmnow;
-                QueryPerformanceCounter(&_gmnow);
-                double mouseIdleMs = 0.0;
-                if (m_lastPointerTime.QuadPart != 0)
-                    mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
-                                  * 1000.0 / m_qpcFreq.QuadPart;
-                if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
-                {
-                    float cursorDx = sx * 0.80f * dtSec;
-                    float cursorDy = sy * 0.80f * dtSec;
-                    m_virtualCursorX += cursorDx;
-                    m_virtualCursorY += cursorDy;
-                    if (m_virtualCursorX < 0.0f) m_virtualCursorX = 0.0f;
-                    if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
-                    if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
-                    if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
-                    m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
-                }
-            } // end m_gamepadMouseMode
+            LARGE_INTEGER _gmnow;
+            QueryPerformanceCounter(&_gmnow);
+            double mouseIdleMs = 0.0;
+            if (m_lastPointerTime.QuadPart != 0)
+                mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
+                              * 1000.0 / m_qpcFreq.QuadPart;
+            if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
+            {
+                float cursorDx = sx * 0.80f * dtSec;
+                float cursorDy = sy * 0.80f * dtSec;
+                m_virtualCursorX += cursorDx;
+                m_virtualCursorY += cursorDy;
+                if (m_virtualCursorX < 0.0f) m_virtualCursorX = 0.0f;
+                if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
+                if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
+                if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
+                m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
+            }
+        } // end m_gamepadMouseMode
 #endif
+    }
 
-            // Multi-run model: produce up to 5 retro_runs per tick to fill audio.
-            // Queue feedback: when audio queue is healthy, scale down production to
-            // avoid overrunning. Clamp debt at 2× target fps (~140 frames) to prevent
-            // burst overruns from long I/O stalls while still allowing catch-up.
-            double targetFps = m_retroCore->GetTargetFps();
-            {
-                LARGE_INTEGER now;
-                QueryPerformanceCounter(&now);
-                if (m_audioLastTick > 0.0)
-                {
-                    double dt = (double)(now.QuadPart) / (double)m_qpcFreq.QuadPart - m_audioLastTick;
-                    m_audioTimeAccumulator += dt * targetFps;
-                    // Clamp: 2× target fps (~140 at 70fps). Prevents runaway
-                    // from long I/O stalls (SLOW FRAME 50-100ms) while allowing
-                    // catch-up bursts after normal stalls.
-                    if (m_audioTimeAccumulator > 2.0 * targetFps)
-                    {
-                        m_audioTimeAccumulator = 2.0 * targetFps;
-                    }
-                }
-                m_audioLastTick = (double)now.QuadPart / (double)m_qpcFreq.QuadPart;
-            }
-
-            int runs = 0;
-            int maxRetroRuns = 5;
-
-            // Queue feedback: if audio queue is healthy, reduce production rate
-            // to avoid overrunning and causing flush. Scale 0.4-1.0 based on queue.
-            if (m_xaudio2)
-            {
-                int qf = m_xaudio2->GetQueuedFrames();
-                if (qf > 40)       maxRetroRuns = 1;  // queue healthy, minimal production
-                else if (qf > 20)  maxRetroRuns = 2;
-                else if (qf > 10)  maxRetroRuns = 3;
-                // else maxRetroRuns stays 5 (empty queue, produce aggressively)
-            }
-
-            // Tick budget safety: skip if this tick already took too long
-            {
-                LARGE_INTEGER _now;
-                QueryPerformanceCounter(&_now);
-                double tickElapsedMs = (double)(_now.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-                if (tickElapsedMs <= 25.0)
-                {
-                    while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
-                    {
-                        LARGE_INTEGER _rf0, _rf1;
-                        QueryPerformanceCounter(&_rf0);
+    // ── EMULATION: adaptive RunFrame(s) ──
+    // At 60fps (Xbox UWP), one RunFrame produces ~685 frames (14.3ms audio)
+    // but consumption is 48,000/sec → deficit of ~6,900/sec.
+    // Extra RunFrame compensates when first run was fast (< 12ms) and queue
+    // isn't already full (< 1200 frames). This avoids death spirals for
+    // CPU-heavy games (Screamer) where second run costs more than it produces.
+    int runs = 0;
+    if (m_retroRunning && m_retroCore->IsLoaded() && !m_menu.IsVisible())
+    {
+        LARGE_INTEGER _runStart, _runEnd;
+        QueryPerformanceCounter(&_runStart);
 #ifndef XB_INSPECTOR_ENABLED
-                        m_retroCore->RunFrame();
+        m_retroCore->RunFrame();
 #else
-                        if (!s_paused)
-                            m_retroCore->RunFrame();
+        if (!s_paused)
+            m_retroCore->RunFrame();
 #endif
-                        QueryPerformanceCounter(&_rf1);
-                        double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-                        if (rfMs > 20.0)
-                        {
-                            int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
-                            spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame took {:.1f}ms q={}", rfMs, qf);
-                        }
-                        m_audioTimeAccumulator -= 1.0;
-                        runs++;
-                        maxRetroRuns--;
-                    }
-                }
-            }
+        QueryPerformanceCounter(&_runEnd);
+        runs = 1;
 
-            m_lastRetroRuns = runs;
+        // Adaptive extra run: only if first run was fast and queue not full
+        double runMs = (double)(_runEnd.QuadPart - _runStart.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+        uint32_t q = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+        if (runMs < 12.0 && q < 1200)
+        {
+            m_retroCore->RunFrame();
+            runs = 2;
+        }
+    }
 
-            // Accumulate runs for DIAG interval reporting
-            s_diagRunsAccum += runs;
+    m_lastRetroRuns = runs;
 
-            if (RetroCore::IsShutdownRequested())
+    // FPS tracking — use loop time as effective frame period
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (m_lastRetroRuns > 0)
+        {
+            double dt = (double)(now.QuadPart - m_fpsLastFrame.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+            if (m_fpsLastFrame.QuadPart != 0 && dt > 0.0 && dt < 500.0)
             {
-                OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, unloading game\n");
-                m_retroCore->UnloadGame();
-                m_retroRunning = false;
-                m_audioTimeAccumulator = 0.0;
-                m_audioLastTick = 0.0;
-                m_lastRetroRuns = 0;
-                m_clearColor = DirectX::Colors::Black;
-
-                // Reset FPS tracking — stale data from old game leaks into overlay
-                m_currentFps = 0.0;
-                m_frameTimeMs = 0.0;
-                m_fpsFrameCount = 0;
-                m_fpsFrameIdx = 0;
-                memset(m_fpsFrameTimes, 0, sizeof(m_fpsFrameTimes));
-                m_fpsLastFrame = {};
-
-                // Reset input state — prevent carry-over to next game
-                m_gamepadMouseMode = false;
-                m_lbrbsPrevHeld = false;
-                m_dpadRepeatBtn = -1;
-                m_osdExitSuppressing = false;
-
-                // Flush XAudio2 — old audio queue would play briefly with new game
-                if (m_xaudio2) {
-                    m_xaudio2->Stop();
-                    m_xaudio2->Flush();
-                }
-
-                m_menu.Show();
-                return; // return from Tick lambda, render will show menu
+                m_fpsFrameTimes[m_fpsFrameIdx] = dt;
+                m_fpsFrameIdx = (m_fpsFrameIdx + 1) % 60;
+                if (m_fpsFrameCount < 60) m_fpsFrameCount++;
+                double sum = 0;
+                for (int i = 0; i < m_fpsFrameCount; i++) sum += m_fpsFrameTimes[i];
+                m_frameTimeMs = sum / m_fpsFrameCount;
+                m_currentFps = (m_frameTimeMs > 0.0) ? 1000.0 / m_frameTimeMs : 0.0;
+            }
+            m_fpsLastFrame = now;
         }
-        }
+    }
 
-        // Auto-stop XAudio2 voice: if voice is running but queue is empty and no
-        // retro_run produced audio this tick, stop the voice to prevent infinite
-        // UNDERRUN spam (e.g. after beep finishes or before any game loads).
-        if (m_xaudio2 && m_lastRetroRuns == 0 && m_xaudio2->GetQueuedFrames() <= 0)
-        {
+    // Shutdown detection (after tight loop exits)
+    if (RetroCore::IsShutdownRequested() && m_retroRunning)
+    {
+        OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, unloading game\n");
+        m_retroCore->UnloadGame();
+        m_retroRunning = false;
+        m_lastRetroRuns = 0;
+        m_clearColor = DirectX::Colors::Black;
+
+        m_currentFps = 0.0;
+        m_frameTimeMs = 0.0;
+        m_fpsFrameCount = 0;
+        m_fpsFrameIdx = 0;
+        memset(m_fpsFrameTimes, 0, sizeof(m_fpsFrameTimes));
+        m_fpsLastFrame = {};
+
+        m_gamepadMouseMode = false;
+        m_lbrbsPrevHeld = false;
+        m_dpadRepeatBtn = -1;
+        m_osdExitSuppressing = false;
+
+        if (m_xaudio2) {
             m_xaudio2->Stop();
+            m_xaudio2->Flush();
         }
 
-        QueryPerformanceCounter(&_t1);
+        m_menu.Show();
+    }
 
-        // Frame pacing stats
-        {
-            double frameMs = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-            double targetFps = m_retroCore->IsLoaded() ? m_retroCore->GetTargetFps() : 60.0;
-            double targetMs = 1000.0 / targetFps;
+    // Auto-stop XAudio2 voice when queue empty and no runs
+    if (m_xaudio2 && m_lastRetroRuns == 0 && m_xaudio2->GetQueuedFrames() <= 0)
+    {
+        m_xaudio2->Stop();
+    }
+
 #ifdef XB_INSPECTOR_ENABLED
-            s_debug_fps = m_timer.GetFramesPerSecond();
-            s_debug_target_fps = targetFps;
-            s_debug_frame_ms = frameMs;
-            s_perf.fps = s_debug_fps;
-            s_perf.target_fps = s_debug_target_fps;
-            s_perf.frame_ms = s_debug_frame_ms;
+    xb::Xray::update();
 #endif
+
+    m_timer.Tick([&]()
+    {
+        LARGE_INTEGER _t0, _t1, _freq;
+        QueryPerformanceFrequency(&_freq);
+        QueryPerformanceCounter(&_t0);
+
+        double targetFps = m_retroCore->IsLoaded() ? m_retroCore->GetTargetFps() : 60.0;
+#ifdef XB_INSPECTOR_ENABLED
+        s_debug_fps = m_timer.GetFramesPerSecond();
+        s_debug_target_fps = targetFps;
+        s_debug_frame_ms = (double)m_frameTimeMs;
+        s_perf.fps = s_debug_fps;
+        s_perf.target_fps = s_debug_target_fps;
+        s_perf.frame_ms = s_debug_frame_ms;
+#endif
+
+        // Frame pacing stats — log every 3000 ticks
+        {
             static int pacingLogCounter = 0;
             if ((++pacingLogCounter % 3000) == 0)
             {
@@ -851,7 +795,6 @@ void dosbox_uwpMain::Update()
                 unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
                 unsigned vh = m_retroCore ? m_retroCore->GetFrameHeight() : 0;
 
-                // Real (Windows) process CPU time
                 FILETIME creation, exit, kernel, user;
                 GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
                 ULARGE_INTEGER uk, uu;
@@ -859,23 +802,20 @@ void dosbox_uwpMain::Update()
                 uu.LowPart = user.dwLowDateTime; uu.HighPart = user.dwHighDateTime;
                 double cpuMs = (double)(uk.QuadPart + uu.QuadPart) / 10000.0;
 
-                // Real memory
                 PROCESS_MEMORY_COUNTERS pmc;
                 GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
                 float memMB = pmc.WorkingSetSize / (1024.0f * 1024.0f);
 
                 spdlog::info(
                     "[DIAG] fps={:.1f}/{:.0f} frame={:.2f}ms "
-                    "runs_ival={} runs_last={} accum={:.2f} audio_q={} "
+                    "runs_last={} audio_q={} "
                     "cpu={:.0f}ms mem={:.1f}MB "
-                    "cmax={} video={}x{}",
-                    m_currentFps, targetFps, frameMs,
-                    s_diagRunsAccum, m_lastRetroRuns, m_audioTimeAccumulator, qf,
+                    "                    cmax={}, video={}x{}",
+                    m_currentFps, targetFps, (double)m_frameTimeMs,
+                    m_lastRetroRuns, qf,
                     cpuMs, memMB,
                     RetroCore::GetCyclesMax(), vw, vh);
-                s_diagRunsAccum = 0;
 
-                // Frame drop detection: sustained drop below 80% of target
                 static double s_lowFpsSum = 0.0;
                 static int s_lowFpsCount = 0;
                 static int s_dropLogCooldown = 0;
@@ -896,11 +836,10 @@ void dosbox_uwpMain::Update()
                         "[DROP] {} consecutive windows below 80% target: "
                         "avg={:.1f} target={:.0f} — possible frame drop or stall",
                         s_lowFpsCount, avgLow, targetFps);
-                    s_dropLogCooldown = 300; // don't spam
+                    s_dropLogCooldown = 300;
                 }
                 if (s_dropLogCooldown > 0) s_dropLogCooldown--;
 
-                // Main loop stall: tick rate dropped below 30fps (Windows ~3000, Xbox ~60)
                 if (m_retroCore->IsLoaded() && m_currentFps > 0 && m_currentFps < 30.0)
                 {
                     spdlog::warn("[CPU] main loop slow: {:.0f}fps (normal ~3000) — CPU/IO spike?",
@@ -909,26 +848,23 @@ void dosbox_uwpMain::Update()
             }
         }
 
+        // Load state watchdog
+        if (m_loadState == LOAD_BOOTING)
         {
-            // Load state watchdog: if stuck in BOOTING >5s, log warning
-            if (m_loadState == LOAD_BOOTING)
+            if (++m_loadTimer > 300)
             {
-                if (++m_loadTimer > 300)
-                {
-                    static bool warned = false;
-                    if (!warned) { warned = true;
-                        OutputDebugStringA("[dosbox-uwp] WARNING: Load stuck in BOOTING >5s (possible hang)\n");
-                    }
+                static bool warned = false;
+                if (!warned) { warned = true;
+                    OutputDebugStringA("[dosbox-uwp] WARNING: Load stuck in BOOTING >5s (possible hang)\n");
                 }
             }
-            else
-            {
-                m_loadTimer = 0;
-            }
         }
-        QueryPerformanceCounter(&_t2);
+        else
+        {
+            m_loadTimer = 0;
+        }
 
-        // loading screen animation (time-based, not frame-based)
+        // Loading screen animation (time-based)
         if (m_loadingActive)
         {
             LARGE_INTEGER _animNow;
@@ -939,48 +875,24 @@ void dosbox_uwpMain::Update()
             m_loadingDots = ((int)(animElapsed / 200.0)) % 4;
         }
 
-        QueryPerformanceCounter(&_t3);
+        QueryPerformanceCounter(&_t1);
 #ifdef XB_INSPECTOR_ENABLED
-        s_debug_poll_ms = (double)(_t0.QuadPart) * 1000.0 / _freq.QuadPart;
-        s_debug_hud_ms = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
-        s_debug_render_ms = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
-        s_debug_total_ms = (double)(_t3.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-        s_perf.poll_ms = s_debug_poll_ms;
+        s_debug_hud_ms = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
+        s_debug_total_ms = (double)(_t1.QuadPart) * 1000.0 / _freq.QuadPart;
         s_perf.hud_ms = s_debug_hud_ms;
-        s_perf.render_ms = s_debug_render_ms;
         s_perf.total_ms = s_debug_total_ms;
 #endif
-        {
-            static unsigned _tc = 0;
-            _tc++;
-            // Micro-skip detection: log any individual tick where total exceeds 40ms
-            // (~3 frame periods at 70fps). Catches the 50ms skip every ~10s on Xbox.
-            double tickMs = (double)(_t3.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-            double frameMs = (double)(_t1.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-            double hudMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
-            double sceneMs = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
-            if (tickMs > 20.0 && m_lastRetroRuns > 0 && !m_menu.IsVisible())
-            {
-                int qf2 = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
-                spdlog::warn("[SKIP] tick={} total={:.1f}ms frame={:.1f} hud={:.1f} scene={:.1f} "
-                    "runs={} q={}",
-                    _tc, tickMs, frameMs, hudMs, sceneMs, m_lastRetroRuns, qf2);
-            }
-            if ((_tc % 6000) == 0)
-            {
-                double total_ms = tickMs;
-                float fps       = m_timer.GetFramesPerSecond();
-                unsigned long long memBytes = 0;
-                try { memBytes = Windows::System::MemoryManager::AppMemoryUsage; } catch (...) { }
-                char _dbg[512];
-                sprintf_s(_dbg, "[dosbox-uwp] TICK #%u: frame=%.1fms hud=%.1f scene=%.1f fps=%.0f "
-                    "MEM=%lluMB total=%.1f\n",
-                    _tc, frameMs, hudMs, sceneMs, fps,
-                    memBytes / (1024 * 1024), total_ms);
-                OutputDebugStringA(_dbg);
-            }
-        }
     });
+
+    // ── RENDER + PRESENT (RetroArch model) ──
+    // One complete frame cycle: input → retro_run() → render → present.
+    // Present() is inside the same call as retro_run(), matching RetroArch's
+    // d3d11_gfx_frame() which Present()s from inside the video callback.
+    // Audio backpressure (Submit blocking) paces the loop, not vsync.
+    if (Render())
+    {
+        m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
+    }
 }
 
 bool dosbox_uwpMain::Render()
@@ -1062,12 +974,12 @@ bool dosbox_uwpMain::Render()
             swprintf_s(fpsText,
                 L"FPS: %5.1f  Frame: %5.1fms\n"
                 L"Video: %ux%u  Viewport: %.0fx%.0f\n"
-                L"Runs: %d  Accum: %.2f  Target: %.0f\n"
+                L"Runs: %d  Target: %.0f\n"
                 L"Audio Q: %d frames\n"
                 L"CyclesMax: %d",
                 m_currentFps, m_frameTimeMs,
                 vw, vh, logicalSize.Width, logicalSize.Height,
-                m_lastRetroRuns, m_audioTimeAccumulator,
+                m_lastRetroRuns,
                 m_retroCore ? m_retroCore->GetTargetFps() : 60.0,
                 qf, cyclesMax);
 
@@ -1516,14 +1428,9 @@ void dosbox_uwpMain::ProcessPendingLoad()
     m_pendingLoad.reset();
     m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
 
-    // Reset accumulator (v0.8.3.0)
-    // DON'T force-start XAudio2 here — Submit() auto-starts after TARGET_QUEUE pre-buffering.
-    // Force-starting with2 frames causes instant UNDERRUN → OutputDebugStringA flood → freeze.
-    m_audioTimeAccumulator = 0.0;
-    m_audioLastTick = 0.0;
+    // Reset audio state after load
     if (m_xaudio2) {
         m_xaudio2->Flush();
-        m_audioTimeAccumulator = 1.0; // boost first frame
     }
     m_loadingActive = false;
     m_loadingDisc.Reset();

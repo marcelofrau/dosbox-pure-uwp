@@ -234,3 +234,8 @@ RetroArch's primary frame pacer is **audio backpressure**, not QPC sleep:
 RetroArch), the audio driver becomes the frame pacer and we don't need QPC-based
 frame limiting at all. `Present(1,0)` handles visual sync, audio handles emulation
 cadence.
+
+**v0.8.5.0 (current):** This is now implemented. `Submit()` blocks when the 16-slot
+ring buffer is full. `dosbox_uwpMain.cpp` has a simple `RunFrame()` per tick — no
+accumulator, no DRC controller, no QPC pacing. Audio backpressure paces the main
+thread. See `AUDIO-ATTEMPTS-LOG.md` Phase 13 for full details.

@@ -584,7 +584,37 @@ void RetroCore::SetAudioOutput(XAudio2Output* output)
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
     // Push model: core produces audio → Submit() → XAudio2 hardware.
-    // This is the v0.8.3.0 audio path. SDL pull model removed.
+    // Diagnostic: track audio production rate and timing between calls.
+    static LARGE_INTEGER s_lastAudioTime = {};
+    static int s_audioCallCount = 0;
+    static int s_totalFrames = 0;
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+
+    double dtMs = 0.0;
+    if (s_lastAudioTime.QuadPart != 0)
+        dtMs = (double)(now.QuadPart - s_lastAudioTime.QuadPart) * 1000.0 / (double)freq.QuadPart;
+    s_lastAudioTime = now;
+    s_audioCallCount++;
+    s_totalFrames += (int)frames;
+
+    // Log every 200 calls: frames produced, interval since last call, implied sample rate
+    if ((s_audioCallCount % 200) == 0)
+    {
+        double impliedRate = (dtMs > 0.0) ? (double)frames * 1000.0 / dtMs : 0.0;
+        spdlog::info("[retro_audio] #{}: {} frames, dt={:.1f}ms, implied_rate={:.0f}, total_frames={}",
+            s_audioCallCount, frames, dtMs, impliedRate, s_totalFrames);
+    }
+
+    // Log if interval is suspiciously long (possible stall)
+    if (dtMs > 50.0 && s_lastAudioTime.QuadPart != 0)
+    {
+        spdlog::warn("[retro_audio] LONG GAP: {} frames, dt={:.1f}ms (expected ~14.3ms)", frames, dtMs);
+    }
+
     if (s_audioOutput)
         s_audioOutput->Submit(data, frames);
     return frames;

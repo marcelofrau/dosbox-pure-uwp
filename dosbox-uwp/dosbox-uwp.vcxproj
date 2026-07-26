@@ -62,7 +62,7 @@
   
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Link>
-      <AdditionalDependencies>d2d1.lib; d3d11.lib; dxgi.lib; windowscodecs.lib; dwrite.lib; xaudio2.lib; %(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib; d3d11.lib; d3d12.lib; dxgi.lib; windowscodecs.lib; dwrite.lib; xaudio2.lib; %(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories); $(VCInstallDir)\lib\store\amd64; $(VCInstallDir)\lib\amd64</AdditionalLibraryDirectories>
     </Link>
     <ClCompile>
@@ -77,7 +77,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Link>
-      <AdditionalDependencies>d2d1.lib; d3d11.lib; dxgi.lib; windowscodecs.lib; dwrite.lib; xaudio2.lib; %(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib; d3d11.lib; d3d12.lib; dxgi.lib; windowscodecs.lib; dwrite.lib; xaudio2.lib; %(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories); $(VCInstallDir)\lib\store\amd64; $(VCInstallDir)\lib\amd64</AdditionalLibraryDirectories>
     </Link>
     <ClCompile>

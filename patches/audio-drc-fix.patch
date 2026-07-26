@@ -1,0 +1,168 @@
+diff --git a/dosbox-uwp/Content/XAudio2Output.cpp b/dosbox-uwp/Content/XAudio2Output.cpp
+index dce2b16..e6f9651 100644
+--- a/dosbox-uwp/Content/XAudio2Output.cpp
++++ b/dosbox-uwp/Content/XAudio2Output.cpp
+@@ -470,6 +470,11 @@ bool XAudio2Output::ConsumeVoiceStarted()
+     return false;
+ }
+ 
++long XAudio2Output::GetTargetQueueFrames()
++{
++    return TARGET_QUEUE;
++}
++
+ volatile long* XAudio2Output::QueuedFramesPtr()
+ {
+     return &s_queuedFrames;
+diff --git a/dosbox-uwp/Content/XAudio2Output.h b/dosbox-uwp/Content/XAudio2Output.h
+index 57225dd..2f22218 100644
+--- a/dosbox-uwp/Content/XAudio2Output.h
++++ b/dosbox-uwp/Content/XAudio2Output.h
+@@ -24,6 +24,7 @@ namespace dosbox_uwp
+         bool ConsumeVoiceStarted(); // returns+clears flag when voice transitions started→true
+         uint32_t GetQueuedFrames() const;
+         uint32_t GetAndResetUnderrunCount();
++        static long GetTargetQueueFrames(); // real DRC setpoint (source of truth is XAudio2Output.cpp's TARGET_QUEUE)
+         void WaitForDrain(); // Block until queue drops below HIGH_WATERMARK (call from main thread, not from Submit)
+         static const long TARGET_FRAMES = 6615; // ~150ms — pre-buffer threshold
+         static const long HIGH_WATERMARK = 4410; // ~100ms — start waiting when queue exceeds this
+diff --git a/dosbox-uwp/dosbox_uwpMain.cpp b/dosbox-uwp/dosbox_uwpMain.cpp
+index a1e8f79..e333a3c 100644
+--- a/dosbox-uwp/dosbox_uwpMain.cpp
++++ b/dosbox-uwp/dosbox_uwpMain.cpp
+@@ -5,6 +5,7 @@
+ #include "dosbox_pure_sta.h"
+ #include "Common\DirectXHelper.h"
+ #include <cmath>
++#include <algorithm>
+ #include <sstream>
+ #include <wincodec.h>
+ #include <wrl/client.h>
+@@ -713,10 +714,15 @@ void dosbox_uwpMain::Update()
+             } // end m_gamepadMouseMode
+ #endif
+ 
+-            // Multi-run model: produce up to 5 retro_runs per tick to fill audio.
+-            // Queue feedback: when audio queue is healthy, scale down production to
+-            // avoid overrunning. Clamp debt at 2× target fps (~140 frames) to prevent
+-            // burst overruns from long I/O stalls while still allowing catch-up.
++            // Multi-run model: produce retro_runs to fill audio, paced by a DRC
++            // (dynamic rate control) proportional controller instead of discrete
++            // queue thresholds. See docs/audio-fix/AUDIO-PIPELINE.md §6/§7 and
++            // IMPLEMENTATION-PLAN.md §4 "Option B — Production-rate nudge".
++            //
++            // The controller nudges the *call cadence* of RunFrame() by up to
++            // +/-0.5% based on real queue depth (never SetFrequencyRatio, never
++            // touches pitch). Same bound RetroArch uses in
++            // audio_driver_compute_rate_adjust() (audio_max_timing_skew).
+             double targetFps = m_retroCore->GetTargetFps();
+             {
+                 LARGE_INTEGER now;
+@@ -724,7 +730,20 @@ void dosbox_uwpMain::Update()
+                 if (m_audioLastTick > 0.0)
+                 {
+                     double dt = (double)(now.QuadPart) / (double)m_qpcFreq.QuadPart - m_audioLastTick;
+-                    m_audioTimeAccumulator += dt * targetFps;
++
++                    double adjust = 1.0;
++                    if (m_xaudio2)
++                    {
++                        const double kTargetQueue = (double)XAudio2Output::GetTargetQueueFrames();
++                        const double kMaxSkew = 0.005; // +/-0.5% ceiling, inaudible
++                        double error = ((double)m_xaudio2->GetQueuedFrames() - kTargetQueue) / kTargetQueue;
++                        error = std::max(-1.0, std::min(1.0, error));
++                        // queued > target -> adjust > 1 -> drain faster (more runs)
++                        // queued < target -> adjust < 1 -> drain slower (fewer runs)
++                        adjust = 1.0 + kMaxSkew * error;
++                    }
++
++                    m_audioTimeAccumulator += dt * targetFps * adjust;
+                     // Clamp: 2× target fps (~140 at 70fps). Prevents runaway
+                     // from long I/O stalls (SLOW FRAME 50-100ms) while allowing
+                     // catch-up bursts after normal stalls.
+@@ -737,47 +756,53 @@ void dosbox_uwpMain::Update()
+             }
+ 
+             int runs = 0;
+-            int maxRetroRuns = 5;
+-
+-            // Queue feedback: if audio queue is healthy, reduce production rate
+-            // to avoid overrunning and causing flush. Scale 0.4-1.0 based on queue.
+-            if (m_xaudio2)
+-            {
+-                int qf = m_xaudio2->GetQueuedFrames();
+-                if (qf > 40)       maxRetroRuns = 1;  // queue healthy, minimal production
+-                else if (qf > 20)  maxRetroRuns = 2;
+-                else if (qf > 10)  maxRetroRuns = 3;
+-                // else maxRetroRuns stays 5 (empty queue, produce aggressively)
+-            }
+-
+-            // Tick budget safety: skip if this tick already took too long
++            // Safety ceiling only (not steady-state control anymore -- that's
++            // `adjust` above). Bounds worst-case catch-up burst after a stall.
++            int maxRetroRuns = 8;
++
++            // Tick budget safety: throttle *additional* catch-up runs once this
++            // tick is already expensive, but ALWAYS guarantee at least one
++            // RunFrame(). The previous version skipped the whole loop (and thus
++            // all audio production) whenever tickElapsedMs > 25ms, which starves
++            // the XAudio2 queue on any tick where prior work (input polling,
++            // gamepad-mouse sim, etc.) ran long -- exactly the failure mode on
++            // CPU-heavy titles (e.g. Screamer/Screamer 2) that periodically blow
++            // past the 25ms budget. Do not reintroduce a hard skip here.
+             {
+                 LARGE_INTEGER _now;
+                 QueryPerformanceCounter(&_now);
+                 double tickElapsedMs = (double)(_now.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
+-                if (tickElapsedMs <= 25.0)
++                bool tickBudgetOk = (tickElapsedMs <= 25.0);
++                bool firstRun = true;
++
++                while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0 && (firstRun || tickBudgetOk))
+                 {
+-                    while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
+-                    {
+-                        LARGE_INTEGER _rf0, _rf1;
+-                        QueryPerformanceCounter(&_rf0);
++                    LARGE_INTEGER _rf0, _rf1;
++                    QueryPerformanceCounter(&_rf0);
+ #ifndef XB_INSPECTOR_ENABLED
+-                        m_retroCore->RunFrame();
++                    m_retroCore->RunFrame();
+ #else
+-                        if (!s_paused)
+-                            m_retroCore->RunFrame();
++                    if (!s_paused)
++                        m_retroCore->RunFrame();
+ #endif
+-                        QueryPerformanceCounter(&_rf1);
+-                        double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
+-                        if (rfMs > 20.0)
+-                        {
+-                            int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+-                            spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame took {:.1f}ms q={}", rfMs, qf);
+-                        }
+-                        m_audioTimeAccumulator -= 1.0;
+-                        runs++;
+-                        maxRetroRuns--;
++                    QueryPerformanceCounter(&_rf1);
++                    double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
++                    if (rfMs > 20.0)
++                    {
++                        int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
++                        spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame took {:.1f}ms q={}", rfMs, qf);
+                     }
++                    m_audioTimeAccumulator -= 1.0;
++                    runs++;
++                    maxRetroRuns--;
++                    firstRun = false;
++
++                    // Re-check budget after each run: a single heavy RunFrame
++                    // (already logged above as SLOW FRAME) will naturally stop
++                    // further catch-up this tick without ever hitting zero runs.
++                    QueryPerformanceCounter(&_now);
++                    tickElapsedMs = (double)(_now.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
++                    tickBudgetOk = (tickElapsedMs <= 25.0);
+                 }
+             }
+ 

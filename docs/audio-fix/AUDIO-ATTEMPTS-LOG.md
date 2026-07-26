@@ -323,3 +323,41 @@ The mistake was trying to be too precise. RetroArch's DRC is slow and conservati
 3. **Simpler is better.** RetroArch's DRC is slow (updates once per frame, ±0.5% max). We tried fast (every 10 submits, ±5%).
 4. **Chicken-and-egg problems need breaking.** DRC needs reliable clock → clock needs no underruns → underruns need DRC. Break the cycle by accepting imperfect measurement and being very conservative.
 5. **Revert early.** We should have reverted after Phase 7 showed the accumulator approach works but contradicts architecture. Instead we kept adding layers.
+
+---
+
+### Phase 13: Full rewrite — RetroArch blocking model (current)
+
+**Goal:** Delete all audio implementation, rewrite from scratch based on RetroArch's proven XAudio2 blocking model.
+
+**What was done:**
+- Deleted entire XAudio2Output (pool, CAS, drain event, flush cap, trend tracking, diagnostic counters)
+- Rewrote with 16 pre-allocated ring buffers (FRAMES_PER_BUFFER=960 = 20ms@48kHz)
+- `Submit()` blocks when ring is full via `WaitForSingleObject(hEvent)`
+- `OnBufferEnd` decrements buffer count + `SetEvent(hEvent)` (auto-reset event)
+- Voice auto-starts on first buffer submission
+- Removed ALL accumulator/DRC/pacing logic from `dosbox_uwpMain.cpp`
+- Simple model: `Update()` calls `RunFrame()` once per tick, audio backpressure paces the main thread
+- Removed `m_audioTimeAccumulator`, `m_audioLastTick`, `s_diagRunsAccum`
+- Removed `ConsumeVoiceStarted`, `GetAndResetUnderrunCount`, `GetTargetQueueFrames`, `WaitForDrain`, `QueuedFramesPtr`, `TotalProducedPtr`, `TotalConsumedPtr`
+
+**Architecture:**
+```
+retro_run() → audio_batch_cb() → retro_audio() → Submit() [BLOCKS when ring full]
+                                                         │
+                                          16× RingSlot (960 frames each)
+                                          OnBufferEnd → InterlockedDecrement + SetEvent
+                                                         │
+                                              XAudio2 source voice → DAC
+```
+
+**Key difference from all prior attempts:**
+- Audio IS the frame pacer (like RetroArch), not QPC sleep
+- `Submit()` blocks the main thread when ring is full → naturally paces `retro_run()` at DAC consumption rate
+- No accumulator, no DRC controller, no queue-depth feedback — just blocking
+
+**Status:** Build clean. Untested.
+
+**Risks:**
+- Blocking main thread for up to 20ms when ring is full (should be rare with 16 slots = 320ms headroom)
+- `GetQueuedFrames()` is now an estimate (buffer count × FRAMES_PER_BUFFER + partial), not exact frame count

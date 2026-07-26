@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "DeviceResources.h"
 #include "DirectXHelper.h"
+#include <spdlog/spdlog.h>
 
 using namespace D2D1;
 using namespace DirectX;
@@ -126,22 +127,15 @@ void DX::DeviceResources::CreateDeviceIndependentResources()
 // Configures the Direct3D device, and stores handles to it and the device context.
 void DX::DeviceResources::CreateDeviceResources() 
 {
-	// This flag adds support for surfaces with a different color channel ordering
-	// than the API default. It is required for compatibility with Direct2D.
 	UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
 #if defined(_DEBUG)
 	if (DX::SdkLayersAvailable())
 	{
-		// If the project is in a debug build, enable debugging via SDK Layers with this flag.
 		creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
 	}
 #endif
 
-	// This array defines the set of DirectX hardware feature levels this app will support.
-	// Note the ordering should be preserved.
-	// Don't forget to declare your application's minimum required feature level in its
-	// description.  All applications are assumed to support 9.1 unless otherwise stated.
 	D3D_FEATURE_LEVEL featureLevels[] =
 	{
 		D3D_FEATURE_LEVEL_12_1,
@@ -155,69 +149,110 @@ void DX::DeviceResources::CreateDeviceResources()
 		D3D_FEATURE_LEVEL_9_1
 	};
 
-	// Create the Direct3D 11 API device object and a corresponding context.
-	ComPtr<ID3D11Device> device;
-	ComPtr<ID3D11DeviceContext> context;
+	// D3D11On12: create D3D12 device, then wrap it with D3D11 interface.
+	// Full GPU access on Xbox (vs 50% on pure D3D11), foundation for future native D3D12 shaders.
+	ComPtr<IDXGIFactory4> dxgiFactory;
+	DX::ThrowIfFailed(
+		CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory))
+	);
 
-	HRESULT hr = D3D11CreateDevice(
-		nullptr,					// Specify nullptr to use the default adapter.
-		D3D_DRIVER_TYPE_HARDWARE,	// Create a device using the hardware graphics driver.
-		0,							// Should be 0 unless the driver is D3D_DRIVER_TYPE_SOFTWARE.
-		creationFlags,				// Set debug and Direct2D compatibility flags.
-		featureLevels,				// List of feature levels this app can support.
-		ARRAYSIZE(featureLevels),	// Size of the list above.
-		D3D11_SDK_VERSION,			// Always set this to D3D11_SDK_VERSION for Microsoft Store apps.
-		&device,					// Returns the Direct3D device created.
-		&m_d3dFeatureLevel,			// Returns feature level of device created.
-		&context					// Returns the device immediate context.
-		);
+	ComPtr<IDXGIAdapter1> dxgiAdapter;
+	bool useWarp = false;
 
-	if (FAILED(hr))
+	// Find best hardware adapter; fall back to WARP if none found.
+	for (UINT adapterIndex = 0; SUCCEEDED(dxgiFactory->EnumAdapters1(adapterIndex, &dxgiAdapter)); ++adapterIndex)
 	{
-		// If the initialization fails, fall back to the WARP device.
-		// For more information on WARP, see: 
-		// https://go.microsoft.com/fwlink/?LinkId=286690
-		DX::ThrowIfFailed(
-			D3D11CreateDevice(
-				nullptr,
-				D3D_DRIVER_TYPE_WARP, // Create a WARP device instead of a hardware device.
-				0,
-				creationFlags,
-				featureLevels,
-				ARRAYSIZE(featureLevels),
-				D3D11_SDK_VERSION,
-				&device,
-				&m_d3dFeatureLevel,
-				&context
-				)
-			);
+		DXGI_ADAPTER_DESC1 desc;
+		dxgiAdapter->GetDesc1(&desc);
+		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+		{
+			dxgiAdapter = nullptr;
+			continue;
+		}
+		// Found hardware adapter — verify D3D12 support.
+		if (SUCCEEDED(D3D12CreateDevice(dxgiAdapter.Get(), featureLevels[0], __uuidof(ID3D12Device), nullptr)))
+			break;
+		dxgiAdapter = nullptr;
 	}
 
-	// Store pointers to the Direct3D 11.3 API device and immediate context.
-	DX::ThrowIfFailed(
-		device.As(&m_d3dDevice)
+	if (dxgiAdapter == nullptr)
+	{
+		// No hardware adapter — use WARP.
+		useWarp = true;
+		DX::ThrowIfFailed(
+			dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&dxgiAdapter))
 		);
+	}
+
+	// Create D3D12 device.
+	HRESULT hr = D3D12CreateDevice(
+		dxgiAdapter.Get(),
+		featureLevels[0],	// Request highest feature level available.
+		__uuidof(ID3D12Device),
+		&m_d3d12Device
+	);
+
+	if (FAILED(hr) && !useWarp)
+	{
+		// Hardware D3D12 failed — retry with WARP.
+		dxgiAdapter = nullptr;
+		DX::ThrowIfFailed(dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&dxgiAdapter)));
+		DX::ThrowIfFailed(
+			D3D12CreateDevice(
+				dxgiAdapter.Get(),
+				featureLevels[0],
+				__uuidof(ID3D12Device),
+				&m_d3d12Device
+			)
+		);
+		spdlog::info("[D3D11On12] Using WARP adapter (software fallback)");
+	}
+
+	// Create D3D12 command queue (required by D3D11On12CreateDevice).
+	ComPtr<ID3D12CommandQueue> commandQueue;
+	{
+		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+		DX::ThrowIfFailed(m_d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+	}
+
+	// Wrap D3D12 device with D3D11 interface — all existing D3D11/D2D1 code works unchanged.
+	ComPtr<ID3D11Device> d3d11Device;
+	ComPtr<ID3D11DeviceContext> d3d11Context;
+
+	D3D_FEATURE_LEVEL chosenLevel;
+	IUnknown* d3d12Queues[] = { commandQueue.Get() };
 
 	DX::ThrowIfFailed(
-		context.As(&m_d3dContext)
-		);
+		D3D11On12CreateDevice(
+			m_d3d12Device.Get(),
+			creationFlags,
+			featureLevels,
+			ARRAYSIZE(featureLevels),
+			d3d12Queues,
+			1,			// NumQueues
+			0,			// NodeMask
+			&d3d11Device,
+			&d3d11Context,
+			&chosenLevel
+		)
+	);
+
+	m_d3dFeatureLevel = chosenLevel;
+
+	DX::ThrowIfFailed(d3d11Device.As(&m_d3dDevice));
+	DX::ThrowIfFailed(d3d11Context.As(&m_d3dContext));
+
+	spdlog::info("[D3D11On12] D3D11On12 device created — feature level: 0x{:04X}, adapter: {}",
+		(UINT)m_d3dFeatureLevel, useWarp ? "WARP" : "Hardware");
 
 	// Create the Direct2D device object and a corresponding context.
 	ComPtr<IDXGIDevice3> dxgiDevice;
-	DX::ThrowIfFailed(
-		m_d3dDevice.As(&dxgiDevice)
-		);
+	DX::ThrowIfFailed(m_d3dDevice.As(&dxgiDevice));
 
-	DX::ThrowIfFailed(
-		m_d2dFactory->CreateDevice(dxgiDevice.Get(), &m_d2dDevice)
-		);
-
-	DX::ThrowIfFailed(
-		m_d2dDevice->CreateDeviceContext(
-			D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-			&m_d2dContext
-			)
-		);
+	DX::ThrowIfFailed(m_d2dFactory->CreateDevice(dxgiDevice.Get(), &m_d2dDevice));
+	DX::ThrowIfFailed(m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_d2dContext));
 }
 
 // These resources need to be recreated every time the window size is changed.
@@ -247,11 +282,11 @@ void DX::DeviceResources::CreateWindowSizeDependentResources()
 	{
 		// If the swap chain already exists, resize it.
 		HRESULT hr = m_swapChain->ResizeBuffers(
-			2, // Double-buffered swap chain.
+			3, // Triple-buffered: prevents Present() from blocking on compositor.
 			lround(m_d3dRenderTargetSize.Width),
 			lround(m_d3dRenderTargetSize.Height),
 			DXGI_FORMAT_B8G8R8A8_UNORM,
-			0
+			DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
 			);
 
 		if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
@@ -281,9 +316,9 @@ void DX::DeviceResources::CreateWindowSizeDependentResources()
 		swapChainDesc.SampleDesc.Count = 1;								// Don't use multi-sampling.
 		swapChainDesc.SampleDesc.Quality = 0;
 		swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		swapChainDesc.BufferCount = 2;									// Double-buffer with FLIP_DISCARD (lowest latency on UWP).
+		swapChainDesc.BufferCount = 3;									// Triple-buffer: one for DWM, one for GPU, one free — Present() never blocks.
 		swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;		// Discard back buffer after Present — no copy overhead.
-		swapChainDesc.Flags = 0;
+		swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;		// Required for variable refresh rate / unlocked fps on Xbox.
 		swapChainDesc.Scaling = scaling;
 		swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
@@ -337,12 +372,14 @@ void DX::DeviceResources::CreateWindowSizeDependentResources()
 					}
 				}
 			}
+			spdlog::info("[DXGI] Swap chain created: {}x{} @ {:.0f}Hz, ALLOW_TEARING=yes, triple-buffer=yes",
+				(int)m_d3dRenderTargetSize.Width, (int)m_d3dRenderTargetSize.Height, m_displayRefreshRate);
 		}
 
 		// Ensure that DXGI does not queue more than one frame at a time. This both reduces latency and
 		// ensures that the application will only render after each VSync, minimizing power consumption.
 		DX::ThrowIfFailed(
-			dxgiDevice->SetMaximumFrameLatency(1)
+			dxgiDevice->SetMaximumFrameLatency(2)
 			);
 	}
 
@@ -643,6 +680,12 @@ void DX::DeviceResources::Trim()
 void DX::DeviceResources::Present(int syncInterval, UINT flags) 
 {
 	DXGI_PRESENT_PARAMETERS parameters = { 0 };
+
+	// When vsync is off (syncInterval=0), use DXGI_PRESENT_ALLOW_TEARING
+	// to decouple Present() from the compositor's vblank — enables >60fps on Xbox.
+	if (syncInterval == 0)
+		flags |= DXGI_PRESENT_ALLOW_TEARING;
+
 	HRESULT hr = m_swapChain->Present1(syncInterval, flags, &parameters);
 
 	// Discard the contents of the render target.

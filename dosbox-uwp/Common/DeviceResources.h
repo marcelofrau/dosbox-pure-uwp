@@ -59,7 +59,8 @@ namespace DX
 		void UpdateRenderTargetSize();
 		DXGI_MODE_ROTATION ComputeDisplayRotation();
 
-		// Direct3D objects.
+		// Direct3D objects (D3D11On12 — D3D11 API over D3D12 device for full GPU access).
+		Microsoft::WRL::ComPtr<ID3D12Device>			m_d3d12Device;
 		Microsoft::WRL::ComPtr<ID3D11Device3>			m_d3dDevice;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext3>	m_d3dContext;
 		Microsoft::WRL::ComPtr<IDXGISwapChain3>			m_swapChain;
@@ -101,8 +102,9 @@ namespace DX
 		// The IDeviceNotify can be held directly as it owns the DeviceResources.
 		IDeviceNotify* m_deviceNotify;
 
-		// VSync: 1 = enabled (sync to vblank), 0 = disabled (immediate present)
-		int m_syncInterval = 1;
+	// VSync: 1 = enabled (sync to vblank), 0 = disabled (immediate present)
+	// Default OFF: audio backpressure paces emulation loop (RetroArch model).
+	int m_syncInterval = 0;
 
 		// Display refresh rate (60/120/144 Hz) queried from DXGI at swap chain creation.
 		float m_displayRefreshRate = 60.0f;

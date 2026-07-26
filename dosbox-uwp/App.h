@@ -52,10 +52,8 @@ namespace dosbox_uwp
 		bool m_windowVisible;
 		bool m_ctrlHeld = false;
 
-		// Frame pacing
-		LARGE_INTEGER m_perfFrequency;
-		LARGE_INTEGER m_lastFrameTime;
-		double m_targetFrameMs;
+		// DisplayRequest — prevent screen dim/suspend during gameplay
+		Windows::System::Display::DisplayRequest^ m_displayRequest;
 	};
 }
 
