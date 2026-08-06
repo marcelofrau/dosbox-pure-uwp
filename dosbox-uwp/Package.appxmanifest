@@ -10,12 +10,12 @@
   <Identity
     Name="81ef2129-2f08-4d22-9816-050b2b62b308"
     Publisher="CN=Marcelo Frau"
-    Version="0.9.3.133" />
+    Version="1.0.0.213" />
 
   <mp:PhoneIdentity PhoneProductId="81ef2129-2f08-4d22-9816-050b2b62b308" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
   <Properties>
-    <DisplayName>dosbox_uwp</DisplayName>
+    <DisplayName>DOSBox Pure UWP</DisplayName>
     <PublisherDisplayName>marcelo</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -33,10 +33,10 @@
       Executable="$targetnametoken$.exe"
       EntryPoint="dosbox_uwp.App">
         <uap:VisualElements
-          DisplayName="dosbox_uwp"
+          DisplayName="DOSBox Pure UWP"
           Square150x150Logo="Assets\Square150x150Logo.png"
           Square44x44Logo="Assets\Square44x44Logo.png"
-          Description="dosbox_uwp"
+          Description="DOSBox Pure UWP"
           BackgroundColor="transparent">
           <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"
                            Square71x71Logo="Assets\Square71x71Logo.png"
