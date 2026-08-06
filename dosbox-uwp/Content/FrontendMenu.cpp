@@ -431,7 +431,7 @@ void FrontendMenu::BuildMenuTree()
             { "Force Output FPS",    MenuAction::TOGGLE_VALUE, {}, fpsVals, fpsCore, findVal("dosbox_pure_force60fps", fpsCore, "false"), true, "dosbox_pure_force60fps" },
             { "Save States Support", MenuAction::TOGGLE_VALUE, {}, saveVals, saveCore, findVal("dosbox_pure_savestate", saveCore, "on"), false, "dosbox_pure_savestate" },
             { "Start Menu",          MenuAction::TOGGLE_VALUE, {}, menuVals, menuCore, findVal("dosbox_pure_menu_time", menuCore, "99"), true, "dosbox_pure_menu_time" },
-            { "Debug Overlay",       MenuAction::TOGGLE_VALUE, {}, diagVals, {}, findValDisplay("frontend_diag", diagVals, "On"), true, "frontend_diag" },
+            { "Debug Overlay",       MenuAction::TOGGLE_VALUE, {}, diagVals, {}, findValDisplay("frontend_diag", diagVals, "Off"), true, "frontend_diag" },
             { "",                    MenuAction::NONE },
             { "Reload Settings",     MenuAction::RELOAD_SETTINGS },
             { "Restart App",         MenuAction::RESTART_APP },

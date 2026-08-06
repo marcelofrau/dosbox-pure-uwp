@@ -51,6 +51,8 @@ namespace dosbox_uwp
 		bool m_windowClosed;
 		bool m_windowVisible;
 		bool m_ctrlHeld = false;
+		// Keeps the Xbox/display from dimming while the app is in the foreground.
+		Windows::System::Display::DisplayRequest^ m_displayRequest = nullptr;
 
 		// Frame pacing
 		LARGE_INTEGER m_perfFrequency;

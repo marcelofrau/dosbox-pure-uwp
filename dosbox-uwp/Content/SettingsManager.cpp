@@ -93,7 +93,7 @@ void SettingsManager::LoadDefaults()
     s_coreOptions.clear();
     s_coreOptions["dosbox_pure_menu_transparency"] = "70";
     // Frontend-only options
-    s_coreOptions["frontend_vsync"] = "Off";
+    s_coreOptions["frontend_vsync"] = "On";
     s_coreOptions["frontend_framelimit"] = "off";
     s_coreOptions["frontend_scaler"] = "Bilinear";
 }
@@ -299,7 +299,7 @@ void SettingsManager::ResetToDefaults()
 static const char* GetDefaultForOption(const char* key)
 {
     // Frontend-only
-    if (strcmp(key, "frontend_vsync") == 0) return "Off";
+    if (strcmp(key, "frontend_vsync") == 0) return "On";
     if (strcmp(key, "frontend_framelimit") == 0) return "off";
     if (strcmp(key, "frontend_scaler") == 0) return "Bilinear";
     if (strcmp(key, "frontend_startup_folder") == 0) return "";

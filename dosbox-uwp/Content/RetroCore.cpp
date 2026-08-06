@@ -11,6 +11,8 @@
 #include <cstdarg>
 #include <string>
 #include <vector>
+#include <chrono>
+#include <windows.h>
 
 static retro_vfs_interface uwp_vfs_iface = {
     reinterpret_cast<retro_vfs_get_path_t>(retro_vfs_file_get_path_impl),
@@ -38,29 +40,66 @@ static retro_vfs_interface uwp_vfs_iface = {
 
 using namespace dosbox_uwp;
 
-const void* RetroCore::s_frameData = nullptr;
-unsigned RetroCore::s_frameWidth = 0;
-unsigned RetroCore::s_frameHeight = 0;
-unsigned RetroCore::s_framePitch = 0;
-bool RetroCore::s_frameValid = false;
-bool RetroCore::s_keyboardState[RETROK_LAST] = {};
-retro_keyboard_event_t RetroCore::s_keyboardCallback = nullptr;
+// OSD active flag lives in the core; only the emulation thread reads it
+// (right after retro_run), then propagates to the atomic below.
+extern "C" bool g_dbp_osd_active;
+
+// --- static state ---
+std::atomic<bool> RetroCore::s_loaded{ false };
+std::atomic<bool> RetroCore::s_initialized{ false };
+std::atomic<bool> RetroCore::s_stopRequested{ false };
+std::atomic<bool> RetroCore::s_shutdownRequested{ false };
+std::atomic<bool> RetroCore::s_paused{ false };
+std::atomic<bool> RetroCore::s_emuUnloaded{ false };
+std::atomic<bool> RetroCore::s_loadInProgress{ false };
+std::atomic<int> RetroCore::s_loadResult{ -1 };
+std::atomic<bool> RetroCore::s_osdActive{ false };
+std::atomic<uint64_t> RetroCore::s_emulatedFrameCount{ 0 };
+std::atomic<double> RetroCore::s_targetFps{ 60.0 };
+std::atomic<unsigned> RetroCore::s_latestW{ 0 };
+std::atomic<unsigned> RetroCore::s_latestH{ 0 };
+
+std::atomic<bool> RetroCore::s_keyboardState[RETROK_LAST] = {};
+std::atomic<retro_keyboard_event_t> RetroCore::s_keyboardCallback{ nullptr };
 retro_log_printf_t RetroCore::s_logCallback = nullptr;
-int RetroCore::s_mouseRelX = 0;
-int RetroCore::s_mouseRelY = 0;
+std::atomic<bool> RetroCore::s_joypadState[16] = {};
+std::atomic<int> RetroCore::s_mouseRelX{ 0 };
+std::atomic<int> RetroCore::s_mouseRelY{ 0 };
+std::atomic<int> RetroCore::s_mouseWheel{ 0 };
+std::atomic<int> RetroCore::s_frameMouseX{ 0 };
+std::atomic<int> RetroCore::s_frameMouseY{ 0 };
+std::atomic<int> RetroCore::s_frameMouseWheel{ 0 };
 #ifdef MOUSE_SUPPORT
-bool RetroCore::s_mouseBtnLeft = false;
-bool RetroCore::s_mouseBtnRight = false;
-bool RetroCore::s_mouseBtnMiddle = false;
-int RetroCore::s_mouseWheel = 0;
+std::atomic<bool> RetroCore::s_mouseBtnLeft{ false };
+std::atomic<bool> RetroCore::s_mouseBtnRight{ false };
+std::atomic<bool> RetroCore::s_mouseBtnMiddle{ false };
 #endif
-float RetroCore::s_ptrX = 0;
-float RetroCore::s_ptrY = 0;
-bool RetroCore::s_ptrDown = false;
-double RetroCore::s_targetFps = 60.0;
-bool RetroCore::s_shutdownRequested = false;
-bool RetroCore::s_vsyncEnabled = true;
-float RetroCore::s_displayRefreshRate = 60.0f;
+std::atomic<float> RetroCore::s_ptrX{ 0.0f };
+std::atomic<float> RetroCore::s_ptrY{ 0.0f };
+std::atomic<bool> RetroCore::s_ptrDown{ false };
+
+std::mutex RetroCore::s_optionMutex;
+std::map<std::string, std::string> RetroCore::s_optionValues;
+bool RetroCore::s_optionValuesChanged = false;
+
+std::mutex RetroCore::s_cmdMutex;
+std::condition_variable RetroCore::s_cmdCv;
+std::deque<RetroCore::Command> RetroCore::s_cmdQueue;
+
+RetroCore::FrameSlot RetroCore::s_frameSlots[RetroCore::FRAME_SLOTS] = {};
+std::atomic<uint8_t> RetroCore::s_frameState[RetroCore::FRAME_SLOTS] = { 0, 0, 0 };
+std::atomic<uint64_t> RetroCore::s_frameSeq[RetroCore::FRAME_SLOTS] = { 0, 0, 0 };
+std::atomic<int> RetroCore::s_readSlot{ -1 };
+
+// Seq of the last frame the UI actually presented. AcquireFrame only returns
+// frames newer than this, so when the producer runs slower than the consumer
+// (game < UI presentation rate) the screen never jumps backwards through
+// stale published frames ("moves forward, then returns" blink).
+static std::atomic<uint64_t> s_lastPresentedSeq{ 0 };
+
+std::atomic<bool> RetroCore::s_vsyncEnabled{ false };
+std::atomic<float> RetroCore::s_displayRefreshRate{ 60.0f };
+XAudio2Output* RetroCore::s_audioOutput = nullptr;
 
 extern "C" int DBPS_GetCyclesMax();
 
@@ -68,10 +107,14 @@ int RetroCore::GetCyclesMax()
 {
     return DBPS_GetCyclesMax();
 }
-bool RetroCore::s_joypadState[16] = {};
-std::map<std::string, std::string> RetroCore::s_optionValues;
-bool RetroCore::s_optionValuesChanged = false;
-XAudio2Output* RetroCore::s_audioOutput = nullptr;
+
+extern const char* DBP_CPU_GetDecoderName();
+
+const char* RetroCore::GetCpuDecoderName()
+{
+    return DBP_CPU_GetDecoderName();
+}
+
 static const char* OVERRIDE_MENU_TIME = "-1";
 
 RetroCore::RetroCore() {}
@@ -84,9 +127,17 @@ static bool retro_env_wrap(unsigned cmd, void* data)
 
 bool RetroCore::Init()
 {
-    OutputDebugStringA("[dosbox-uwp] RetroCore::Init enter\n");
-    s_frameValid = false;
-    s_frameData = nullptr;
+    if (m_threadStarted.exchange(true))
+        return true;
+
+    s_stopRequested.store(false);
+    m_emuThread = std::thread(&RetroCore::EmulationThreadMain, this);
+    return true;
+}
+
+bool RetroCore::InitCore()
+{
+    OutputDebugStringA("[dosbox-uwp] RetroCore::InitCore enter\n");
 
     OutputDebugStringA("[dosbox-uwp] retro_set_environment\n");
     retro_set_environment(retro_env_wrap);
@@ -101,21 +152,250 @@ bool RetroCore::Init()
 
     OutputDebugStringA("[dosbox-uwp] retro_init call\n");
     retro_init();
-    m_initialized = true;
 
     // Apply theme colors from settings to PUREMENU statics
     SettingsManager::ApplyThemeToPUREMENU();
 
-    OutputDebugStringA("[dosbox-uwp] RetroCore::Init exit OK\n");
+    OutputDebugStringA("[dosbox-uwp] RetroCore::InitCore exit OK\n");
     return true;
 }
 
-bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>& romData)
+// RetroArch-style frame pacer for the emulation thread. RetroArch's runloop
+// is single-threaded: Present(vsync) blocks the loop at the display rate,
+// GET_THROTTLE_STATE reports that rate, and the core generates exactly
+// sample_rate/rate samples per frame — matching the 48 kHz device, so the
+// audio ring stays balanced and never bangs (see XAudio2Output.h). Our
+// emulation runs on its own thread, so we reproduce the same cadence with a
+// QPC accumulator.
+//
+// Rate = the core's own fps (RetroArch audio-sync model, runloop.c:8037):
+// the emulation runs at 100% game speed regardless of display refresh. A 60Hz
+// display simply presents the newest frame from the video ring (dup/skip),
+// exactly like RetroArch. Self-consistency: the core generates
+// sample_rate/rate samples per frame → ring stays balanced. Pacing at the
+// display refresh instead would force the game to display_refresh/core_fps
+// speed (85.6% on a 60Hz display) and trip the core's internal frame-skip.
+//
+// The wait uses a high-resolution waitable timer
+// (CREATE_WAITABLE_TIMER_HIGH_RESOLUTION) because timeBeginPeriod() is not
+// available to UWP apps and plain Sleep() granularity is ~15.6ms — too
+// coarse for 60/70Hz pacing.
+void RetroCore::PaceFrame()
 {
-    OutputDebugStringA("[dosbox-uwp] RetroCore::LoadGame enter\n");
-    if (!m_initialized)
+    static HANDLE s_timer = [] {
+        return CreateWaitableTimerExW(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    }();
+    static LARGE_INTEGER s_freq{};
+    static LARGE_INTEGER s_next{};
+    static bool s_inited = false;
+
+    double rate = s_targetFps.load();
+    if (!(rate > 1.0))
+        rate = 60.0;
+
+    if (!s_inited)
     {
-        OutputDebugStringA("[dosbox-uwp] LoadGame FAILED: not initialized\n");
+        QueryPerformanceFrequency(&s_freq);
+        QueryPerformanceCounter(&s_next);
+        s_inited = true;
+        return; // first call starts the cadence now (no delay at load)
+    }
+
+    LARGE_INTEGER period;
+    period.QuadPart = (LONGLONG)(s_freq.QuadPart / rate);
+    s_next.QuadPart += period.QuadPart;
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (s_next.QuadPart <= now.QuadPart)
+    {
+        // Behind schedule (heavy frame): restart the cadence, no wait.
+        s_next.QuadPart = now.QuadPart + period.QuadPart;
+        return;
+    }
+
+    long long waitUs = (s_next.QuadPart - now.QuadPart) * 1000000LL / s_freq.QuadPart;
+    if (waitUs <= 0 || !s_timer)
+        return;
+
+    // Negative 100ns units = relative wait from now.
+    LARGE_INTEGER due;
+    due.QuadPart = -waitUs * 10;
+    if (SetWaitableTimer(s_timer, &due, 0, nullptr, nullptr, FALSE))
+        WaitForSingleObject(s_timer, INFINITE);
+}
+
+void RetroCore::EmulationThreadMain()
+{
+    spdlog::info("[RetroCore] emulation thread started");
+
+    s_initialized.store(InitCore());
+    if (!s_initialized.load())
+    {
+        spdlog::error("[RetroCore] InitCore FAILED on emulation thread");
+        return;
+    }
+
+    while (!s_stopRequested.load())
+    {
+        bool didWork = ProcessCommands();
+        if (s_stopRequested.load())
+            break;
+
+        if (s_loaded.load())
+        {
+            if (s_paused.load())
+            {
+                Sleep(2);
+            }
+            else
+            {
+                RunFrame();
+                SetOSDActive(g_dbp_osd_active);
+
+                // Core requested shutdown (RETRO_ENVIRONMENT_SHUTDOWN).
+                if (s_shutdownRequested.exchange(false))
+                {
+                    spdlog::info("[RetroCore] core requested SHUTDOWN — unloading game");
+                    UnloadGameInternal();
+                    SetOSDActive(false);
+                    s_emuUnloaded.store(true);
+                }
+                else
+                {
+                    // RetroArch-style frame pacing after the frame, before the
+                    // next retro_run. The audio ring is now a follower — this
+                    // QPC timer IS the frame clock.
+                    PaceFrame();
+                }
+            }
+        }
+        else if (!didWork)
+        {
+            // No game loaded: idle until a command arrives (or stop).
+            std::unique_lock<std::mutex> lk(s_cmdMutex);
+            s_cmdCv.wait_for(lk, std::chrono::milliseconds(50),
+                [this] { return s_stopRequested.load() || !s_cmdQueue.empty(); });
+        }
+    }
+
+    if (s_loaded.load())
+        UnloadGameInternal();
+    if (s_initialized.load())
+    {
+        spdlog::info("[RetroCore] retro_deinit");
+        retro_deinit();
+        s_initialized.store(false);
+    }
+    spdlog::info("[RetroCore] emulation thread exiting");
+}
+
+void RetroCore::EnqueueCommand(Command cmd)
+{
+    {
+        std::lock_guard<std::mutex> lk(s_cmdMutex);
+        s_cmdQueue.push_back(std::move(cmd));
+    }
+    s_cmdCv.notify_one();
+}
+
+bool RetroCore::ProcessCommands()
+{
+    bool handled = false;
+    std::deque<Command> batch;
+    {
+        std::lock_guard<std::mutex> lk(s_cmdMutex);
+        batch.swap(s_cmdQueue);
+    }
+
+    for (auto& cmd : batch)
+    {
+        handled = true;
+        switch (cmd.type)
+        {
+        case CoreCommand::LoadGame:
+        {
+            spdlog::info("[RetroCore] cmd: LoadGame");
+            s_loadInProgress.store(true);
+            bool ok = LoadGameInternal(cmd.path, cmd.romData);
+            s_loadResult.store(ok ? 1 : 0);
+            s_loadInProgress.store(false);
+            break;
+        }
+        case CoreCommand::UnloadGame:
+            spdlog::info("[RetroCore] cmd: UnloadGame");
+            UnloadGameInternal();
+            break;
+        case CoreCommand::ToggleOSD:
+            DBPS_ToggleOSD();
+            break;
+        case CoreCommand::Shutdown:
+            s_stopRequested.store(true);
+            break;
+        }
+    }
+    return handled;
+}
+
+void RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>& romData)
+{
+    if (!m_threadStarted.load())
+        Init();
+
+    Command cmd;
+    cmd.type = CoreCommand::LoadGame;
+    cmd.path = uwpPath;
+    cmd.romData = romData;
+    EnqueueCommand(std::move(cmd));
+}
+
+void RetroCore::UnloadGame()
+{
+    if (!m_threadStarted.load())
+        return;
+
+    Command cmd;
+    cmd.type = CoreCommand::UnloadGame;
+    EnqueueCommand(std::move(cmd));
+}
+
+void RetroCore::Shutdown()
+{
+    if (m_threadJoined.exchange(true))
+        return;
+
+    if (m_threadStarted.load())
+    {
+        s_stopRequested.store(true);
+        s_cmdCv.notify_all();
+        if (m_emuThread.joinable())
+            m_emuThread.join();
+    }
+}
+
+void RetroCore::Pause()  { s_paused.store(true); }
+void RetroCore::Resume() { s_paused.store(false); }
+
+bool RetroCore::IsLoaded() const { return s_loaded.load(); }
+bool RetroCore::IsInitialized() const { return s_initialized.load(); }
+
+void RetroCore::ToggleOSD()
+{
+    if (!m_threadStarted.load())
+        return;
+
+    Command cmd;
+    cmd.type = CoreCommand::ToggleOSD;
+    EnqueueCommand(std::move(cmd));
+}
+
+bool RetroCore::LoadGameInternal(const std::wstring& uwpPath, const std::vector<uint8_t>& romData)
+{
+    OutputDebugStringA("[dosbox-uwp] LoadGameInternal enter\n");
+    if (!s_initialized.load())
+    {
+        OutputDebugStringA("[dosbox-uwp] LoadGameInternal FAILED: not initialized\n");
         return false;
     }
 
@@ -123,12 +403,12 @@ bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>
     int len = WideCharToMultiByte(CP_UTF8, 0, uwpPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (len <= 0)
     {
-        OutputDebugStringA("[dosbox-uwp] LoadGame FAILED: WideCharToMultiByte len=0\n");
+        OutputDebugStringA("[dosbox-uwp] LoadGameInternal FAILED: WideCharToMultiByte len=0\n");
         return false;
     }
     std::string pathUtf8(len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, uwpPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
-    sprintf_s(buf, "[dosbox-uwp] LoadGame path: %s data=%zu bytes\n", pathUtf8.c_str(), romData.size());
+    sprintf_s(buf, "[dosbox-uwp] LoadGameInternal path: %s data=%zu bytes\n", pathUtf8.c_str(), romData.size());
     OutputDebugStringA(buf);
 
     retro_game_info info = {};
@@ -147,37 +427,58 @@ bool RetroCore::LoadGame(const std::wstring& uwpPath, const std::vector<uint8_t>
     retro_system_av_info av = {};
     retro_get_system_av_info(&av);
     {
-        char buf[256];
-        sprintf_s(buf, "[dosbox-uwp] av_info: %dx%d @ %.2fHz, sample_rate=%.0f\n",
+        char buf2[256];
+        sprintf_s(buf2, "[dosbox-uwp] av_info: %dx%d @ %.2fHz, sample_rate=%.0f\n",
             av.geometry.base_width, av.geometry.base_height,
             av.timing.fps, av.timing.sample_rate);
-        OutputDebugStringA(buf);
+        OutputDebugStringA(buf2);
     }
-    s_targetFps = av.timing.fps > 0 ? av.timing.fps : 60.0;
+    if (av.timing.fps > 0)
+        s_targetFps.store(av.timing.fps);
 
-    m_loaded = true;
+    s_loaded.store(true);
+    s_lastPresentedSeq.store(0, std::memory_order_release);
     OutputDebugStringA("[dosbox-uwp] retro_load_game SUCCESS\n");
-
-    // Apply saved core options from settings
-    {
-        auto transparency = SettingsManager::GetOption("dosbox_pure_menu_transparency", "70");
-        SetOptionValue("dosbox_pure_menu_transparency", transparency.c_str());
-    }
-
     return true;
+}
+
+void RetroCore::UnloadGameInternal()
+{
+    if (!s_loaded.load())
+    {
+        s_shutdownRequested.store(false);
+        return;
+    }
+    OutputDebugStringA("[dosbox-uwp] UnloadGameInternal\n");
+    s_loaded.store(false);
+    s_lastPresentedSeq.store(0, std::memory_order_release);
+    retro_unload_game();
+    // Reset all per-game state so next load starts clean
+    s_shutdownRequested.store(false);
+    for (auto& k : s_keyboardState)
+        k.store(false);
+    for (auto& j : s_joypadState)
+        j.store(false);
+    {
+        std::lock_guard<std::mutex> lk(s_optionMutex);
+        s_optionValues.clear();
+        s_optionValuesChanged = false;
+    }
 }
 
 void RetroCore::RunFrame()
 {
-    if (!m_loaded) return;
+    if (!s_loaded.load())
+        return;
+
     static int frameCount = 0;
     frameCount++;
-    if ((frameCount % 600) == 0)
-    {
-        char buf[128];
-        sprintf_s(buf, "[dosbox-uwp] RunFrame #%d\n", frameCount);
-        OutputDebugStringA(buf);
-    }
+
+    // Snapshot per-frame mouse deltas accumulated by the UI thread since the
+    // last frame; the core reads these during retro_run via retro_input_state.
+    s_frameMouseX.store(s_mouseRelX.exchange(0));
+    s_frameMouseY.store(s_mouseRelY.exchange(0));
+    s_frameMouseWheel.store(s_mouseWheel.exchange(0));
 
     LARGE_INTEGER t1, t2, freq;
     QueryPerformanceFrequency(&freq);
@@ -185,12 +486,7 @@ void RetroCore::RunFrame()
     retro_run();
     QueryPerformanceCounter(&t2);
 
-#ifdef MOUSE_SUPPORT
-    // Reset per-frame mouse state
-    s_mouseRelX = 0;
-    s_mouseRelY = 0;
-    s_mouseWheel = 0;
-#endif
+    s_emulatedFrameCount.fetch_add(1);
 
     if ((frameCount % 600) == 0)
     {
@@ -201,37 +497,64 @@ void RetroCore::RunFrame()
     }
 }
 
-void RetroCore::UnloadGame()
+bool RetroCore::AcquireFrame(FrameView& out)
 {
-    if (!m_loaded) return;
-    OutputDebugStringA("[dosbox-uwp] UnloadGame\n");
-    m_loaded = false;
-    retro_unload_game();
-    // Reset all per-game state so next load starts clean
-    s_shutdownRequested = false;
-    memset(s_keyboardState, 0, sizeof(s_keyboardState));
-    memset(s_joypadState, 0, sizeof(s_joypadState));
-    s_optionValues.clear();
-    s_optionValuesChanged = false;
-}
-
-void RetroCore::Shutdown()
-{
-    OutputDebugStringA("[dosbox-uwp] Shutdown\n");
-    UnloadGame();
-    if (m_initialized)
+    // Pick the NEWEST published frame (highest seq) so the UI never displays
+    // an older frame after a newer one (producer overwrites stale slots).
+    // Additionally, only accept frames NEWER than the last presented one:
+    // when the producer runs slower than the consumer, published slots hold
+    // frames older than what is already on screen — presenting them would
+    // make the picture move backwards. Returning false keeps the current
+    // swap-chain content on screen until a genuinely newer frame arrives.
+    int best = -1;
+    uint64_t bestSeq = 0;
+    uint64_t lastShown = s_lastPresentedSeq.load(std::memory_order_acquire);
+    for (int i = 0; i < FRAME_SLOTS; i++)
     {
-        m_initialized = false;
-        OutputDebugStringA("[dosbox-uwp] retro_deinit\n");
-        retro_deinit();
+        if (s_frameState[i].load(std::memory_order_acquire) == 2)
+        {
+            uint64_t s = s_frameSeq[i].load(std::memory_order_acquire);
+            if (s > lastShown && (best < 0 || s > bestSeq))
+            {
+                best = i;
+                bestSeq = s;
+            }
+        }
     }
+    if (best >= 0)
+    {
+        uint8_t expected = 2;
+        if (s_frameState[best].compare_exchange_strong(expected, 3))
+        {
+            s_readSlot.store(best);
+            s_lastPresentedSeq.store(bestSeq, std::memory_order_release);
+            out.data = s_frameSlots[best].data.empty() ? nullptr : s_frameSlots[best].data.data();
+            out.w = s_frameSlots[best].w;
+            out.h = s_frameSlots[best].h;
+            out.pitch = s_frameSlots[best].pitch;
+            return out.data != nullptr;
+        }
+    }
+    return false;
 }
 
-void RetroCore::ToggleOSD()
+void RetroCore::ReleaseFrame()
 {
-    OutputDebugStringA("[dosbox-uwp] ToggleOSD\n");
-    DBPS_ToggleOSD();
+    int i = s_readSlot.exchange(-1);
+    if (i >= 0 && i < FRAME_SLOTS)
+        s_frameState[i].store(0);
 }
+
+bool RetroCore::IsShutdownRequested() { return s_shutdownRequested.load(); }
+bool RetroCore::ConsumeUnloadEvent() { return s_emuUnloaded.exchange(false); }
+bool RetroCore::IsLoadInProgress() { return s_loadInProgress.load(); }
+int RetroCore::ConsumeLoadResult() { return s_loadResult.exchange(-1); }
+bool RetroCore::IsOSDActive() { return s_osdActive.load(); }
+uint64_t RetroCore::GetEmulatedFrameCount() { return s_emulatedFrameCount.load(); }
+double RetroCore::GetTargetFps() const { return s_targetFps.load(); }
+unsigned RetroCore::GetFrameWidth() { return s_latestW.load(); }
+unsigned RetroCore::GetFrameHeight() { return s_latestH.load(); }
+void RetroCore::SetOSDActive(bool on) { s_osdActive.store(on); }
 
 static void RETRO_CALLCONV uwp_log(enum retro_log_level level, const char* fmt, ...)
 {
@@ -277,29 +600,30 @@ void RetroCore::SetKeyState(unsigned key, bool down)
 {
     if (key < RETROK_LAST)
     {
-        s_keyboardState[key] = down;
-        if (s_keyboardCallback)
-            s_keyboardCallback(down, key, 0, 0);
+        s_keyboardState[key].store(down);
+        auto cb = s_keyboardCallback.load();
+        if (cb)
+            cb(down, key, 0, 0);
     }
 }
 
 void RetroCore::SetJoypadButton(unsigned id, bool held)
 {
     if (id < 16)
-        s_joypadState[id] = held;
+        s_joypadState[id].store(held);
 }
 
 void RetroCore::SetMouseMove(int relX, int relY)
 {
-    s_mouseRelX += relX;
-    s_mouseRelY += relY;
+    s_mouseRelX.fetch_add(relX);
+    s_mouseRelY.fetch_add(relY);
 }
 
 void RetroCore::SetPointer(float x, float y, bool down)
 {
-    s_ptrX = x;
-    s_ptrY = y;
-    s_ptrDown = down;
+    s_ptrX.store(x);
+    s_ptrY.store(y);
+    s_ptrDown.store(down);
 }
 
 #ifdef MOUSE_SUPPORT
@@ -307,29 +631,29 @@ void RetroCore::SetMouseButton(unsigned btn, bool down)
 {
     switch (btn)
     {
-    case 1: s_mouseBtnLeft = down; break;
-    case 2: s_mouseBtnRight = down; break;
-    case 3: s_mouseBtnMiddle = down; break;
+    case 1: s_mouseBtnLeft.store(down); break;
+    case 2: s_mouseBtnRight.store(down); break;
+    case 3: s_mouseBtnMiddle.store(down); break;
     }
 }
 
 void RetroCore::SetMouseWheel(int delta)
 {
-    s_mouseWheel += delta;
+    s_mouseWheel.fetch_add(delta);
 }
 
 void RetroCore::GetPointer(short& mx, short& my)
 {
-    mx = (short)((s_ptrX * 2.0f - 1.0f) * 0x7fff);
-    my = (short)((s_ptrY * 2.0f - 1.0f) * 0x7fff);
+    mx = (short)((s_ptrX.load() * 2.0f - 1.0f) * 0x7fff);
+    my = (short)((s_ptrY.load() * 2.0f - 1.0f) * 0x7fff);
 }
 #endif
-
 
 void RetroCore::SetOptionValue(const char* key, const char* value)
 {
     if (key)
     {
+        std::lock_guard<std::mutex> lk(s_optionMutex);
         s_optionValues[key] = (value ? value : "");
         s_optionValuesChanged = true;
     }
@@ -411,22 +735,31 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
     {
         auto* cb = static_cast<const retro_keyboard_callback*>(data);
-        s_keyboardCallback = cb ? cb->callback : nullptr;
+        s_keyboardCallback.store(cb ? cb->callback : nullptr);
         OutputDebugStringA("[dosbox-uwp]   SET_KEYBOARD_CALLBACK: stored\n");
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
     {
         auto* state = static_cast<retro_throttle_state*>(data);
-        if (s_vsyncEnabled)
+        float refresh = s_displayRefreshRate.load();
+        double core = s_targetFps.load();
+        // Self-consistent with PaceFrame(). VSync caps the rate only when
+        // the display is SLOWER than the core fps (RetroArch runloop.c:3410);
+        // otherwise the core fps governs. The core then generates exactly
+        // sample_rate/rate samples per frame, matching the 48 kHz device, so
+        // the audio ring stays balanced. Mode is VSYNC in the capped case,
+        // NONE otherwise — both mean the emulation thread is the pace clock.
+        if (s_vsyncEnabled.load() && refresh > 0.0f && (double)refresh < core)
         {
             state->mode = RETRO_THROTTLE_VSYNC;
+            state->rate = refresh;
         }
         else
         {
             state->mode = RETRO_THROTTLE_NONE;
+            state->rate = (float)core;
         }
-        state->rate = (float)s_targetFps;  // Always target game FPS (70), not display Hz (180)
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
@@ -438,7 +771,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     }
     case RETRO_ENVIRONMENT_SHUTDOWN:
         OutputDebugStringA("[dosbox-pure] SHUTDOWN requested\n");
-        s_shutdownRequested = true;
+        s_shutdownRequested.store(true);
         return 1;
     case RETRO_ENVIRONMENT_SET_VARIABLE:
     {
@@ -449,8 +782,11 @@ int RetroCore::retro_env(unsigned cmd, void* data)
             char kbuf[512];
             sprintf_s(kbuf, "[dosbox-uwp]   SET_VARIABLE: %s = %s\n", var->key, val);
             OutputDebugStringA(kbuf);
-            s_optionValues[var->key] = (var->value ? var->value : "");
-            s_optionValuesChanged = true;
+            {
+                std::lock_guard<std::mutex> lk(s_optionMutex);
+                s_optionValues[var->key] = (var->value ? var->value : "");
+                s_optionValuesChanged = true;
+            }
             return 1;
         }
         return 0;
@@ -473,6 +809,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
                 return 1;
             }
 
+            std::lock_guard<std::mutex> lk(s_optionMutex);
             auto it = s_optionValues.find(var->key);
             if (it != s_optionValues.end())
             {
@@ -501,6 +838,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         bool* changed = static_cast<bool*>(data);
         if (changed)
         {
+            std::lock_guard<std::mutex> lk(s_optionMutex);
             *changed = s_optionValuesChanged;
             s_optionValuesChanged = false;
         }
@@ -510,21 +848,21 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     {
         auto* av = static_cast<const retro_system_av_info*>(data);
         if (av && av->timing.fps > 0)
-            s_targetFps = av->timing.fps;
-        char buf[256];
-        sprintf_s(buf, "[dosbox-uwp]   SET_SYSTEM_AV_INFO: %dx%d @ %.2fHz sample_rate=%.0f\n",
+            s_targetFps.store(av->timing.fps);
+        char buf2[256];
+        sprintf_s(buf2, "[dosbox-uwp]   SET_SYSTEM_AV_INFO: %dx%d @ %.2fHz sample_rate=%.0f\n",
             av->geometry.base_width, av->geometry.base_height,
             av->timing.fps, av->timing.sample_rate);
-        OutputDebugStringA(buf);
+        OutputDebugStringA(buf2);
         return 1;
     }
     case RETRO_ENVIRONMENT_SET_GEOMETRY:
     {
         auto* geom = static_cast<const retro_game_geometry*>(data);
-        char buf[256];
-        sprintf_s(buf, "[dosbox-uwp]   SET_GEOMETRY: %dx%d aspect=%.2f\n",
+        char buf2[256];
+        sprintf_s(buf2, "[dosbox-uwp]   SET_GEOMETRY: %dx%d aspect=%.2f\n",
             geom->base_width, geom->base_height, geom->aspect_ratio);
-        OutputDebugStringA(buf);
+        OutputDebugStringA(buf2);
         return 1;
     }
     default:
@@ -537,6 +875,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
 }
 
 static int g_videoFrameCount = 0;
+static uint64_t g_frameSeqCounter = 0;
 
 void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pitch)
 {
@@ -569,11 +908,71 @@ void RetroCore::retro_video(const void* data, unsigned w, unsigned h, size_t pit
         }
     }
 
-    s_frameData = data;
-    s_frameWidth = w;
-    s_frameHeight = h;
-    s_framePitch = (unsigned)pitch;
-    s_frameValid = true;
+    // 1) Prefer a free slot (state 0). 2) Otherwise overwrite the OLDEST
+    // published slot (lowest seq) so the newest frame stays available.
+    // Monotonic seq lets AcquireFrame pick the newest published frame.
+    int target = -1;
+    for (int i = 0; i < FRAME_SLOTS; i++)
+    {
+        uint8_t expected = 0;
+        if (s_frameState[i].compare_exchange_strong(expected, 1))
+        {
+            target = i;
+            break;
+        }
+    }
+    if (target < 0)
+    {
+        uint64_t oldestSeq = UINT64_MAX;
+        for (int i = 0; i < FRAME_SLOTS; i++)
+        {
+            if (s_frameState[i].load() == 2)
+            {
+                uint64_t s = s_frameSeq[i].load();
+                if (s < oldestSeq)
+                {
+                    oldestSeq = s;
+                    target = i;
+                }
+            }
+        }
+        if (target >= 0)
+        {
+            uint8_t expected = 2;
+            if (!s_frameState[target].compare_exchange_strong(expected, 1))
+                target = -1; // UI grabbed it between scan and claim — drop this frame
+        }
+    }
+    if (target < 0)
+        return; // all slots busy reading/writing — drop this frame
+
+    unsigned bpp = (unsigned)(pitch / w);
+    if (bpp == 0)
+        bpp = 4;
+    unsigned rowBytes = w * bpp;
+    size_t needed = (size_t)rowBytes * h;
+
+    auto& slot = s_frameSlots[target];
+    if (slot.data.size() < needed)
+        slot.data.resize(needed);
+
+    const uint8_t* src = (const uint8_t*)data;
+    uint8_t* dst = slot.data.data();
+    if (pitch == rowBytes)
+        memcpy(dst, src, needed);
+    else
+    {
+        for (unsigned y = 0; y < h; y++)
+            memcpy(dst + (size_t)y * rowBytes, src + (size_t)y * pitch, rowBytes);
+    }
+
+    slot.w = w;
+    slot.h = h;
+    slot.pitch = rowBytes;
+    s_latestW.store(w);
+    s_latestH.store(h);
+    s_frameSeq[target].store(++g_frameSeqCounter, std::memory_order_release);
+    s_frameState[target].store(2, std::memory_order_release);
 }
 
 void RetroCore::SetAudioOutput(XAudio2Output* output)
@@ -583,14 +982,12 @@ void RetroCore::SetAudioOutput(XAudio2Output* output)
 
 size_t RetroCore::retro_audio(const int16_t* data, size_t frames)
 {
-    // Push model: core produces audio → Submit() → XAudio2 hardware.
-    // This is the v0.8.3.0 audio path. SDL pull model removed.
+    // RetroArch audio-backpressure model: Write() blocks inside retro_run
+    // when the ring is full, so the audio clock paces the emulator.
     if (s_audioOutput)
-        s_audioOutput->Submit(data, frames);
+        s_audioOutput->Write(data, (uint32_t)frames);
     return frames;
 }
-
-
 
 void RetroCore::retro_input_poll(void)
 {
@@ -602,7 +999,7 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
 
     if (device == RETRO_DEVICE_KEYBOARD)
     {
-        return (id < RETROK_LAST && s_keyboardState[id]) ? 1 : 0;
+        return (id < RETROK_LAST && s_keyboardState[id].load()) ? 1 : 0;
     }
 
     // WARNING: RETROK values (0-323) numerically overlap JOYPAD button IDs (0-15).
@@ -613,7 +1010,7 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
     // gamepad state in dosbox_uwpMain::Update().
     if (device == RETRO_DEVICE_JOYPAD)
     {
-        if (id < 16 && s_joypadState[id])
+        if (id < 16 && s_joypadState[id].load())
             return 1;
         return 0;
     }
@@ -622,14 +1019,14 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
     {
         switch (id)
         {
-        case RETRO_DEVICE_ID_MOUSE_X: return s_mouseRelX;
-        case RETRO_DEVICE_ID_MOUSE_Y: return s_mouseRelY;
+        case RETRO_DEVICE_ID_MOUSE_X: return (int16_t)s_frameMouseX.load();
+        case RETRO_DEVICE_ID_MOUSE_Y: return (int16_t)s_frameMouseY.load();
 #ifdef MOUSE_SUPPORT
-        case RETRO_DEVICE_ID_MOUSE_LEFT: return s_mouseBtnLeft ? 1 : 0;
-        case RETRO_DEVICE_ID_MOUSE_RIGHT: return s_mouseBtnRight ? 1 : 0;
-        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return s_mouseBtnMiddle ? 1 : 0;
-        case RETRO_DEVICE_ID_MOUSE_WHEELUP: return (s_mouseWheel > 0) ? 1 : 0;
-        case RETRO_DEVICE_ID_MOUSE_WHEELDOWN: return (s_mouseWheel < 0) ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_LEFT: return s_mouseBtnLeft.load() ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_RIGHT: return s_mouseBtnRight.load() ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return s_mouseBtnMiddle.load() ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_WHEELUP: return (s_frameMouseWheel.load() > 0) ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_WHEELDOWN: return (s_frameMouseWheel.load() < 0) ? 1 : 0;
 #else
         case RETRO_DEVICE_ID_MOUSE_LEFT: return 0;
         case RETRO_DEVICE_ID_MOUSE_RIGHT: return 0;
@@ -642,9 +1039,9 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
     {
         switch (id)
         {
-        case RETRO_DEVICE_ID_POINTER_X: return (int16_t)((s_ptrX * 2.0f - 1.0f) * 0x7fff);
-        case RETRO_DEVICE_ID_POINTER_Y: return (int16_t)((s_ptrY * 2.0f - 1.0f) * 0x7fff);
-        case RETRO_DEVICE_ID_POINTER_PRESSED: return s_ptrDown ? 1 : 0;
+        case RETRO_DEVICE_ID_POINTER_X: return (int16_t)((s_ptrX.load() * 2.0f - 1.0f) * 0x7fff);
+        case RETRO_DEVICE_ID_POINTER_Y: return (int16_t)((s_ptrY.load() * 2.0f - 1.0f) * 0x7fff);
+        case RETRO_DEVICE_ID_POINTER_PRESSED: return s_ptrDown.load() ? 1 : 0;
         default: return 0;
         }
     }

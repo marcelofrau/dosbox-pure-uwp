@@ -8,7 +8,6 @@
 #include <sstream>
 #include <wincodec.h>
 #include <wrl/client.h>
-extern "C" bool g_dbp_osd_active;
 #include <windows.h>
 #include <fileapifromapp.h>
 #include <psapi.h>
@@ -260,11 +259,10 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             samples[i * 2] = v;
             samples[i * 2 + 1] = v;
         }
-        // Submit() auto-starts voice when queue >= TARGET_QUEUE (2517 frames).
-        // Beep is 5292 frames (~120ms) → auto-starts after ~57ms pre-buffer.
-        // Auto-stop in Tick kills voice when queue drains to 0.
+        // Write() blocks only if the ring is full (4 x 12ms = 48ms), which the
+        // 120ms beep never fills; voice auto-starts via Write if it was stopped.
         if (m_xaudio2)
-            m_xaudio2->Submit(samples.data(), numFrames);
+            m_xaudio2->Write(samples.data(), numFrames);
     };
     m_menu.onOptionChanged = [this](const char* key, const char* value) {
         if (!strcmp(key, "frontend_vsync"))
@@ -313,7 +311,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
             m_deviceResources->SetVSync(vsyncEnabled);
             RetroCore::s_vsyncEnabled = vsyncEnabled;
             RetroCore::s_displayRefreshRate = m_deviceResources->GetDisplayRefreshRate();
-            spdlog::info("[Settings] VSync={}, frameLimit={}fps, displayRefreshRate={:.1f}Hz", vsyncEnabled, m_frameLimitFps, RetroCore::s_displayRefreshRate);
+            spdlog::info("[Settings] VSync={}, frameLimit={}fps, displayRefreshRate={:.1f}Hz", vsyncEnabled, m_frameLimitFps, RetroCore::s_displayRefreshRate.load());
         auto scaler = SettingsManager::GetOption("frontend_scaler", "Bilinear");
         D2D1_BITMAP_INTERPOLATION_MODE mode = (scaler == "Nearest")
             ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
@@ -379,6 +377,8 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
         if (!m_retroCore->Init())
         {
             spdlog::error("[LoadRom] retro_init FAILED");
+            m_loadState = LOAD_FAILED;
+            m_loadingActive = false;
             return;
         }
     }
@@ -386,6 +386,11 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     {
         spdlog::info("[LoadRom] core already initialized, skipping retro_init");
     }
+
+    // Keep requested paths so the async load-success handler can update
+    // history / menu without capturing temporaries.
+    m_lastRequestedPath = path;
+    m_lastRequestedOrigPath = originalPath.empty() ? path : originalPath;
 
     // Extract filename for xray binding
     auto slash = pathUtf8.find_last_of("/\\");
@@ -397,38 +402,12 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     s_perf.rom_name[sizeof(s_perf.rom_name) - 1] = '\0';
 #endif
 
-    if (m_retroCore->LoadGame(path, romData))
-    {
-        spdlog::info("[LoadRom] Game loaded OK");
-        m_retroRunning = true;
-        m_clearColor = DirectX::Colors::Black;
-        m_menu.Hide();
-
-        // Push all saved option values to core so check_variables() picks them up
-        SettingsManager::ForEachOption([](const char* key, const char* value) {
-            if (strncmp(key, "frontend_", 9) != 0) // skip frontend-only options
-                RetroCore::SetOptionValue(key, value);
-        });
-
-        // Add to history — store original path, not temp path
-        {
-            const std::wstring& histPath = originalPath.empty() ? path : originalPath;
-            std::string pathUtf8;
-            {
-                int len = WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-                pathUtf8.resize(len - 1);
-                WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
-            }
-            auto slash = pathUtf8.find_last_of("/\\");
-            std::string fnameUtf8 = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
-            SettingsManager::AddToHistory(fnameUtf8, pathUtf8);
-            m_menu.SetCoreLoaded(true);
-        }
-    }
-    else
-    {
-        spdlog::error("[LoadRom] retro_load_game FAILED");
-    }
+    // Async: the emulation thread runs retro_load_game. Completion is polled
+    // in Update() via ConsumeLoadResult().
+    m_retroCore->LoadGame(path, romData);
+    m_loadState = LOAD_BOOTING;
+    m_loadTimer = 0;
+    spdlog::info("[LoadRom] game load enqueued (async on emulation thread)");
 }
 
 void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
@@ -478,6 +457,16 @@ void dosbox_uwpMain::Update()
     m_timer.Tick([&]()
     {
         static int s_diagRunsAccum = 0;
+        // 1Hz [HEALTH] interval state (see pacing stats block below). UI
+        // thread only — the emulation thread (PaceFrame) is not touched.
+        static LARGE_INTEGER s_healthLast = {};
+        static double s_healthFrameSum = 0.0;
+        static int s_healthFrameCount = 0;
+        static double s_healthFrameMax = 0.0;
+        static int s_healthSkips = 0;
+        static long long s_healthLastConsumed = 0;
+        static long s_healthLastUnder = 0;
+        static long s_healthLastOver = 0;
         LARGE_INTEGER _t0, _t1, _t2, _t3, _freq;
         QueryPerformanceFrequency(&_freq);
 
@@ -574,8 +563,10 @@ void dosbox_uwpMain::Update()
         }
 
         // LB+RB+Select simultaneous press → toggle gamepad mouse mode
-        // Mouse mode OFF (default): stick does NOT simulate mouse in DOSBox/Puremenu
-        // Mouse mode ON: stick → relative mouse, A→Enter, B→Escape for Puremenu
+        // Mouse mode OFF (default): stick is game analog only (no mouse sim in DOS)
+        // Mouse mode ON: stick → relative mouse in-game, A→Enter, B→Escape for Puremenu
+        // Note: PUREMENU/FrontendMenu cursor is ALWAYS driven by the L-analog (see
+        // the pointerContext block below) — the toggle only affects in-game mouse.
         {
             bool lb = m_sdlInput->IsButtonHeld(BUTTON_L);
             bool rb = m_sdlInput->IsButtonHeld(BUTTON_R);
@@ -588,7 +579,8 @@ void dosbox_uwpMain::Update()
             m_lbrbsPrevHeld = allThree;
         }
 
-        // Log every gamepad button press (after all handlers consume their events)
+#ifdef INPUT_DEBUG_ENABLED
+        // Log every gamepad button press (Debug-only; too noisy for Release)
         struct { int btn; const char* name; } btns[] = {
             { BUTTON_A, "A" }, { BUTTON_B, "B" }, { BUTTON_X, "X" }, { BUTTON_Y, "Y" },
             { BUTTON_L, "L" }, { BUTTON_R, "R" }, { BUTTON_L2, "L2" }, { BUTTON_R2, "R2" },
@@ -600,11 +592,12 @@ void dosbox_uwpMain::Update()
         for (auto& b : btns)
             if (m_sdlInput->WasButtonJustPressed(b.btn))
                 spdlog::info("[input] {} pressed", b.name);
+#endif
 
 #ifdef MOUSE_SUPPORT
-        // Splash screen + menu: gamepad moves D2D cursor directly
+        // Splash screen: gamepad moves D2D cursor directly (no menu, no game)
         float dtSec = (float)m_timer.GetElapsedSeconds();
-        if (!m_retroCore->IsLoaded() || m_menu.IsVisible())
+        if (!m_retroCore->IsLoaded() && !m_menu.IsVisible())
         {
             m_pointerX += sx * 1.34f * dtSec;
             m_pointerY += sy * 1.34f * dtSec;
@@ -646,7 +639,7 @@ void dosbox_uwpMain::Update()
                 RetroCore::SetJoypadButton(m.retroId, m_sdlInput->IsButtonHeld(m.btn));
 
             // OSD swap: when PUREMENU/OSK/Mapper is active, swap A↔B so A=confirm, B=back
-            if (g_dbp_osd_active)
+            if (RetroCore::IsOSDActive())
             {
                 bool aHeld = m_sdlInput->IsButtonHeld(BUTTON_A);
                 bool bHeld = m_sdlInput->IsButtonHeld(BUTTON_B);
@@ -663,12 +656,21 @@ void dosbox_uwpMain::Update()
                     m_osdExitSuppressing = false;
             }
 
+        }
+
 #ifdef MOUSE_SUPPORT
-            // Gamepad mouse simulation — only when m_gamepadMouseMode is ON (LB+RB+Select toggle)
-            if (m_gamepadMouseMode)
+        // L-analog drives pointer whenever a pointer-capable UI is on screen:
+        //  - FrontendMenu GUI  -> moves D2D cursor (m_pointerX/Y), drives hover selection
+        //  - PUREMENU (OSD)    -> moves absolute pointer (DBPS_GetMouse)
+        //  - In-game           -> only when gamepad mouse mode is ON (LB+RB+Select)
+        {
+            bool guiVisible = m_menu.IsVisible();
+            bool osdActive = RetroCore::IsOSDActive();
+            bool pointerContext = guiVisible || osdActive || m_gamepadMouseMode;
+            if (pointerContext)
             {
-                // Phase 2: Gamepad left stick → relative mouse
-                if (sx != 0.0f || sy != 0.0f)
+                // Relative mouse (DOS games only, mouse mode ON)
+                if (!guiVisible && !osdActive && m_gamepadMouseMode && (sx != 0.0f || sy != 0.0f))
                 {
                     float curveX = (sx > 0 ? 1.0f : -1.0f) * sx * sx;
                     float curveY = (sy > 0 ? 1.0f : -1.0f) * sy * sy;
@@ -682,7 +684,7 @@ void dosbox_uwpMain::Update()
 
                 // Gamepad buttons → PUREMENU keyboard (A=Enter, B=Escape)
                 // Only when OSD visible and menu NOT visible — prevents spurious input in DOS
-                if (DBPS_IsShowingOSD() && !m_menu.IsVisible())
+                if (osdActive && !guiVisible && m_gamepadMouseMode)
                 {
                     static bool prevA = false, prevB = false;
                     bool nowA = m_sdlInput->IsButtonHeld(BUTTON_A);
@@ -691,7 +693,7 @@ void dosbox_uwpMain::Update()
                     if (nowB != prevB) { RetroCore::SetKeyState(RETROK_ESCAPE, nowB); prevB = nowB; }
                 }
 
-                // Phase 3: Gamepad → absolute pointer for PUREMENU
+                // Absolute pointer: PUREMENU cursor (OSD) or FrontendMenu hover (GUI)
                 LARGE_INTEGER _gmnow;
                 QueryPerformanceCounter(&_gmnow);
                 double mouseIdleMs = 0.0;
@@ -708,123 +710,126 @@ void dosbox_uwpMain::Update()
                     if (m_virtualCursorX > 1.0f) m_virtualCursorX = 1.0f;
                     if (m_virtualCursorY < 0.0f) m_virtualCursorY = 0.0f;
                     if (m_virtualCursorY > 1.0f) m_virtualCursorY = 1.0f;
-                    m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
-                }
-            } // end m_gamepadMouseMode
-#endif
-
-            // Multi-run model: produce up to 5 retro_runs per tick to fill audio.
-            // Queue feedback: when audio queue is healthy, scale down production to
-            // avoid overrunning. Clamp debt at 2× target fps (~140 frames) to prevent
-            // burst overruns from long I/O stalls while still allowing catch-up.
-            double targetFps = m_retroCore->GetTargetFps();
-            {
-                LARGE_INTEGER now;
-                QueryPerformanceCounter(&now);
-                if (m_audioLastTick > 0.0)
-                {
-                    double dt = (double)(now.QuadPart) / (double)m_qpcFreq.QuadPart - m_audioLastTick;
-                    m_audioTimeAccumulator += dt * targetFps;
-                    // Clamp: 2× target fps (~140 at 70fps). Prevents runaway
-                    // from long I/O stalls (SLOW FRAME 50-100ms) while allowing
-                    // catch-up bursts after normal stalls.
-                    if (m_audioTimeAccumulator > 2.0 * targetFps)
+                    if (guiVisible)
                     {
-                        m_audioTimeAccumulator = 2.0 * targetFps;
+                        m_pointerX = m_virtualCursorX;
+                        m_pointerY = m_virtualCursorY;
+                        auto logicalSize = m_deviceResources->GetLogicalSize();
+                        m_menu.HandlePointerMove(m_pointerX * logicalSize.Width, m_pointerY * logicalSize.Height);
+                    }
+                    else if (osdActive)
+                    {
+                        m_retroCore->SetPointer(m_virtualCursorX, m_virtualCursorY, false);
                     }
                 }
-                m_audioLastTick = (double)now.QuadPart / (double)m_qpcFreq.QuadPart;
-            }
-
-            int runs = 0;
-            int maxRetroRuns = 5;
-
-            // Queue feedback: if audio queue is healthy, reduce production rate
-            // to avoid overrunning and causing flush. Scale 0.4-1.0 based on queue.
-            if (m_xaudio2)
-            {
-                int qf = m_xaudio2->GetQueuedFrames();
-                if (qf > 40)       maxRetroRuns = 1;  // queue healthy, minimal production
-                else if (qf > 20)  maxRetroRuns = 2;
-                else if (qf > 10)  maxRetroRuns = 3;
-                // else maxRetroRuns stays 5 (empty queue, produce aggressively)
-            }
-
-            // Tick budget safety: skip if this tick already took too long
-            {
-                LARGE_INTEGER _now;
-                QueryPerformanceCounter(&_now);
-                double tickElapsedMs = (double)(_now.QuadPart - _t0.QuadPart) * 1000.0 / _freq.QuadPart;
-                if (tickElapsedMs <= 25.0)
-                {
-                    while (m_audioTimeAccumulator >= 1.0 && maxRetroRuns > 0)
-                    {
-                        LARGE_INTEGER _rf0, _rf1;
-                        QueryPerformanceCounter(&_rf0);
-#ifndef XB_INSPECTOR_ENABLED
-                        m_retroCore->RunFrame();
-#else
-                        if (!s_paused)
-                            m_retroCore->RunFrame();
+            } // end pointer context
+        }
 #endif
-                        QueryPerformanceCounter(&_rf1);
-                        double rfMs = (double)(_rf1.QuadPart - _rf0.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
-                        if (rfMs > 20.0)
-                        {
-                            int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
-                            spdlog::warn("[dosbox-uwp] SLOW FRAME: RunFrame took {:.1f}ms q={}", rfMs, qf);
-                        }
-                        m_audioTimeAccumulator -= 1.0;
-                        runs++;
-                        maxRetroRuns--;
-                    }
-                }
+
+        // Emulation runs on its own thread (audio-paced). The UI tick only
+        // tracks whether a new frame was produced (FPS/DIAG/SKIP reporting).
+        {
+            uint64_t nowCount = RetroCore::GetEmulatedFrameCount();
+            m_lastRetroRuns = (nowCount > m_lastEmuFrameCount) ? 1 : 0;
+            m_lastEmuFrameCount = nowCount;
+            s_diagRunsAccum += m_lastRetroRuns;
+        }
+
+        // Core requested SHUTDOWN → the emulation thread already unloaded the
+        // game (RetroCore handles it internally). Do the UI-side cleanup here.
+        if (RetroCore::ConsumeUnloadEvent())
+        {
+            OutputDebugStringA("[dosbox-uwp] Emulation thread unloaded game (core SHUTDOWN)\n");
+            m_retroRunning = false;
+            m_lastRetroRuns = 0;
+            m_clearColor = DirectX::Colors::Black;
+
+            // Reset FPS tracking — stale data from old game leaks into overlay
+            m_currentFps = 0.0;
+            m_frameTimeMs = 0.0;
+            m_fpsFrameCount = 0;
+            m_fpsFrameIdx = 0;
+            memset(m_fpsFrameTimes, 0, sizeof(m_fpsFrameTimes));
+            m_fpsLastFrame = {};
+
+            // Reset input state — prevent carry-over to next game
+            m_gamepadMouseMode = false;
+            m_lbrbsPrevHeld = false;
+            m_dpadRepeatBtn = -1;
+            m_osdExitSuppressing = false;
+
+            // Flush XAudio2 — old audio queue would play briefly with new game
+            if (m_xaudio2) {
+                m_xaudio2->Stop();
+                m_xaudio2->Flush();
             }
 
-            m_lastRetroRuns = runs;
+            m_loadState = LOAD_IDLE;
+            m_menu.Show();
+        }
 
-            // Accumulate runs for DIAG interval reporting
-            s_diagRunsAccum += runs;
-
-            if (RetroCore::IsShutdownRequested())
+        // Async load completion: the emulation thread ran retro_load_game.
+        if (m_loadState == LOAD_BOOTING)
+        {
+            int result = RetroCore::ConsumeLoadResult();
+            if (result == 1)
             {
-                OutputDebugStringA("[dosbox-uwp] Shutdown requested by core, unloading game\n");
-                m_retroCore->UnloadGame();
-                m_retroRunning = false;
-                m_audioTimeAccumulator = 0.0;
-                m_audioLastTick = 0.0;
-                m_lastRetroRuns = 0;
+                spdlog::info("[LoadRom] Game loaded OK (emulation thread)");
+                m_retroRunning = true;
                 m_clearColor = DirectX::Colors::Black;
+                m_menu.Hide();
 
-                // Reset FPS tracking — stale data from old game leaks into overlay
-                m_currentFps = 0.0;
-                m_frameTimeMs = 0.0;
-                m_fpsFrameCount = 0;
-                m_fpsFrameIdx = 0;
-                memset(m_fpsFrameTimes, 0, sizeof(m_fpsFrameTimes));
-                m_fpsLastFrame = {};
+                // Push all saved option values to core so check_variables() picks them up
+                SettingsManager::ForEachOption([](const char* key, const char* value) {
+                    if (strncmp(key, "frontend_", 9) != 0) // skip frontend-only options
+                        RetroCore::SetOptionValue(key, value);
+                });
 
-                // Reset input state — prevent carry-over to next game
-                m_gamepadMouseMode = false;
-                m_lbrbsPrevHeld = false;
-                m_dpadRepeatBtn = -1;
-                m_osdExitSuppressing = false;
-
-                // Flush XAudio2 — old audio queue would play briefly with new game
-                if (m_xaudio2) {
-                    m_xaudio2->Stop();
-                    m_xaudio2->Flush();
+                // Add to history — store original path, not temp path
+                {
+                    const std::wstring& histPath = m_lastRequestedOrigPath;
+                    std::string pathUtf8;
+                    {
+                        int len = WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        if (len > 0)
+                        {
+                            pathUtf8.resize(len - 1);
+                            WideCharToMultiByte(CP_UTF8, 0, histPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
+                        }
+                    }
+                    if (!pathUtf8.empty())
+                    {
+                        auto slash = pathUtf8.find_last_of("/\\");
+                        std::string fnameUtf8 = (slash != std::string::npos) ? pathUtf8.substr(slash + 1) : pathUtf8;
+                        SettingsManager::AddToHistory(fnameUtf8, pathUtf8);
+                    }
+                    m_menu.SetCoreLoaded(true);
                 }
 
-                m_menu.Show();
-                return; // return from Tick lambda, render will show menu
-        }
+                m_loadState = LOAD_DONE;
+
+                // Flush the old game's audio ring; the emulation thread's next
+                // Write() auto-starts the voice.
+                if (m_xaudio2)
+                    m_xaudio2->Flush();
+                m_loadingActive = false;
+                m_loadingDisc.Reset();
+            }
+            else if (result == 0)
+            {
+                spdlog::error("[LoadRom] retro_load_game FAILED (emulation thread)");
+                m_loadState = LOAD_FAILED;
+                m_loadingActive = false;
+                m_loadingDisc.Reset();
+            }
         }
 
-        // Auto-stop XAudio2 voice: if voice is running but queue is empty and no
-        // retro_run produced audio this tick, stop the voice to prevent infinite
-        // UNDERRUN spam (e.g. after beep finishes or before any game loads).
-        if (m_xaudio2 && m_lastRetroRuns == 0 && m_xaudio2->GetQueuedFrames() <= 0)
+        // Auto-stop XAudio2 voice: only when NO game is loaded (beep finished,
+        // before a load). With a game loaded the blocking audio Write() is the
+        // frame pacer — stopping the voice here would freeze OnBufferEnd and
+        // make every SubmitFullBuffer wait the full WRITE_TIMEOUT.
+        if (m_xaudio2 && !(m_retroCore && m_retroCore->IsLoaded()) &&
+            m_lastRetroRuns == 0 && m_xaudio2->GetQueuedFrames() <= 0)
         {
             m_xaudio2->Stop();
         }
@@ -844,67 +849,121 @@ void dosbox_uwpMain::Update()
             s_perf.target_fps = s_debug_target_fps;
             s_perf.frame_ms = s_debug_frame_ms;
 #endif
-            static int pacingLogCounter = 0;
-            if ((++pacingLogCounter % 3000) == 0)
+            // Per-tick accumulation for the 1Hz [HEALTH] log.
+            s_healthFrameSum += frameMs;
+            s_healthFrameCount++;
+            if (frameMs > s_healthFrameMax) s_healthFrameMax = frameMs;
+
+            // 1Hz gate via QPC (the old tick-counter gate fired only every
+            // ~50s on Xbox at 60 UI fps — useless as a live health log).
+            LARGE_INTEGER _hnow;
+            QueryPerformanceCounter(&_hnow);
+            double healthElapsed = (s_healthLast.QuadPart != 0)
+                ? (double)(_hnow.QuadPart - s_healthLast.QuadPart) * 1000.0 / _freq.QuadPart
+                : 0.0;
+
+            if (s_healthLast.QuadPart == 0 || healthElapsed >= 1000.0)
             {
-                int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
-                unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
-                unsigned vh = m_retroCore ? m_retroCore->GetFrameHeight() : 0;
+                bool loaded = m_retroCore && m_retroCore->IsLoaded();
+                // [HEALTH] + overlay both gated by frontend_diag (Settings >
+                // General > Debug Overlay). Off by default to keep the log
+                // clean outside of debugging sessions.
+                bool diagHealth = SettingsManager::GetOption("frontend_diag", "Off") == "On";
+                if (s_healthLast.QuadPart != 0 && loaded && diagHealth)
+                {
+                    int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
+                    int buffers = m_xaudio2 ? m_xaudio2->GetBuffers() : 0;
+                    unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
+                    unsigned vh = m_retroCore ? m_retroCore->GetFrameHeight() : 0;
 
-                // Real (Windows) process CPU time
-                FILETIME creation, exit, kernel, user;
-                GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
-                ULARGE_INTEGER uk, uu;
-                uk.LowPart = kernel.dwLowDateTime; uk.HighPart = kernel.dwHighDateTime;
-                uu.LowPart = user.dwLowDateTime; uu.HighPart = user.dwHighDateTime;
-                double cpuMs = (double)(uk.QuadPart + uu.QuadPart) / 10000.0;
+                    long long consumedNow = m_xaudio2 ? m_xaudio2->GetTotalConsumed() : 0;
+                    long underNow = m_xaudio2 ? m_xaudio2->GetUnderruns() : 0;
+                    long overNow = m_xaudio2 ? m_xaudio2->GetOverruns() : 0;
+                    long long consDelta = (consumedNow >= s_healthLastConsumed)
+                        ? (consumedNow - s_healthLastConsumed) : 0;
+                    double consPerSec = consDelta * 1000.0 / healthElapsed;
+                    long underDelta = (underNow >= s_healthLastUnder)
+                        ? (underNow - s_healthLastUnder) : 0;
+                    long overDelta = (overNow >= s_healthLastOver)
+                        ? (overNow - s_healthLastOver) : 0;
 
-                // Real memory
-                PROCESS_MEMORY_COUNTERS pmc;
-                GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
-                float memMB = pmc.WorkingSetSize / (1024.0f * 1024.0f);
+                    double frameAvg = s_healthFrameCount
+                        ? s_healthFrameSum / s_healthFrameCount : 0.0;
 
-                spdlog::info(
-                    "[DIAG] fps={:.1f}/{:.0f} frame={:.2f}ms "
-                    "runs_ival={} runs_last={} accum={:.2f} audio_q={} "
-                    "cpu={:.0f}ms mem={:.1f}MB "
-                    "cmax={} video={}x{}",
-                    m_currentFps, targetFps, frameMs,
-                    s_diagRunsAccum, m_lastRetroRuns, m_audioTimeAccumulator, qf,
-                    cpuMs, memMB,
-                    RetroCore::GetCyclesMax(), vw, vh);
+                    // Real (Windows) process CPU time
+                    FILETIME creation, exit, kernel, user;
+                    GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
+                    ULARGE_INTEGER uk, uu;
+                    uk.LowPart = kernel.dwLowDateTime; uk.HighPart = kernel.dwHighDateTime;
+                    uu.LowPart = user.dwLowDateTime; uu.HighPart = user.dwHighDateTime;
+                    double cpuMs = (double)(uk.QuadPart + uu.QuadPart) / 10000.0;
+
+                    // Real memory
+                    PROCESS_MEMORY_COUNTERS pmc;
+                    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+                    float memMB = pmc.WorkingSetSize / (1024.0f * 1024.0f);
+
+                    spdlog::info(
+                        "[HEALTH] ui={:.1f} runs={} target={:.0f} "
+                        "frame={:.2f}ms(max{:.1f}) "
+                        "audio_q={}ms({}/{}buf) under={}/s over={}/s cons={:.0f}/s "
+                        "skip={} cpu={:.0f}ms mem={:.1f}MB "
+                        "cycles={} cpu_core={} video={}x{}",
+                        m_currentFps, s_diagRunsAccum, targetFps,
+                        frameAvg, s_healthFrameMax,
+                        qf, buffers, XAudio2Output::MAX_BUFFERS,
+                        underDelta, overDelta, consPerSec,
+                        s_healthSkips, cpuMs, memMB,
+                        RetroCore::GetCyclesMax(),
+                        RetroCore::GetCpuDecoderName(),
+                        vw, vh);
+                }
+
+                // Reset interval state (also refreshes the audio baselines so
+                // the first in-game sample after the menu is not stale).
+                s_healthLast = _hnow;
+                s_healthLastConsumed = m_xaudio2 ? m_xaudio2->GetTotalConsumed() : 0;
+                s_healthLastUnder = m_xaudio2 ? m_xaudio2->GetUnderruns() : 0;
+                s_healthLastOver = m_xaudio2 ? m_xaudio2->GetOverruns() : 0;
+                s_healthFrameSum = 0.0;
+                s_healthFrameCount = 0;
+                s_healthFrameMax = 0.0;
+                s_healthSkips = 0;
                 s_diagRunsAccum = 0;
 
-                // Frame drop detection: sustained drop below 80% of target
-                static double s_lowFpsSum = 0.0;
-                static int s_lowFpsCount = 0;
-                static int s_dropLogCooldown = 0;
-                if (m_currentFps > 0 && m_currentFps < targetFps * 0.80)
+                if (diagHealth)
                 {
-                    s_lowFpsSum += m_currentFps;
-                    s_lowFpsCount++;
-                }
-                else
-                {
-                    s_lowFpsSum = 0;
-                    s_lowFpsCount = 0;
-                }
-                if (s_lowFpsCount >= 5 && s_dropLogCooldown <= 0)
-                {
-                    double avgLow = s_lowFpsSum / s_lowFpsCount;
-                    spdlog::warn(
-                        "[DROP] {} consecutive windows below 80% target: "
-                        "avg={:.1f} target={:.0f} — possible frame drop or stall",
-                        s_lowFpsCount, avgLow, targetFps);
-                    s_dropLogCooldown = 300; // don't spam
-                }
-                if (s_dropLogCooldown > 0) s_dropLogCooldown--;
+                    // Frame drop detection: sustained drop below 80% of target
+                    static double s_lowFpsSum = 0.0;
+                    static int s_lowFpsCount = 0;
+                    static int s_dropLogCooldown = 0;
+                    if (loaded && m_currentFps > 0 && m_currentFps < targetFps * 0.80)
+                    {
+                        s_lowFpsSum += m_currentFps;
+                        s_lowFpsCount++;
+                    }
+                    else
+                    {
+                        s_lowFpsSum = 0;
+                        s_lowFpsCount = 0;
+                    }
+                    if (s_lowFpsCount >= 5 && s_dropLogCooldown <= 0)
+                    {
+                        double avgLow = s_lowFpsSum / s_lowFpsCount;
+                        spdlog::warn(
+                            "[DROP] {} consecutive seconds below 80% target: "
+                            "avg={:.1f} target={:.0f} — possible frame drop or stall",
+                            s_lowFpsCount, avgLow, targetFps);
+                        s_dropLogCooldown = 300; // don't spam
+                    }
+                    if (s_dropLogCooldown > 0) s_dropLogCooldown--;
 
-                // Main loop stall: tick rate dropped below 30fps (Windows ~3000, Xbox ~60)
-                if (m_retroCore->IsLoaded() && m_currentFps > 0 && m_currentFps < 30.0)
-                {
-                    spdlog::warn("[CPU] main loop slow: {:.0f}fps (normal ~3000) — CPU/IO spike?",
-                        m_currentFps);
+                    // Emulation stall: sustained sub-30fps while a game is loaded
+                    if (loaded && m_currentFps > 0 && m_currentFps < 30.0)
+                    {
+                        spdlog::warn("[CPU] emulation slow: {:.0f}fps — CPU/IO spike?",
+                            m_currentFps);
+                    }
                 }
             }
         }
@@ -961,6 +1020,7 @@ void dosbox_uwpMain::Update()
             double sceneMs = (double)(_t3.QuadPart - _t2.QuadPart) * 1000.0 / _freq.QuadPart;
             if (tickMs > 20.0 && m_lastRetroRuns > 0 && !m_menu.IsVisible())
             {
+                s_healthSkips++;
                 int qf2 = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
                 spdlog::warn("[SKIP] tick={} total={:.1f}ms frame={:.1f} hud={:.1f} scene={:.1f} "
                     "runs={} q={}",
@@ -996,15 +1056,12 @@ bool dosbox_uwpMain::Render()
 
     if (m_retroCore && m_retroCore->IsLoaded())
     {
-        bool haveFrame = m_retroCore->HasFrame();
-        if (haveFrame)
+        RetroCore::FrameView frame;
+        if (RetroCore::AcquireFrame(frame))
         {
             m_retroD3D11->UpdateVideoFrame(
-                (const uint8_t*)m_retroCore->GetFrameData(),
-                m_retroCore->GetFrameWidth(),
-                m_retroCore->GetFrameHeight(),
-                m_retroCore->GetFramePitch());
-            m_retroCore->ClearFrame();
+                frame.data, frame.w, frame.h, frame.pitch);
+            RetroCore::ReleaseFrame();
         }
         m_retroD3D11->Render();
     }
@@ -1052,7 +1109,7 @@ bool dosbox_uwpMain::Render()
 #endif
         // Debug overlay (top-right corner) — matches Unleashed ZILLALOG HUD
         // Gated by frontend_diag setting (Settings > General > Debug Overlay)
-        if (m_currentFps > 0.0 && SettingsManager::GetOption("frontend_diag", "On") != "Off")
+        if (m_currentFps > 0.0 && SettingsManager::GetOption("frontend_diag", "Off") != "Off")
         {
             int qf = m_xaudio2 ? m_xaudio2->GetQueuedFrames() : 0;
             unsigned vw = m_retroCore ? m_retroCore->GetFrameWidth() : 0;
@@ -1062,12 +1119,12 @@ bool dosbox_uwpMain::Render()
             swprintf_s(fpsText,
                 L"FPS: %5.1f  Frame: %5.1fms\n"
                 L"Video: %ux%u  Viewport: %.0fx%.0f\n"
-                L"Runs: %d  Accum: %.2f  Target: %.0f\n"
+                L"Runs: %d  Target: %.0f\n"
                 L"Audio Q: %d frames\n"
                 L"CyclesMax: %d",
                 m_currentFps, m_frameTimeMs,
                 vw, vh, logicalSize.Width, logicalSize.Height,
-                m_lastRetroRuns, m_audioTimeAccumulator,
+                m_lastRetroRuns,
                 m_retroCore ? m_retroCore->GetTargetFps() : 60.0,
                 qf, cyclesMax);
 
@@ -1507,26 +1564,36 @@ void dosbox_uwpMain::OnDeviceRestored()
 void dosbox_uwpMain::ProcessPendingLoad()
 {
     if (!m_pendingLoad) return;
-    // Debug delay: 10 seconds so loading screen visible for testing
+    // Debug delay: 2 seconds so the loading screen is visible for testing
     LARGE_INTEGER _now;
     QueryPerformanceCounter(&_now);
     double elapsedMs = (double)(_now.QuadPart - m_loadingStart.QuadPart) * 1000.0 / m_qpcFreq.QuadPart;
     if (elapsedMs < 2000.0) return;
     LoadRom(m_pendingLoad->path, std::move(m_pendingLoad->data), m_pendingLoad->originalPath);
     m_pendingLoad.reset();
-    m_loadState = m_retroCore && m_retroCore->IsLoaded() ? LOAD_DONE : LOAD_FAILED;
+    // Completion handled asynchronously in Update() via ConsumeLoadResult().
+    // Loading screen stays up until the emulation thread reports success/failure.
+}
 
-    // Reset accumulator (v0.8.3.0)
-    // DON'T force-start XAudio2 here — Submit() auto-starts after TARGET_QUEUE pre-buffering.
-    // Force-starting with2 frames causes instant UNDERRUN → OutputDebugStringA flood → freeze.
-    m_audioTimeAccumulator = 0.0;
-    m_audioLastTick = 0.0;
-    if (m_xaudio2) {
-        m_xaudio2->Flush();
-        m_audioTimeAccumulator = 1.0; // boost first frame
-    }
-    m_loadingActive = false;
-    m_loadingDisc.Reset();
+void dosbox_uwpMain::PauseEmulation()
+{
+    if (m_retroCore)
+        m_retroCore->Pause();
+    spdlog::info("[dosbox-uwp] Emulation paused");
+}
+
+void dosbox_uwpMain::ResumeEmulation()
+{
+    if (m_retroCore)
+        m_retroCore->Resume();
+    spdlog::info("[dosbox-uwp] Emulation resumed");
+}
+
+void dosbox_uwpMain::ShutdownNow()
+{
+    if (m_retroCore)
+        m_retroCore->Shutdown();
+    spdlog::info("[dosbox-uwp] Emulation thread joined (ShutdownNow)");
 }
 
 void dosbox_uwpMain::RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize)

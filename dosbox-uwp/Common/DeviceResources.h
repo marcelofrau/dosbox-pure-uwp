@@ -102,7 +102,8 @@ namespace DX
 		IDeviceNotify* m_deviceNotify;
 
 		// VSync: 1 = enabled (sync to vblank), 0 = disabled (immediate present)
-		int m_syncInterval = 1;
+		// Default 0 = audio-master pacing; enabled only via frontend_vsync setting.
+		int m_syncInterval = 0;
 
 		// Display refresh rate (60/120/144 Hz) queried from DXGI at swap chain creation.
 		float m_displayRefreshRate = 60.0f;

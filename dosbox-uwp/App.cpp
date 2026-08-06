@@ -1,6 +1,9 @@
 ﻿#include "pch.h"
-#include "App.h"
 
+#include <algorithm>
+#include <cmath>
+
+#include "App.h"
 #include <ppltasks.h>
 
 using namespace dosbox_uwp;
@@ -14,6 +17,7 @@ using namespace Windows::UI::Input;
 using namespace Windows::System;
 using namespace Windows::Foundation;
 using namespace Windows::Graphics::Display;
+using namespace Windows::System::Display;
 
 // The main function is only used to initialize our IFrameworkView class.
 [Platform::MTAThread]
@@ -55,6 +59,12 @@ void App::Initialize(CoreApplicationView^ applicationView)
 		ref new EventHandler<Platform::Object^>(this, &App::OnResuming);
 
 	m_deviceResources = std::make_shared<DX::DeviceResources>();
+
+	// Keep the display/screen awake while the app is running (Xbox dim/idle timer).
+	// Released on suspend, re-acquired on resume.
+	m_displayRequest = ref new DisplayRequest();
+	m_displayRequest->RequestActive();
+	spdlog::info("DisplayRequest active (screen stays awake)");
 
 	QueryPerformanceFrequency(&m_perfFrequency);
 	QueryPerformanceCounter(&m_lastFrameTime);
@@ -148,40 +158,28 @@ void App::Run()
 			if (m_main->Render())
 			{
 				m_deviceResources->Present(m_deviceResources->GetSyncInterval(), 0);
-
-				// Software frame limiter: when 60/70Hz is set, Present(0,0) is non-blocking.
-				// Sleep+spin to target the right frame period. Vsync OFF = syncInterval 0.
-				int flFps = m_main->GetFrameLimitFps();
-				if (flFps > 0 && m_deviceResources->GetSyncInterval() == 0)
-				{
-					LARGE_INTEGER now;
-					QueryPerformanceCounter(&now);
-					double elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-					double targetSec = 1.0 / (double)flFps;
-					double remaining = targetSec - elapsed;
-					if (remaining > 0.001)
-					{
-						// Sleep for most of the remaining time (leave 2ms for spin)
-						DWORD sleepMs = (DWORD)((remaining - 0.002) * 1000.0);
-						if (sleepMs > 0) Sleep(sleepMs);
-						// Spin for the last ~2ms for precision
-						QueryPerformanceCounter(&now);
-						elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-						while (elapsed < targetSec)
-						{
-							Sleep(0);
-							QueryPerformanceCounter(&now);
-							elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFrequency.QuadPart;
-						}
-					}
-				}
-				m_lastFrameTime = {};
-				QueryPerformanceCounter(&m_lastFrameTime);
 			}
-			else if (m_main->GetLastRetroRuns() == 0)
+
+			// UI thread pacing. The emulation thread is paced by the blocking
+			// audio Write() on its own thread — the UI must NOT call retro_run.
+			// Without this the Present(0,0) loop spins at thousands of fps
+			// (audio-master, default) or when nothing is loaded.
+			// When vsync is on, Present(1,0) already blocks at the display
+			// rate, so no manual pacing is needed.
+			if (m_deviceResources->GetSyncInterval() == 0)
 			{
-				// No frame produced this iteration — yield CPU to avoid 100% spin.
-				Sleep(1);
+				double targetMs = (m_main && m_main->IsLoaded())
+					? (1000.0 / max(m_main->GetTargetFps(), 1.0))
+					: 16.6; // 60fps floor when nothing loaded
+				LARGE_INTEGER now;
+				QueryPerformanceCounter(&now);
+				double elapsedMs = (double)(now.QuadPart - m_lastFrameTime.QuadPart) * 1000.0 / m_perfFrequency.QuadPart;
+				m_lastFrameTime = now;
+				double remain = targetMs - elapsedMs;
+				if (remain > 0.0)
+					Sleep((DWORD)ceil(remain));
+				else
+					Sleep(1); // always yield — avoid 100% spin on skipped frames
 			}
 
 			m_main->ProcessPendingLoad();
@@ -218,6 +216,14 @@ void App::OnSuspending(Platform::Object^ sender, SuspendingEventArgs^ args)
 	// the app will be forced to exit.
 	SuspendingDeferral^ deferral = args->SuspendingOperation->GetDeferral();
 
+	// Pause the emulation thread immediately (UI thread); it will resume on OnResuming.
+	if (m_main)
+		m_main->PauseEmulation();
+
+	// Allow the screen to dim again once suspended.
+	if (m_displayRequest)
+		m_displayRequest->RequestRelease();
+
 	create_task([this, deferral]()
 	{
         m_deviceResources->Trim();
@@ -233,6 +239,14 @@ void App::OnResuming(Platform::Object^ sender, Platform::Object^ args)
 	// Restore any data or state that was unloaded on suspend. By default, data
 	// and state are persisted when resuming from suspend. Note that this event
 	// does not occur if the app was previously terminated.
+
+	// Resume the emulation thread paused in OnSuspending.
+	if (m_main)
+		m_main->ResumeEmulation();
+
+	// Re-acquire the display-awake request after resume.
+	if (m_displayRequest)
+		m_displayRequest->RequestActive();
 
 	// Insert your code here.
 }
@@ -253,6 +267,10 @@ void App::OnVisibilityChanged(CoreWindow^ sender, VisibilityChangedEventArgs^ ar
 void App::OnWindowClosed(CoreWindow^ sender, CoreWindowEventArgs^ args)
 {
 	LogShutdown();
+	// Join the emulation thread so it stops cleanly (no retro callbacks after
+	// the CoreWindow is gone). Blocks at most ~256ms (audio Write timeout).
+	if (m_main)
+		m_main->ShutdownNow();
 	m_windowClosed = true;
 }
 

@@ -40,6 +40,9 @@ namespace dosbox_uwp
         void LoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath = {});
         void QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath = {});
         void ProcessPendingLoad();
+        void PauseEmulation();
+        void ResumeEmulation();
+        void ShutdownNow();
         void RenderLoadingScreen(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, D2D1_SIZE_F logicalSize);
         void EnsureLoadingDisc();
         enum LoadState { LOAD_IDLE, LOAD_PICKING, LOAD_READING, LOAD_BOOTING, LOAD_DONE, LOAD_FAILED };
@@ -135,18 +138,24 @@ namespace dosbox_uwp
         ULONGLONG m_dpadRepeatNext = 0;  // GetTickCount64 when next repeat fires
 
         // Gamepad mouse mode toggle (LB+RB+Select)
-        bool m_gamepadMouseMode = false;  // OFF by default; stick→mouse, A→click, B→escape
+        bool m_gamepadMouseMode = false;  // OFF by default; in-game relative mouse sim only
         bool m_lbrbsPrevHeld = false;     // edge detection for combo press
 
         // OSD exit input suppress — holds A/B to false until physical buttons released
         bool m_osdExitSuppressing = false;
 
-        // Frame pacing: accumulator ensures retro_run is called targetFps times/sec
+        // Frame pacing: emulation runs on its own thread (audio-paced).
+        // m_lastRetroRuns = 1 when the emulation thread produced a new frame
+        // this tick; 0 otherwise (drives FPS counter, DIAG, SKIP detection).
         int m_lastRetroRuns = 0;
-        double m_audioTimeAccumulator = 0.0;
-        double m_audioLastTick = 0.0;
+        uint64_t m_lastEmuFrameCount = 0;
 
-        // Software frame limiter (0=off, 60=60Hz, 70=70Hz)
+        // Requested game paths (async load — UI keeps them for history/menu)
+        std::wstring m_lastRequestedPath;
+        std::wstring m_lastRequestedOrigPath;
+
+        // Software frame limiter (0=off, 60=60Hz, 70=70Hz). >0 forces vsync off
+        // (audio-master pacing); value no longer drives the loop directly.
         int m_frameLimitFps = 0;
 
 #ifdef MOUSE_SUPPORT
