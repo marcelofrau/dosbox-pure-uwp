@@ -141,7 +141,7 @@ Cmd keys que o core do DOSBox Pure usa (identificadas no `main.cpp` do unleashed
 | `SET_HW_RENDER` | ✅ Retornar 0 (rejeitar HW, forçar SW) |
 | `SET_KEYBOARD_CALLBACK` | ✅ Push held key states |
 | `SET_MESSAGE_EXT` | ✅ Log via OutputDebugStringA |
-| `GET_THROTTLE_STATE` | ✅ RETRO_THROTTLE_NONE |
+| `GET_THROTTLE_STATE` | ✅ VSYNC (refresh) quando vsync on && refresh<core_fps; senão NONE (core_fps) |
 | `SET_NETPACKET_INTERFACE` | ⏳ Futuro (netplay) |
 | `GET_USERNAME` | ☑️ Opcional |
 | `GET_LANGUAGE` | ☑️ Opcional |

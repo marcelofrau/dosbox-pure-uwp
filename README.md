@@ -36,7 +36,7 @@ Enable Dev Mode on your Xbox. Deploy the `.msix` via [Xbox Device Portal](https:
 
 ### 2. Add Games
 
-The app includes an in-app file browser (press **A** on "Load Game" or navigate to your game folders). Supported formats:
+The app includes an in-app file browser (press **A** on "Load File" or navigate to your game folders). Supported formats:
 
 | Format | Description | Example |
 |--------|-------------|---------|
@@ -138,10 +138,12 @@ DOSBox Pure's built-in menu (PUREMENU) lets you swap disks during gameplay.
 | **Y** | Varies by game |
 | **LB / RB** | Page up/down in menus / disk swap |
 | **LT / RT** | Triggers (mapped per game) |
-| **Left Stick** | Mouse emulation |
+| **Left Stick** | Menu/OSD cursor + in-game mouse (mouse mode ON) |
 | **Right Stick** | Scroll / secondary input |
-| **Start** | PUREMENU (in-game settings) |
-| **Back** | Close menu / exit |
+| **Start** | Gamepad Start (mapped via Generic Keyboard preset) |
+| **Select** | Gamepad Select (mapped via Generic Keyboard preset) |
+| **R3** | PUREMENU (in-game settings) |
+| **LB+RB+Select** (hold) | Toggle gamepad mouse mode (left stick → DOS mouse) |
 
 ### Keyboard
 
@@ -149,14 +151,16 @@ Standard DOS keyboard mapping. All keys work as expected: arrows, Enter, Escape,
 
 ### Mouse
 
-Connected via USB or emulated through left stick. Works in all DOS games that use mouse input (Doom, Duke Nukem 3D, etc.).
+Connected via USB or emulated through left stick. Works in all DOS games that use mouse input (Doom, Duke Nukem 3D, etc.). In-game mouse emulation is a **toggle**: hold **LB+RB+Select** to switch the left stick from game analog to DOS mouse (A=Enter, B=Escape). The left stick always drives the menu and PUREMENU cursor.
 
 ### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| **F10** | Toggle menu |
-| **Ctrl+L** | Open system file picker (fallback) |
+| **F10** | Toggle PUREMENU in-game / visual-only hint on the start screen |
+| **F12** | Reserved (swallowed) |
+| **Ctrl+L** | Open the file browser (load a game) |
+| **Alt** | Forwarded to the game (menu bar / Alt key) |
 
 ---
 
@@ -167,18 +171,22 @@ Connected via USB or emulated through left stick. Works in all DOS games that us
 | DOS emulation (CPU, memory, sound) | ✅ Done |
 | Dynamic recompiler (JIT, 5-10x speed) | ✅ Done |
 | D2D video pipeline with letterbox | ✅ Done |
-| XAudio2 audio output (low latency) | ✅ Done |
+| XAudio2 audio output (low latency, 48ms ring) | ✅ Done |
+| Fullscreen settings menu (8 pages) | ✅ Done |
 | In-app file browser (gamepad+mouse) | ✅ Done |
-| FrontendMenu (DOS-style BIOS screen) | ✅ Done |
+| Recent games history + startup folder | ✅ Done |
+| PUREMENU (in-game OSD, 640x480) | ✅ Done |
 | Gamepad input (Xbox controller) | ✅ Done |
+| Gamepad mouse emulation (LB+RB+Select) | ✅ Done |
 | Keyboard input (full DOS mapping) | ✅ Done |
 | Mouse input (USB + stick emulation) | ✅ Done |
-| PUREMENU (in-game OSD settings) | ✅ Done |
+| Settings persistence (dosbox-pure-settings.json) | ✅ Done |
+| Per-game config overrides (FRONTEND.DBP) | ✅ Done |
 | Multi-disc support (CD swap) | ✅ Done |
 | ZIP/ISO/CHD mounting | ✅ Done |
 | Self-signed packaging (MSIX) | ✅ Done |
 | Xbox deployment (WDP REST API) | ✅ Done |
-| Save states | ⏳ Planned |
+| Save states (menu shell) | ⏳ In progress |
 | Network play (IPX) | ⏳ Planned |
 
 ---
@@ -234,16 +242,16 @@ Uploads MSIX + dependencies via Xbox Device Portal REST API.
 ```
 dosbox-pure-unleashed-uwp/
 ├── dosbox-uwp/                       ← UWP frontend (our code)
-│   ├── App.cpp/h                     ← Entry point, Ctrl+L fallback
-│   ├── dosbox_uwpMain.cpp/h          ← Main loop, input routing, audio pacing
+│   ├── App.cpp/h                     ← Entry point, hotkeys (F10/F12/Ctrl+L/Alt)
+│   ├── dosbox_uwpMain.cpp/h          ← Main loop, input routing, mouse emulation
 │   ├── Content/
 │   │   ├── RetroCore.cpp/h           ← libretro bridge: init/load/run/callbacks/VFS
 │   │   ├── RetroScreenRenderer.cpp/h ← D2D bitmap + letterbox rendering
-│   │   ├── XAudio2Output.cpp/h       ← XAudio2 audio: ring buffer, queue cap
-│   │   ├── FrontendMenu.cpp/h        ← DOS-style BIOS menu overlay
+│   │   ├── XAudio2Output.cpp/h       ← XAudio2 audio: 4×12ms follower ring
+│   │   ├── FrontendMenu.cpp/h        ← Fullscreen DOS-style settings menu (8 pages)
 │   │   ├── FileBrowser.cpp/h         ← In-app file explorer (D2D)
 │   │   └── SdlInput.cpp/h            ← SDL gamepad + UWP fallback
-│   ├── dosbox_pure_sta.cpp           ← DBPS_* stubs
+│   ├── dosbox_pure_sta.cpp           ← DBPS_* stubs (GetMouse + ApplyConfigOverrides real)
 │   ├── local/dosbox-pure/            ← Patched core files (UWP compat)
 │   └── Package.appxmanifest          ← UWP manifest + capabilities
 ├── extern/
@@ -273,11 +281,11 @@ The app is a **libretro frontend**. The dosbox-pure core (in `extern/dosbox-pure
 
 1. **Video** — Core calls `retro_video_refresh_cb()` with an XRGB8888 framebuffer. We copy it to a D2D bitmap and render with letterboxing.
 
-2. **Audio** — Core calls `retro_audio_sample_batch()` with stereo PCM16. We submit to XAudio2 with a ring buffer and queue-depth cap (~20ms max latency).
+2. **Audio** — Core calls `retro_audio_sample_batch()` with stereo PCM16. We submit to XAudio2 with a fixed 4×12ms = 48ms follower ring (`OnBufferEnd` callback). Frame pacing is a QPC timer (`PaceFrame`) at the same rate reported by `GET_THROTTLE_STATE`, so the ring stays balanced and only absorbs drift.
 
-3. **Input** — `retro_input_poll()` reads gamepad/keyboard/mouse state. `retro_input_state()` returns button states.
+3. **Input** — `retro_input_poll()` reads gamepad/keyboard/mouse state. `retro_input_state()` returns button states. A generic-keyboard preset maps gamepad buttons to RetroPad IDs; R3 toggles PUREMENU, LB+RB+Select toggles gamepad mouse mode, and the left stick drives the menu/OSD pointer.
 
-4. **Environment** — `retro_environment()` handles VFS, configuration, hardware render rejection (SW path forced), and keyboard callbacks.
+4. **Environment** — `retro_environment()` handles VFS, configuration (`GET_VARIABLE`/`SET_VARIABLE`/`GET_VARIABLE_UPDATE`), throttle state (`RETRO_THROTTLE_VSYNC` when vsync caps below core fps), hardware render rejection (SW path forced), and keyboard callbacks.
 
 ### Key Technical Decisions
 
@@ -327,6 +335,8 @@ The app is a **libretro frontend**. The dosbox-pure core (in `extern/dosbox-pure
 | [Roadmap](docs/ROADMAP.md) | Development phases with detailed status |
 | [Dynarec on UWP](docs/DYNAREC_UWP.md) | JIT compiler setup and performance |
 | [Discoveries](docs/discoveries.md) | Bug investigations, audio pacing analysis, technical debt |
+| [Release Notes](release_notes.md) | Version history and changelog |
+| [PUREMENU Theming](docs/PUREMENU-THEMING.md) | Theme system for the in-game OSD menu |
 | [File Browser](docs/filebrowser/README.md) | In-app file explorer design and implementation |
 | [FrontendMenu](docs/frontend/FrontendMenu.md) | DOS-style menu system |
 | [References](docs/REFERENCES.md) | Research findings, libretro interfaces, VFS implementation |

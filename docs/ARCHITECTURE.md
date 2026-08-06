@@ -20,7 +20,7 @@ dosbox-pure-unleashed-uwp/
 │   │   ├── FrontendMenu.cpp/h          ← DOS-style BIOS menu overlay
 │   │   ├── FileBrowser.cpp/h           ← In-app file explorer (D2D, gamepad+mouse)
 │   │   └── SdlInput.cpp/h              ← SDL gamepad + UWP Gamepad API fallback
-│   ├── dosbox_pure_sta.cpp             ← DBPS_* stubs (12 no-ops, 1 real)
+│   ├── dosbox_pure_sta.cpp             ← DBPS_* stubs (GetMouse + ApplyConfigOverrides real)
 │   ├── local/dosbox-pure/              ← Patched core files (UWP compat)
 │   └── Package.appxmanifest            ← UWP manifest + capabilities
 ├── extern/
@@ -71,12 +71,19 @@ The core calls these callbacks; our frontend provides them:
   - **SW path** (our path): `data` = pointer to XRGB8888 framebuffer in RAM
   - Copied to `ID2D1Bitmap1` and rendered with letterboxing via `DrawBitmap()`
   - `pitch == 0` = `RETRO_HW_FRAME_BUFFER_VALID` — skip (no HW context on UWP)
+- **PUREMENU OSD**: `DBP_STANDALONE` is defined per-file only for the core TU
+  (`dosbox_pure_libretro.cpp`, vcxproj override) → `dbp_osdbuf`/menu state exist; the
+  patched core composites the OSD onto `buf.video` via `DBP_RenderOSD()` using a fixed
+  **640x480** design buffer (`dbp_osdbuf`), nearest-neighbor scaled up/down. No
+  `DBPS_SubmitOSDFrame` involved (no-op stub).
 
 ### Audio
 - `retro_audio_sample_batch(left, right, samples)` — stereo PCM16
-  - Submitted to XAudio2 via `XAudio2Output::Submit()`
-  - Ring buffer with `OnBufferEnd` callback
-  - Queue-depth cap at 882 frames (~20ms) — flush/restart cycle bounds latency
+  - Submitted to XAudio2 via `XAudio2Output::Write()`
+  - Fixed ring of **4 × 12ms = 48ms** sub-buffers (`OnBufferEnd` callback decrements
+    a lock-free counter + signals an event); `Write()` blocks as a safety valve at
+    `MAX_BUFFERS-1` queued, bounded by `WRITE_TIMEOUT` (256ms)
+  - Ring is a pure **follower** — it absorbs drift, not the frame clock
 
 ### Input
 - `retro_input_poll()` — reads gamepad/keyboard/mouse state
@@ -96,7 +103,9 @@ The core calls these callbacks; our frontend provides them:
   - `RETRO_ENVIRONMENT_SET_HW_RENDER` → **returns 0** (forces SW path)
   - `RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK` → pushes held key states
   - `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` → log via spdlog
-  - `RETRO_ENVIRONMENT_GET_THROTTLE_STATE` → `RETRO_THROTTLE_NONE`
+  - `RETRO_ENVIRONMENT_GET_THROTTLE_STATE` → `RETRO_THROTTLE_VSYNC` with `rate=refresh`
+    only when vsync is on and `refresh < core_fps`; otherwise `RETRO_THROTTLE_NONE` with
+    `rate=core_fps`. Must stay bit-for-bit consistent with the rate `PaceFrame()` picks.
 
 ### VFS (Virtual File System)
 Interface the core uses to read files (ROMs, saves, config). UWP implementation adapted from RetroArch:
@@ -133,41 +142,64 @@ SwapChain::Present()
 ## Audio Pipeline
 
 ```
-retro_run() → 630 stereo frames per call (~70fps @ 44100Hz)
+EmulationThreadMain
+    ↓
+RunFrame() → retro_run() → 48000/rate stereo frames per call
     ↓
 retro_audio_sample_batch_cb() → store in s_audioBuffer
     ↓
-XAudio2Output::Submit(samples, frames)
+XAudio2Output::Write(samples, frames)
     ↓
-Alloc ring buffer → memcpy → IXAudio2SourceVoice::SubmitSourceBuffer()
+Fill current 12ms sub-buffer → when full, submit via IXAudio2SourceVoice::SubmitSourceBuffer()
+    (blocks at MAX_BUFFERS-1 queued = ~36-48ms steady-state, WRITE_TIMEOUT 256ms, then drops)
     ↓
-OnBufferEnd() callback → InterlockedDecrement(s_queuedFrames)
+OnBufferEnded() callback → InterlockedDecrement(m_buffers) + InterlockedIncrement64(m_totalConsumed) + SetEvent
     ↓
-Voice consumes at 44100Hz hardware rate
+Voice consumes at 48000Hz hardware rate
 ```
 
-**Pacing:** QPC-based multi-retro_run per visual frame. Accumulator tracks time, runs `retro_run()` 1.17× per 60fps visual frame to produce 70fps aggregate audio rate. Queue-headroom-based `maxRetroRuns` prevents overshoot. Emergency catch-up when queue < 500 frames.
+**Pacing:** single `retro_run()` per tick, then `RetroCore::PaceFrame()` — a QPC
+accumulator at the same self-consistent rate reported by `GET_THROTTLE_STATE`
+(vsync ON → display refresh when `< core_fps`, else core fps; vsync OFF → core fps).
+Waits with `CreateWaitableTimerExW(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)` (~100µs;
+`timeBeginPeriod` is not available in UWP). The ring is a follower; `Write()` blocking
+is only a rare-overrun safety valve.
 
-## FrontendMenu (BIOS-style overlay)
+## FrontendMenu (fullscreen settings menu)
 
-Renders as a D2D overlay on top of the spinning cube (no game loaded) or retro framebuffer (game running). Gamepad-navigable via DPad + A/B.
+Fullscreen D2D overlay. Gamepad-navigable (DPad + A/B, LB/RB page). Mouse/left-stick
+hover selection. Shows at startup (behavior from `dosbox_pure_menu_time`), stays
+available as the app shell when no game is loaded.
 
 ```
 Main Page:
-  Continue Game        → hide menu, resume core
-  Load Game            → open FileBrowser
-  Puremenu             → open core's PUREMENU (OSD settings)
-  Settings             → future submenu
-  Exit                 → close app
+  Load File      → open FileBrowser
+  Settings       → General / Input / Performance / Video / System / Audio / State
+  History        → recent games
+  About          → app info
+  Exit           → close app
 
-Input:
-  DPad Up/Down         → navigate
-  A                    → confirm
-  B                    → back / close
-  Start                → toggle menu
-  Mouse click          → select + confirm
-  PageUp/PageDown      → scroll items by MAX_VISIBLE
+Settings pages:
+  General        → VSync, Frame Limiter (Off/60/70), Scaler (Nearest/Bilinear),
+                   Startup Folder, Force Output FPS, Save States Support, Start Menu,
+                   Debug Overlay, Reload Settings, Restart App
+  Input          → L3 to Show Menu (OSK), Mouse Input Mode, Mouse Wheel bind, Mouse
+                   Sensitivity (global + X), Auto Mappings, Keyboard Layout (26),
+                   Analog Deadzone, Timed Intervals, Action Wheel Inputs
+  Performance    → Emulated Performance (AUTO/MAX/8086..Athlon), Maximum Performance,
+                   Performance Scale (20-200%), Limit CPU Usage, Performance Stats
+  Video          → Graphics Chip (SVGA/VGA/EGA/CGA/Tandy/Hercules/PCjr), CGA/Hercules/
+                   SVGA modes, SVGA Memory, 3dfx Voodoo (8MB/12MB/4MB/off), Aspect
+                   Ratio Correction, Overscan Border
+  System         → memory, machine details, etc.
+  Audio          → SoundBlaster Type/Settings/Adlib, MIDI, GUS, Tandy, Swap Stereo,
+                   per-channel volumes
+  State          → save/load slot shell (wired later)
 ```
+
+Controls: DPad navigate, A/Start confirm, B back, LB/RB page, left-stick/mouse hover.
+In-game: **R3** toggles PUREMENU, **LB+RB+Select** toggles gamepad mouse mode.
+When PUREMENU/OSK is active, A↔B are swapped so A=confirm / B=back.
 
 ## FileBrowser (In-app file explorer)
 

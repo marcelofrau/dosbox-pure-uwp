@@ -1,5 +1,11 @@
 # dosbox-pure — UWP Port Status
 
+> **⚠️ HISTORICAL (Phase 2-3).** This document describes the original port effort.
+> Much has changed since: audio (XAudio2 4×12ms ring + QPC pacing), fullscreen
+> FrontendMenu (8 pages), gamepad mouse emulation, OSD 640x480 render path, hotkeys
+> (F10/F12/Ctrl+L/Alt), settings persistence. See **`README.md`** and
+> **`docs/ARCHITECTURE.md`** for the current state.
+
 ## Build Status
 
 **Build: ✅ 0 errors** (Release|x64, ~1500 warnings C4244 cosméticos)

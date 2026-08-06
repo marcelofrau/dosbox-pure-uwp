@@ -1,5 +1,136 @@
 # Discoveries
 
+## Gamepad Mouse Emulation — L-analog Regression & Fix (Aug 2026)
+
+### Symptom
+After the fullscreen FrontendMenu rewrite (commit `3881240`), the left stick stopped
+controlling the in-game DOS mouse and the menu cursor became unusable (dead zone, no
+hover). Mouse mode toggle appeared to do nothing in-game.
+
+### Root Cause — regression introduced when the new menu shipped
+`dosbox_uwpMain.cpp` routed the left stick into a `pointerContext` gate that only fired
+when the GUI was visible. In-game (GUI hidden) the stick was never forwarded, so:
+- `SetMouseMove()` (relative DOS mouse) was never called → dead mouse emulation
+- `m_pointerX/Y` (menu/OSD cursor) never advanced → hover selection broken
+
+Commit `d54cb88` had already reset `m_gamepadMouseMode = false` on load/reset, but the
+in-game forwarding path itself was missing.
+
+### Fix
+Gate the pointer on a single `pointerContext` (line ~669):
+```cpp
+bool pointerContext = guiVisible || osdActive || m_gamepadMouseMode;
+```
+- GUI visible → `m_virtualCursor` accumulates stick motion → `HandlePointerMove()` (hover)
+- PUREMENU (OSD) active → `SetPointer(vx, vy)` absolute → `DBPS_GetMouse` tracks cursor
+- In-game + mouse mode ON → `SetMouseMove(dx, dy)` relative DOS mouse
+- Mouse mode OFF (default): stick is game analog only, no DOS mouse sim
+- Splash screen (no game, no menu) gets its own direct cursor path
+
+Also added a 500ms idle gate so the cursor doesn't self-drift on stick release.
+
+### Files Changed
+- `dosbox-uwp/dosbox_uwpMain.cpp` — `pointerContext` gate, `m_virtualCursor`, idle gate
+
+### Notes
+- `LB+RB+Select` (held) toggles gamepad mouse mode in-game only; resets on load (`d54cb88`).
+- `R3` toggles PUREMENU. When OSD is active, A↔B are swapped so A=confirm / B=back.
+- Regression source: `3881240` (fullscreen FrontendMenu) — the old menu pre-wired the
+  stick; the new one moved all pointer routing into the `pointerContext` block.
+
+## PUREMENU OSD — 640x480 Design Buffer Render Path (Aug 2026)
+
+### Context
+PUREMENU (the core's in-game OSD) is drawn into separate `dbp_osdbuf[]` buffers by the
+`#ifdef DBP_STANDALONE` tail of `dosbox_pure_osd.h`. Upstream submits those via
+`DBPS_SubmitOSDFrame()`. Our frontend's `DBPS_SubmitOSDFrame()` is a no-op stub, so that
+path never shows the menu. Instead the local core composites the OSD onto `buf.video`
+inside `GFX_EndUpdate`.
+
+**`DBP_STANDALONE` IS defined — per-file, only for `dosbox_pure_libretro.cpp`** (vcxproj
+`<ClCompile>` PreprocessorDefinitions override, Debug+Release x64). All other TUs compile
+without it. That per-file define is what makes `dbp_osdbuf[3]` + the OSD/menu state exist
+at all; the core patches keep `audio_batch_cb` and the SW render path alive despite it.
+
+### Current path (local `dosbox_pure_libretro.cpp`)
+```
+GFX_EndUpdate
+  → buf.video already holds the rendered frame
+  → DBP_RenderOSD(buf)  (line ~1654)
+       → if OSD active: DBP_ScaleNearest(buf.video, w, h, osdbf.video, 640, 480)
+       → composits dbp_osdbuf[0] content
+       → DBP_ScaleNearest(osdbf.video, 640, 480, buf.video, w, h)  (back up to output)
+  → video_cb(buf.video, w, h, pitch)
+```
+- Design buffer is **fixed 640x480** (`DBPS_OSD_WIDTH`/`DBPS_OSD_HEIGHT`, `dbp_osdbuf[3]`),
+  nearest-neighbor scaled in both directions → OSD is always centered and crisp at any
+  output resolution.
+- **`DBP_STANDALONE` stays per-file (core TU only).** Extending it to other TUs would
+  compile out `audio_batch_cb`/`dbp_audio` (the guards were patched only in
+  `dosbox_pure_libretro.cpp`) and change OSD behavior in the `$(DBPDir)src\*` files.
+
+### Why the OSD cursor tracks correctly now
+`DBPS_GetMouse` is real (not a stub) and returns the pointer position set by
+`RetroCore::SetPointer()`. The emulation thread's `pointerContext` block calls
+`SetPointer(vx, vy)` while OSD is active, so PUREMENU's mouse cursor follows the left stick.
+
+## XAudio2 Ring — 4×12ms = 48ms Latency Floor (Aug 2026)
+
+### The 1.024s mistake
+The "Frame Pacing Bang-Bang" fix (build 155, below) sized the ring to `16 × 64ms = 1.024s`,
+**misreading RetroArch xaudio.c**: RetroArch's `MAX_BUFFERS=16` sub-buffers split the
+driver latency (~64ms total, `bufsize = latency*rate/1000`), they don't each hold 64ms.
+Our 1.024s ring queued ~960ms steady-state → perceptible audio latency.
+
+### Current values (`XAudio2Output.h`)
+| Constant | Value |
+|----------|-------|
+| `MAX_BUFFERS` | 4 |
+| `LATENCY_MS` | 12 |
+| `SUBBUF_FRAMES` | 576 (48kHz stereo) |
+| Ring total | **48ms** |
+| `WRITE_TIMEOUT` | 256ms |
+
+The ring is a **pure follower**; the QPC `PaceFrame()` timer (self-consistent with
+`GET_THROTTLE_STATE`) is the frame clock. `Write()` only blocks as a safety valve at
+`MAX_BUFFERS-1` queued.
+
+### Xbox stability floor
+- 24ms tolerance (`4×8ms`): **cracked** — underruns 7-8/s on heavy games
+- 36ms (`4×9ms`): middle ground
+- 48ms (`4×12ms`): **clean** — under=0/s
+- CPU-bound games (Screamer RunFrame ~15.9ms vs 16.7ms slot) stall on occasional 2-frame
+  spikes; tolerance = queued@block = 3 × LATENCY. 48ms is the safety floor; lowering it
+  further trades latency for stability.
+
+### Files Changed
+- `dosbox-uwp/Content/XAudio2Output.h` — `MAX_BUFFERS=4`, `LATENCY_MS=12`, doc comment
+
+## Per-Game Config Overrides — DBPS_ApplyConfigOverrides Implemented (Aug 2026)
+
+### Context
+`DBPS_ApplyConfigOverrides` was a stub. The core calls it with the contents of a
+**FRONTEND.DBP** JSON file placed next to the game to override options per-game (e.g.
+`{"dosbox_pure_cycles":"77000"}`). Without it, FRONTEND.DBP was silently ignored.
+
+### Implementation (`dosbox_pure_sta.cpp`)
+Minimal JSON parser (no external dependency) that handles:
+- flat `{"key":"value"}` objects (string, number, boolean values)
+- each override is forwarded via `RetroCore::SetOptionValue(key, value)` → the
+  SET_VARIABLE map → `check_variables()` applies it next frame
+
+### Current stub set (accurate, Aug 2026)
+| Function | Status |
+|----------|--------|
+| `DBPS_GetMouse` | ✅ real → `RetroCore::GetPointer` (MOUSE_SUPPORT only) |
+| `DBPS_ApplyConfigOverrides` | ✅ real — minimal JSON parser |
+| `DBPS_SaveSlotIndex` | global (state) |
+| `DBPS_OnContentLoad`, `DBPS_SubmitOSDFrame` | no-op (OSD composite via `DBP_RenderOSD` is the real path) |
+| `DBPS_StartCaptureJoyBind`, `DBPS_HaveJoy`, `DBPS_GetJoyBind` | no-op / false |
+| `DBPS_RequestSaveLoad`, `DBPS_HaveSaveSlot` | no-op / false |
+| `DBPS_IsConfigOverride`, `DBPS_ToggleConfigOverride` | no-op / false |
+| `DBPS_ToggleOSD`, `DBPS_IsShowingOSD`, `DBPS_IsGameRunning` | **not stubbed** — from `dosbox_pure_osd.h` DBP_STANDALONE tail (would collide at link) |
+
 ## Keyboard→JOYPAD State Leak (Jul 2026)
 
 ### Symptom
@@ -344,6 +475,13 @@ This **activated the core's internal audio pipeline** even with `DBP_STANDALONE`
 ### Fix
 Reverted all audio-related changes to the local copy. With `#ifndef DBP_STANDALONE` (false since DBP_STANDALONE is defined), the core's audio pipeline is skipped. `PullAndQueue()` → `DBPS_AudioMix()` is the sole consumer.
 
+> **Superseded (Aug 2026):** the current build re-enables the libretro audio path — the
+> `#ifndef DBP_STANDALONE` guards around `dbp_audio`/`audio_batch_cb`/flush/mix/submit are
+> removed in the local `dosbox_pure_libretro.cpp` (L83, L3632, L3678, L3703) and
+> `retro_audio()` is the real consumer → XAudio2. No `PullAndQueue`/`DBPS_AudioMix`
+> competition; `DBP_STANDALONE` stays defined **per-file** (core TU only). This pitfall
+> was specific to the `DBP_STANDALONE_AUDIO` macro's double-consumer, not the guard removal.
+
 ### Lesson
 **Never patch the dosbox-pure core's audio pipeline.** Our role is the frontend shell (like ZillaLib/libretro/RetroArch UWP). The core works perfectly; we consume audio via `DBPS_AudioMix()` from the mixer, bypassing `audio_batch_cb` entirely.
 
@@ -498,3 +636,80 @@ for every file, which requires picker interaction).
 
 **FileOpenPicker (Ctrl+L):** Direct `StorageFile::Path` → `QueueLoadRom` MAY work since
 the picker auto-grants access. Tested: fallback to buffer copy if `Path` is empty.
+
+## Frame Pacing Bang-Bang — RetroArch-Style Fix (Aug 2026)
+
+### Symptom
+Screamer (Screamer.dosz) ran at ~45-78fps with visible oscillation on a 60Hz display.
+Menu/intro ran smooth (`RETRO: 69.44` stable), heavy 3D gameplay (STARTH) oscillated
+45.07/49.95/50.45/55.01/58.53/63.49/66.35/69.74/72.13/73.75. Auto-cycle kept re-tuning.
+
+### Root Cause — pacing bang-bang, NOT the auto-cycle
+The auto-cycle was a red herring. Test with **fixed cycles** (77000 and 200000) still
+oscillated the same way. The oscillation came from the frame pacer:
+
+- Emulation thread was paced ONLY by the blocking audio `Write()` (audio-master model).
+- Ring was `8 × 10ms = 80ms`. When the ring filled, `Write()` blocked → emulation paced
+  at real-time (~70fps). When it drained, the core free-ran at >78fps → refilled the ring
+  → alternated. Period ~1-2s, the exact oscillation seen in the logs.
+- `audio_q=3840` in DIAG = ring 8×480 **100% full** — the smoking gun.
+- `EMULATED: 70.09` in the log is only `render.src.fps`, NOT emulation speed — misleading.
+
+Proof the audio Write does NOT pollute the auto-cycle measurement: `audio_batch_cb` runs
+**after** `TCM_NEXT_FRAME` (dosbox_pure_libretro.cpp:3720-3726), outside the window the
+auto-cycle measures (`GFX_AdvanceFrame`, `HistoryEmulator = time_after - time_last -
+dbp_emu_waiting + dbp_paused_work`). Measurement is clean; the pacing itself was broken.
+
+### Why RetroArch is smooth
+RetroArch's runloop is single-threaded. `Present(vsync)` blocks the loop at the display
+rate (60Hz). `GET_THROTTLE_STATE` reports that rate, and the core generates exactly
+`sample_rate/rate` samples per frame (800 @ 48kHz/60) — matching the device, so the audio
+ring never fills and `xa_write()` almost never blocks. The ring (`16 × 64ms = 1.024s`,
+xaudio.c) is a pure **follower** absorbing drift, NOT the clock.
+
+RetroArch runloop details (runloop.c):
+- `GET_THROTTLE_STATE` reports `mode=VSYNC, rate=refresh` ONLY when `refresh < core_fps`
+  (line 3410); otherwise the core fps governs.
+- With audio_sync on, RetroArch **does not** run a timer on the core (`frame_limit_minimum_time`
+  zeroed, goto end, line 8037-8045). The comment warns `retro_sleep()→Sleep()` granularity
+  ~15ms on Windows stutters audio.
+
+### Fix (build 155) — QPC pacer on the emulation thread + follower ring
+Our emulation runs on its own thread, so we reproduce the RetroArch cadence directly:
+
+1. **`RetroCore::PaceFrame()`** — QPC accumulator paced at the same self-consistent rate
+   as `GET_THROTTLE_STATE`: vsync ON → display refresh (if `< core_fps`), else core fps;
+   vsync OFF → core fps. Called after each `RunFrame()` in `EmulationThreadMain`.
+   Waits with `CreateWaitableTimerExW(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)` — precise to
+   ~100µs. `timeBeginPeriod()` is **not available in UWP** (winmm.lib restricted), so the
+   high-res waitable timer is the UWP-compatible precise-sleep (already used in the old
+   `DoPacingSleep`, discoveries "Audio Latency" section).
+2. **Ring 8×10ms=80ms → 16×64ms=1.024s** (`XAudio2Output.h`): `MAX_BUFFERS=16`,
+   `LATENCY_MS=64`, `SUBBUF_FRAMES=3072`. Matches RetroArch xaudio.c. The blocking
+   `Write()` is now only a safety valve for rare overrun — with the pacer generating
+   `sample_rate/rate` samples/frame, the ring stays balanced.
+
+> **Later refined (Aug 2026):** the 16×64ms ring was a misreading of xaudio.c — RetroArch
+> splits its *driver latency* (~64ms) into 16 sub-buffers, it does not queue 16×64ms.
+> Ours queued ~960ms steady-state. Now `4×12ms = 48ms` (see "XAudio2 Ring" entry above).
+3. **`GET_THROTTLE_STATE` guard** — `mode=VSYNC, rate=refresh` only when
+   `refresh < core_fps`; else `NONE, rate=core_fps` (runloop.c:3410 parity). Must stay
+   bit-for-bit consistent with the rate `PaceFrame()` picks, or the ring drifts.
+
+### Self-consistency (why it works)
+Pacer rate == reported rate → core produces `48000/rate` samples/frame → device consumes
+48000/s → ring balanced forever, no bang-bang. If the game is CPU-bound (retro_run >
+frame budget), the pacer falls behind → runs at DOSBox speed → ring drains → audio gaps
+(audio underrun, same as RetroArch CPU-bound).
+
+### Files Changed
+- `dosbox-uwp/Content/RetroCore.h` — added `static void PaceFrame()`
+- `dosbox-uwp/Content/RetroCore.cpp` — `PaceFrame()`, wired into `EmulationThreadMain`,
+  `GET_THROTTLE_STATE` guard
+- `dosbox-uwp/Content/XAudio2Output.h` — ring 8×10ms → 16×64ms (1.024s)
+- `dosbox-uwp/Content/XAudio2Output.cpp` — comment update (Write = safety valve)
+
+### Testing
+Build 155, Screamer on 60Hz display. Expect: `RETRO` stable ~60 (rate=refresh since
+60<70.09), `audio_q` well under 3840 (balanced ring), no oscillation. 70Hz-capable
+displays (120Hz+) use `rate=core_fps=70.09` → full speed.
