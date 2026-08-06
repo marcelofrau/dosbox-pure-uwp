@@ -30,6 +30,7 @@ namespace dosbox_uwp
         const char* GetLastEventText() const { return m_lastEventStr; }
         void SetKeyboardButton(int btn, bool held);
         void GetLeftStick(float& x, float& y) const { x = m_leftStickX; y = m_leftStickY; }
+        void GetRightStick(float& x, float& y) const { x = m_rightStickX; y = m_rightStickY; }
 
     private:
         static const int MAX_BUTTONS = 32;
@@ -46,6 +47,8 @@ namespace dosbox_uwp
         char m_controllerName[128];
         float m_leftStickX = 0.0f;
         float m_leftStickY = 0.0f;
+        float m_rightStickX = 0.0f;
+        float m_rightStickY = 0.0f;
         float m_triggerL = 0.0f;
         float m_triggerR = 0.0f;
     };

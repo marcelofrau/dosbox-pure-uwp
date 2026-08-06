@@ -115,6 +115,7 @@ namespace dosbox_uwp
         float m_virtualCursorX = 0.5f;
         float m_virtualCursorY = 0.5f;
         LARGE_INTEGER m_lastPointerTime = {};
+        LARGE_INTEGER m_lastCursorMove = {};
 #endif
 
         bool m_activeVKeyState[256] = {};

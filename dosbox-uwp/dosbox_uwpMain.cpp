@@ -599,6 +599,8 @@ void dosbox_uwpMain::Update()
         float dtSec = (float)m_timer.GetElapsedSeconds();
         if (!m_retroCore->IsLoaded() && !m_menu.IsVisible())
         {
+            if (sx != 0.0f || sy != 0.0f)
+                QueryPerformanceCounter(&m_lastCursorMove);
             m_pointerX += sx * 1.34f * dtSec;
             m_pointerY += sy * 1.34f * dtSec;
             if (m_pointerX < 0.0f) m_pointerX = 0.0f;
@@ -615,6 +617,20 @@ void dosbox_uwpMain::Update()
             PollKeyboard();
             for (unsigned i = 0; i < 16; i++)
                 RetroCore::SetJoypadButton(i, false);
+
+            // Analog sticks → RETRO_DEVICE_ANALOG (raw, core applies its own deadzone).
+            // dosbox-pure bindings: Left → JOY1 axis, Right → JOY2 axis.
+            // Not fed while OSD is active — PUREMENU cursor is driven by SetPointer
+            // (DBPS_GetMouse), and dosbox-pure's OSD merges analog + mouse onto the
+            // same cursor, which would double-move it.
+            float asx = 0.0f, asy = 0.0f, arx = 0.0f, ary = 0.0f;
+            m_sdlInput->GetLeftStick(asx, asy);
+            m_sdlInput->GetRightStick(arx, ary);
+            if (RetroCore::IsOSDActive()) { asx = asy = arx = ary = 0.0f; }
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X, (int16_t)(asx * 32767.0f));
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, (int16_t)(asy * 32767.0f));
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, (int16_t)(arx * 32767.0f));
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, (int16_t)(ary * 32767.0f));
 
             // Generic keyboard preset: gamepad buttons → RetroPad IDs
             struct { int btn; unsigned retroId; } padMap[] = {
@@ -656,6 +672,15 @@ void dosbox_uwpMain::Update()
                     m_osdExitSuppressing = false;
             }
 
+        }
+        else
+        {
+            // Menu visible or core not running: zero analog so no stale joystick state
+            // leaks into the core when the game resumes.
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X, 0);
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, 0);
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, 0);
+            RetroCore::SetAnalogAxis(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, 0);
         }
 
 #ifdef MOUSE_SUPPORT
@@ -700,8 +725,9 @@ void dosbox_uwpMain::Update()
                 if (m_lastPointerTime.QuadPart != 0)
                     mouseIdleMs = (double)(_gmnow.QuadPart - m_lastPointerTime.QuadPart)
                                   * 1000.0 / m_qpcFreq.QuadPart;
-                if (mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0)
+                if ((mouseIdleMs > 500.0 || m_lastPointerTime.QuadPart == 0) && (sx != 0.0f || sy != 0.0f))
                 {
+                    QueryPerformanceCounter(&m_lastCursorMove);
                     float cursorDx = sx * 0.80f * dtSec;
                     float cursorDy = sy * 0.80f * dtSec;
                     m_virtualCursorX += cursorDx;
@@ -1086,8 +1112,16 @@ bool dosbox_uwpMain::Render()
         }
 
 #ifdef MOUSE_SUPPORT
-        // Draw simple cursor overlay when menu visible or on splash screen
-        if (m_menu.IsVisible() || !m_retroCore->IsLoaded())
+        // Draw simple cursor overlay when menu visible or on splash screen.
+        // Hidden after 2s without cursor movement (real mouse or gamepad stick).
+        LARGE_INTEGER _cursorNow;
+        QueryPerformanceCounter(&_cursorNow);
+        double cursorIdleMs = 0.0;
+        if (m_lastCursorMove.QuadPart != 0)
+            cursorIdleMs = (double)(_cursorNow.QuadPart - m_lastCursorMove.QuadPart)
+                            * 1000.0 / m_qpcFreq.QuadPart;
+        const double CURSOR_IDLE_MS = 2000.0;
+        if ((m_menu.IsVisible() || !m_retroCore->IsLoaded()) && cursorIdleMs < CURSOR_IDLE_MS)
     {
         if (!m_cursorBrush)
         {
@@ -1389,6 +1423,7 @@ void dosbox_uwpMain::OnPointerMove(float nx, float ny, float px, float py)
 
     m_pointerX = nx;
     m_pointerY = ny;
+    QueryPerformanceCounter(&m_lastCursorMove);
 
     // Route to FrontendMenu when visible
     if (m_menu.IsVisible())
@@ -1426,6 +1461,7 @@ void dosbox_uwpMain::OnPointerDown(float nx, float ny, unsigned btn)
     m_lastPointerX = nx;
     m_lastPointerY = ny;
     m_pointerDown = true;
+    QueryPerformanceCounter(&m_lastCursorMove);
 
     m_retroCore->SetPointer(nx, ny, true);
     m_retroCore->SetMouseButton(btn, true);

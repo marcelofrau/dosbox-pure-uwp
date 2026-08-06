@@ -74,6 +74,7 @@ namespace dosbox_uwp
         // UI thread writes, emulation thread reads.
         static void SetKeyState(unsigned key, bool down);
         static void SetJoypadButton(unsigned id, bool held);
+        static void SetAnalogAxis(unsigned index, unsigned id, int16_t val);
         static void SetOptionValue(const char* key, const char* value);
         static void SetMouseMove(int relX, int relY);
         static void SetPointer(float x, float y, bool down);
@@ -127,6 +128,7 @@ namespace dosbox_uwp
         static std::atomic<retro_keyboard_event_t> s_keyboardCallback;
         static retro_log_printf_t s_logCallback;
         static std::atomic<bool> s_joypadState[16];
+        static std::atomic<int16_t> s_analogState[4]; // [L_X, L_Y, R_X, R_Y]
         static std::atomic<int> s_mouseRelX;
         static std::atomic<int> s_mouseRelY;
         static std::atomic<int> s_mouseWheel;

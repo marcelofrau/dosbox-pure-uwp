@@ -442,6 +442,12 @@ static void DBP_ReleaseKeyEvents(bool onlyPhysicalKeys)
 void DBP_InputBind::Update(Bit16s val, bool is_analog_button)
 {
 	Bit16s prevval = lastval;
+	// UWP fix: clamp the full negative axis extreme. val=-32768 times dir=-1
+	// (e.g. KBD_left mapping) overflows Bit16s back to -32768, tripping the KEYUP
+	// branch while the stick is still held hard left. RetroArch never delivers
+	// -32768 (deadzone scaling), so upstream never hits this.
+	if (val == (Bit16s)-32768) val = (Bit16s)-32767;
+	if (prevval == (Bit16s)-32768) prevval = (Bit16s)-32767;
 	lastval = val; // set before calling DBP_QueueEvent
 	if (evt <= _DBPET_JOY_AXIS_MAX)
 	{
@@ -463,7 +469,8 @@ void DBP_InputBind::Update(Bit16s val, bool is_analog_button)
 		if (map == KBD_NONE) continue;
 		if (map < KBD_LAST)
 		{
-			if (dirval >= 12000 && dirprevval <  12000) DBP_QueueEvent(DBPET_KEYDOWN, port, map);
+			if (dirval >= 12000 && dirprevval <  12000)
+				DBP_QueueEvent(DBPET_KEYDOWN, port, map);
 			if (dirval <  12000 && dirprevval >= 12000) DBP_QueueEvent(DBPET_KEYUP,   port, map);
 			continue;
 		}
@@ -1544,11 +1551,17 @@ bool GFX_StartUpdate(Bit8u*& pixels, Bitu& pitch)
 		w <<= (Bit32u)render.src.dblw;
 		h <<= (Bit32u)render.src.dblh;
 	}
-	if ((dbp_overscan || dbp_padding) && !voodoo_is_active())
+	const bool osd_active = (dbp_intercept_next && dbp_intercept_next->usegfx());
+	if ((dbp_overscan || dbp_padding || osd_active) && !voodoo_is_active())
 	{
-		if (dbp_padding)
+		if (dbp_padding || osd_active)
 		{
-			const float ratio = ((Bit32u)render.src.width << (Bit32u)render.src.dblw) / (((Bit32u)render.src.height << (Bit32u)render.src.dblh) * (float)render.src.ratio);
+			// UWP: while an OSD is shown, pad to a RAW 4:3 buffer (ignore
+			// render.src.ratio) so DBP_RenderOSD's 640x480 round-trip stays uniform.
+			// The DOS-aspect calc would leave e.g. 640x400 (ratio 1.2 = 4:3 CRT)
+			// unpadded — but the OSD canvas is raw 640x480, so that still scales
+			// non-uniformly.
+			const float ratio = (osd_active ? ((float)w / h) : ((Bit32u)render.src.width << (Bit32u)render.src.dblw) / (((Bit32u)render.src.height << (Bit32u)render.src.dblh) * (float)render.src.ratio));
 			pad_x += ((ratio < (4.0f / 3.0f)) ? (Bit32u)((w * ((4.0f / 3.0f) / ratio) - w) / 2.0f + 0.4999f) : (Bit32u)0);
 			pad_y += ((ratio > (4.0f / 3.0f)) ? (Bit32u)((h * (ratio / (4.0f / 3.0f)) - h) / 2.0f + 0.4999f) : (Bit32u)0);
 		}
@@ -1624,7 +1637,7 @@ void GFX_EndUpdate(const Bit16u *changedLines)
 				else            for (; src != srcEnd; trg -= 2) trg[0] = trg[1] = trg[pitch] = trg[pitch+1] = *(--src);
 			}
 		}
-		buf.ratio = (dbp_padding ? (4.0f / 3.0f) : ((srcw<<dblw) / ((srch<<dblh) * (float)render.src.ratio)));
+		buf.ratio = ((dbp_padding || (dbp_intercept_next && dbp_intercept_next->usegfx())) ? (4.0f / 3.0f) : ((srcw<<dblw) / ((srch<<dblh) * (float)render.src.ratio)));
 	}
 	else
 	{

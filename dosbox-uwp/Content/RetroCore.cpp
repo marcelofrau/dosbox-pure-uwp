@@ -63,6 +63,7 @@ std::atomic<bool> RetroCore::s_keyboardState[RETROK_LAST] = {};
 std::atomic<retro_keyboard_event_t> RetroCore::s_keyboardCallback{ nullptr };
 retro_log_printf_t RetroCore::s_logCallback = nullptr;
 std::atomic<bool> RetroCore::s_joypadState[16] = {};
+std::atomic<int16_t> RetroCore::s_analogState[4] = {};
 std::atomic<int> RetroCore::s_mouseRelX{ 0 };
 std::atomic<int> RetroCore::s_mouseRelY{ 0 };
 std::atomic<int> RetroCore::s_mouseWheel{ 0 };
@@ -613,6 +614,12 @@ void RetroCore::SetJoypadButton(unsigned id, bool held)
         s_joypadState[id].store(held);
 }
 
+void RetroCore::SetAnalogAxis(unsigned index, unsigned id, int16_t val)
+{
+    if (index < 2 && id < 2)
+        s_analogState[index * 2 + id].store(val);
+}
+
 void RetroCore::SetMouseMove(int relX, int relY)
 {
     s_mouseRelX.fetch_add(relX);
@@ -1012,6 +1019,13 @@ int16_t RetroCore::retro_input_state(unsigned port, unsigned device, unsigned in
     {
         if (id < 16 && s_joypadState[id].load())
             return 1;
+        return 0;
+    }
+
+    if (device == RETRO_DEVICE_ANALOG)
+    {
+        if (index < 2 && id < 2)
+            return s_analogState[index * 2 + id].load();
         return 0;
     }
 

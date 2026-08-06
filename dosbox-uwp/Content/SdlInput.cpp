@@ -180,6 +180,8 @@ void SdlInput::PollEvents()
         // Read SDL analog axes + triggers
         m_leftStickX = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
         m_leftStickY = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
+        m_rightStickX = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
+        m_rightStickY = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
         m_triggerL = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) / 32767.0f;
         m_triggerR = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0f;
     }
@@ -235,6 +237,8 @@ void SdlInput::PollUwpGamepad()
 
         m_leftStickX = reading.LeftThumbstickX;
         m_leftStickY = reading.LeftThumbstickY;
+        m_rightStickX = reading.RightThumbstickX;
+        m_rightStickY = reading.RightThumbstickY;
         m_triggerL = reading.LeftTrigger;
         m_triggerR = reading.RightTrigger;
 
@@ -275,6 +279,8 @@ void SdlInput::PollUwpGamepad()
     {
         m_leftStickX = 0.0f;
         m_leftStickY = 0.0f;
+        m_rightStickX = 0.0f;
+        m_rightStickY = 0.0f;
         m_triggerL = 0.0f;
         m_triggerR = 0.0f;
     }
