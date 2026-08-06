@@ -214,8 +214,17 @@ struct DBP_Interceptor
 	virtual bool usegfx() { return true; }
 };
 static DBP_Interceptor *dbp_intercept, *dbp_intercept_next;
-static void DBP_SetIntercept(DBP_Interceptor* intercept) { if (!dbp_intercept) dbp_intercept = intercept; dbp_intercept_next = intercept; }
 
+// UWP: sticky flag reflecting "the PUREMENU/OSD menu is open". The intercept
+// pointer (dbp_intercept_next) can transiently drop on emulated video mode
+// changes while the menu is up (e.g. a DOS game switching 320x200<->640x400
+// behind the menu), which would otherwise submit a raw game frame and make the
+// menu flicker for a frame. We track menu open/close explicitly (DBP_StartOSD/
+// DBP_CloseOSD in dosbox_pure_osd.h) and always present the 640x480 OSD
+// composite while open.
+bool dbp_uwp_osd_open = false;
+
+static void DBP_SetIntercept(DBP_Interceptor* intercept) { if (!dbp_intercept) dbp_intercept = intercept; dbp_intercept_next = intercept; }
 // LIBRETRO CALLBACKS
 #ifndef ANDROID
 static void retro_fallback_log(enum retro_log_level level, const char *fmt, ...)
@@ -1603,15 +1612,32 @@ static void DBP_ScaleNearest(const Bit32u* src, Bit32u sw, Bit32u sh, Bit32u* ds
 // fixed pixel constants (CW=8, l=30, w-319, GetThickness()=2 above 290px) that
 // are tuned for 640x480 — drawing directly at e.g. 320x240 squeezes the menu.
 // We scale the 4:3 game area up to 640x480, draw the OSD over it (translucent
-// panels keep showing the scaled game behind), then scale the result back.
-static void DBP_RenderOSD(DBP_Buffer& buf)
+// panels keep showing the scaled game behind), and present that buffer as-is.
+// Scaling the composited result back into the game-sized buffer (nearest) would
+// ruin the menu fonts at low res (e.g. 320x240), so the frontend receives 640x480.
+static DBP_Buffer* DBP_RenderOSD(DBP_Buffer& buf)
 {
 	DBP_Buffer& osdbf = dbp_osdbuf[0];
 	if (!osdbf.video) osdbf.video = (Bit32u*)malloc(DBPS_OSD_WIDTH * DBPS_OSD_HEIGHT * 4);
-	if (!osdbf.video) return;
+	if (!osdbf.video) return NULL;
 	DBP_ScaleNearest(buf.video, buf.width, buf.height, osdbf.video, DBPS_OSD_WIDTH, DBPS_OSD_HEIGHT);
 	dbp_intercept_next->gfx(osdbf);
-	DBP_ScaleNearest(osdbf.video, DBPS_OSD_WIDTH, DBPS_OSD_HEIGHT, buf.video, buf.width, buf.height);
+	return &osdbf;
+}
+
+// UWP: returns the 640x480 OSD buffer to present when an OSD (PUREMENU) is up.
+// Uses the sticky dbp_uwp_osd_open flag in addition to the live intercept check
+// so a transient intercept drop (e.g. on an emulated video mode change) still
+// presents the last OSD composite instead of a raw game frame (menu flicker).
+static DBP_Buffer* DBP_GetOSDOutput()
+{
+	bool intercepted = (dbp_intercept_next && dbp_intercept_next->usegfx());
+	if ((intercepted || dbp_uwp_osd_open) && dbp_osdbuf[0].video)
+	{
+		if (!intercepted) log_cb(RETRO_LOG_INFO, "[UWP] OSD sticky: intercept dropped, kept OSD buffer\n");
+		return &dbp_osdbuf[0];
+	}
+	return NULL;
 }
 
 void GFX_EndUpdate(const Bit16u *changedLines)
@@ -2753,6 +2779,7 @@ static void init_dosbox(bool forcemenu = false, bool reinit = false, const std::
 		dbp_last_fastforward = false;
 		dbp_serializesize = 0;
 		dbp_audio_remain = 0;
+		dbp_uwp_osd_open = false; // UWP: menu state is reset with the machine
 		DBP_SetIntercept(NULL);
 		for (size_t i = dbp_images.size(); i--;)
 		{
@@ -3650,6 +3677,8 @@ void retro_run(void)
 			audio_batch_cb(aud.audio, numEmptySamples);
 			if (dbp_opengl_draw)
 				dbp_opengl_draw(buf);
+			else if (DBP_Buffer* osdo = DBP_GetOSDOutput())
+				video_cb(osdo->video, osdo->width, osdo->height, osdo->width * 4);
 			else
 				video_cb(buf.video, buf.width, buf.height, buf.width * 4);
 			return;
@@ -3708,6 +3737,11 @@ void retro_run(void)
 	}
 	const DBP_Buffer& buf = dbp_buffers[buffer_active];
 	Bit32u view_width = buf.width, view_height = buf.height;
+
+	// UWP: while an OSD (PUREMENU) is up, present the fixed 640x480 composited
+	// buffer from GFX_EndUpdate (DBP_RenderOSD) rather than the game-sized buffer.
+	DBP_Buffer* osdo = DBP_GetOSDOutput();
+	if (osdo) { view_width = osdo->width; view_height = osdo->height; }
 
 	if (dbp_opengl_draw && voodoo_ogl_mainthread()) { view_width *= voodoo_ogl_scale; view_height *= voodoo_ogl_scale; }
 
@@ -3779,7 +3813,7 @@ void retro_run(void)
 	else if (dbp_opengl_draw)
 		dbp_opengl_draw(buf);
 	else
-		video_cb(buf.video, view_width, view_height, view_width * 4);
+		video_cb((osdo ? osdo->video : buf.video), view_width, view_height, view_width * 4);
 
 	#ifdef DBP_STANDALONE
 	if (dbp_intercept && dbp_osdbuf[&buf - dbp_buffers].video)

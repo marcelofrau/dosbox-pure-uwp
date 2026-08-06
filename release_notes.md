@@ -1,3 +1,27 @@
+## 🎮 DOSBox Pure UWP 1.0.0.235 — OSD & Input Polish
+
+Fix pass on the in-game menu and controller input since 1.0.0.213.
+
+---
+
+### 🖥️ PUREMENU now renders at native 640x480
+
+- The OSD/PUREMENU framebuffer is presented at its native **640x480** resolution instead of being scaled back down to the game framebuffer — **menu fonts are crisp and pixel-perfect** even when the game runs at 320x240 or 640x400
+- OSD keeps a **raw 4:3 aspect** so menu geometry is correct at any game resolution
+
+### 🎬 Menu flicker mitigation
+
+- New **sticky OSD-open flag**: once the menu is open, the OSD buffer stays on screen even when the game briefly drops its render target while switching resolutions behind it (was causing ~5ms flashes of the game over PUREMENU)
+- Diagnostic log line kept (`[UWP] OSD sticky: intercept dropped, kept OSD buffer`) for future tuning — rare residual flicker can still occur on aggressive resolution switches
+
+### 🎮 Controller fixes
+
+- **Analog stick steering-left glitch fixed** — full negative axis (`-32768`) combined with a direction-1 binding (e.g. `KBD_left`) overflowed `Bit16s` back to `-32768`, tripping the KEYUP branch while the stick was still held hard left
+- **Right stick now captured and fed to the core** as `RETRO_DEVICE_ANALOG` (raw; core applies its own deadzone). Analog is zeroed while the menu is open so no stale joystick state leaks into the game on resume
+- **Cursor auto-hide**: the on-screen cursor hides after 2s without movement (real mouse or stick)
+
+---
+
 ## 🎮 DOSBox Pure UWP 1.0.0.213 — First 1.0.0 Release
 
 First release under the **1.0.0** line and the biggest performance + stability jump since 0.9.5.135. Emulation now runs on its own thread, audio latency dropped to 48ms, the JIT cache is faster on UWP, and Xbox behaves better (screen stays on, clean suspend/resume).

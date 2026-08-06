@@ -26,6 +26,10 @@ static DBP_Buffer dbp_osdbuf[3] = {{0,DBPS_OSD_WIDTH,DBPS_OSD_HEIGHT,0,0,0,0,(fl
 #endif
 static void DBP_StartOSD(DBP_OSDMode mode = _DBPOSD_OPEN, struct DBP_PureMenuState* in_main = NULL);
 static void DBP_CloseOSD();
+
+// UWP: menu open/close flag defined in dosbox_pure_libretro.cpp. Presenting the
+// 640x480 OSD composite relies on it being sticky (see DBP_GetOSDOutput).
+extern bool dbp_uwp_osd_open;
 static bool DBP_FullscreenOSD;
 static bool DBP_MenuInterceptorRefreshSystem;
 
@@ -2285,11 +2289,13 @@ static void DBP_StartOSD(DBP_OSDMode mode, DBP_PureMenuState* in_main)
 	DBP_FullscreenOSD = !!in_main;
 	DBP_OSD.mouse.Reset();
 	DBP_OSD.SetMode(mode, in_main);
+	dbp_uwp_osd_open = true; // UWP: sticky menu-open flag (see DBP_GetOSDOutput)
 };
 
 static void DBP_CloseOSD()
 {
 	DBP_OSD.SetMode(_DBPOSD_CLOSE);
+	dbp_uwp_osd_open = false; // UWP: sticky menu-open flag (see DBP_GetOSDOutput)
 }
 
 static void DBP_PureMenuProgram(Program** make)
