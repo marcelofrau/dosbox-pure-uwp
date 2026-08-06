@@ -32,9 +32,8 @@ void DBPS_GetMouse(short& mx, short& my, bool)
     mx = 0; my = 0;
 #endif
 }
-void DBPS_ToggleOSD() {}
-bool DBPS_IsShowingOSD() { return false; }
-bool DBPS_IsGameRunning() { return false; }
+// DBPS_ToggleOSD / DBPS_IsShowingOSD / DBPS_IsGameRunning are defined by the
+// DBP_STANDALONE tail of dosbox_pure_osd.h — stubs here would collide at link.
 void DBPS_StartCaptureJoyBind(unsigned, unsigned, unsigned, unsigned, bool) {}
 bool DBPS_HaveJoy() { return false; }
 bool DBPS_GetJoyBind(unsigned, unsigned, unsigned, unsigned, bool, std::string&, std::string&, const char*) { return false; }

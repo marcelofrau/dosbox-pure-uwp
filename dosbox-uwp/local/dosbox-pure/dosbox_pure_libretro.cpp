@@ -80,10 +80,10 @@ extern "C" bool g_dbp_osd_active = false;
 static Bit8u buffer_active, dbp_overscan;
 static bool dbp_doublescan, dbp_padding;
 static struct DBP_Buffer { Bit32u *video, width, height, cap, pad_x, pad_y, border_color; float ratio; } dbp_buffers[3];
-#ifndef DBP_STANDALONE
+// UWP: dbp_audio + audio_batch_cb stay active even with DBP_STANDALONE (we are
+// a libretro frontend — the standalone build has its own audio backend).
 static struct DBP_Audio { int16_t* audio; Bit32u length; } dbp_audio[2];
 static Bit8u dbp_audio_active;
-#endif
 static double dbp_audio_remain;
 static struct retro_hw_render_callback dbp_hw_render;
 static void (*dbp_opengl_draw)(const DBP_Buffer& buf);
@@ -248,7 +248,7 @@ static Bit32u dbp_wait_pause, dbp_wait_finish, dbp_wait_paused, dbp_wait_continu
 #endif
 
 // PERF FPS COUNTERS
-#define DBP_ENABLE_FPS_COUNTERS
+//#define DBP_ENABLE_FPS_COUNTERS
 #ifdef DBP_ENABLE_FPS_COUNTERS
 static Bit32u dbp_lastfpstick, dbp_fpscount_retro, dbp_fpscount_gfxstart, dbp_fpscount_gfxend, dbp_fpscount_event, dbp_fpscount_skip_run, dbp_fpscount_skip_render;
 #define DBP_FPSCOUNT(DBP_FPSCOUNT_VARNAME) DBP_FPSCOUNT_VARNAME++;
@@ -574,14 +574,10 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 		case TCM_ON_FINISH_FRAME:
 			semDidPause.Post();
 			emuWaitTimeStart = time_cb();
-			#ifndef DBP_STANDALONE
+			// UWP: skip the DBPS_MIXER_AroundEmulationWait bookkeeping — that flag
+			// only feeds the standalone pull-model DBPS_AudioMix, which we never
+			// call (our audio is push via MIXER_CallBack + audio_batch_cb).
 			semDoContinue.Wait();
-			#else
-			extern void DBPS_MIXER_AroundEmulationWait(bool start_wait);
-			DBPS_MIXER_AroundEmulationWait(true);
-			semDoContinue.Wait();
-			DBPS_MIXER_AroundEmulationWait(false);
-			#endif
 			dbp_emu_waiting += (Bit32u)(time_cb() - emuWaitTimeStart);
 			#ifdef DBP_ENABLE_WAITSTATS
 			dbp_wait_continue += (Bit32u)(time_cb() - emuWaitTimeStart);
@@ -1577,6 +1573,34 @@ bool GFX_StartUpdate(Bit8u*& pixels, Bitu& pitch)
 	return true;
 }
 
+static void DBP_ScaleNearest(const Bit32u* src, Bit32u sw, Bit32u sh, Bit32u* dst, Bit32u dw, Bit32u dh)
+{
+	for (Bit32u y = 0; y != dh; y++)
+	{
+		const Bit32u sy = (y * sh) / dh;
+		const Bit32u* srow = src + sy * sw;
+		Bit32u* drow = dst + y * dw;
+		for (Bit32u x = 0; x != dw; x++)
+			drow[x] = srow[(x * sw) / dw];
+	}
+}
+
+// UWP: render the OSD (PUREMENU) at its fixed 640x480 design resolution instead
+// of the game resolution. The OSD drawing code mixes proportional layout with
+// fixed pixel constants (CW=8, l=30, w-319, GetThickness()=2 above 290px) that
+// are tuned for 640x480 — drawing directly at e.g. 320x240 squeezes the menu.
+// We scale the 4:3 game area up to 640x480, draw the OSD over it (translucent
+// panels keep showing the scaled game behind), then scale the result back.
+static void DBP_RenderOSD(DBP_Buffer& buf)
+{
+	DBP_Buffer& osdbf = dbp_osdbuf[0];
+	if (!osdbf.video) osdbf.video = (Bit32u*)malloc(DBPS_OSD_WIDTH * DBPS_OSD_HEIGHT * 4);
+	if (!osdbf.video) return;
+	DBP_ScaleNearest(buf.video, buf.width, buf.height, osdbf.video, DBPS_OSD_WIDTH, DBPS_OSD_HEIGHT);
+	dbp_intercept_next->gfx(osdbf);
+	DBP_ScaleNearest(osdbf.video, DBPS_OSD_WIDTH, DBPS_OSD_HEIGHT, buf.video, buf.width, buf.height);
+}
+
 void GFX_EndUpdate(const Bit16u *changedLines)
 {
 	if (!changedLines) return;
@@ -1623,10 +1647,11 @@ void GFX_EndUpdate(const Bit16u *changedLines)
 
 	if (dbp_intercept_next && dbp_intercept_next->usegfx())
 	{
-		// UWP: always draw OSD directly onto framebuffer (non-standalone path)
+		// UWP: draw the OSD at its fixed 640x480 design resolution via
+		// DBP_RenderOSD instead of directly onto the framebuffer.
 		if (dbp_opengl_draw && voodoo_ogl_is_showing()) // zero all including alpha because we'll blend the OSD after displaying voodoo
 			memset(buf.video, 0, buf.width * buf.height * 4);
-		dbp_intercept_next->gfx(buf);
+		DBP_RenderOSD(buf);
 		buf.border_color = 0xDEADBEEF; // force redraw
 	}
 
@@ -1679,9 +1704,8 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 	{
 		retro_time_t TimeLast, TimeSleepUntil;
 		double LastModeHash;
-		Bit32u LastFrameCount, FrameTicks, HistoryCycles[HISTORY_SIZE], HistoryEmulator[HISTORY_SIZE], HistoryFrame[HISTORY_SIZE], HistoryCursor;
-		Bit32u LastCycleMax;
-	} St;
+			Bit32u LastFrameCount, FrameTicks, HistoryCycles[HISTORY_SIZE], HistoryEmulator[HISTORY_SIZE], HistoryFrame[HISTORY_SIZE], HistoryCursor;
+		} St;
 
 	St.FrameTicks++;
 	if (St.LastFrameCount == dbp_framecount)
@@ -1817,21 +1841,6 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 				CPU_CycleMax = 1 + (Bit32s)(CPU_CycleMax * r);
 			}
 
-			// Clamp: ±30% per evaluation step to prevent oscillation.
-			// Without this, auto-cycle can jump 22k↔660k in a single step.
-			{
-				Bit32u oldCmax = St.LastCycleMax;
-				if (oldCmax > 0)
-				{
-					Bit32u lo = (Bit32u)(oldCmax * 0.7);
-					Bit32u hi = (Bit32u)(oldCmax * 1.3);
-					if (hi < lo) hi = 0xFFFFFFFFu; // overflow guard
-					if (CPU_CycleMax < (Bit32s)lo) CPU_CycleMax = lo;
-					if (CPU_CycleMax > (Bit32s)hi) CPU_CycleMax = hi;
-				}
-				St.LastCycleMax = CPU_CycleMax;
-			}
-
 			Bit32s limit = 4000000;
 			if (CPU_CycleLimit > 0) limit = CPU_CycleLimit;
 			else if (!cpu.pmode && dbp_content_year >= 1995) limit = DBP_CyclesForYear(dbp_content_year, 1996); // enforce max from DBP_SetRealModeCycles
@@ -1840,9 +1849,9 @@ static bool GFX_AdvanceFrame(bool force_skip, bool force_no_auto_adjust)
 			if (CPU_CycleMax < (cpu.pmode ? 10000 : 1000)) CPU_CycleMax = (cpu.pmode ? 10000 : 1000);
 		}
 
-		log_cb(RETRO_LOG_INFO, "[DBPTIMERS%4d] - EMU: %5d - FE: %5d - TARGET: %5d - EffectiveCycles: %6d - Limit: %6d|%6d - CycleMax: %6d - Scale: %5d\n",
-			St.HistoryCursor, (int)recentEmulator, (int)((recentFrameSum / recentCount) - recentEmulator), frameTime, 
-			recentCyclesSum / recentCount, (cpu.pmode ? 10000 : 1000), recentEmulator * 280, CPU_CycleMax, ratio);
+		//log_cb(RETRO_LOG_INFO, "[DBPTIMERS%4d] - EMU: %5d - FE: %5d - TARGET: %5d - EffectiveCycles: %6d - Limit: %6d|%6d - CycleMax: %6d - Scale: %5d\n",
+		//	St.HistoryCursor, (int)recentEmulator, (int)((recentFrameSum / recentCount) - recentEmulator), frameTime, 
+		//	recentCyclesSum / recentCount, (cpu.pmode ? 10000 : 1000), recentEmulator * 280, CPU_CycleMax, ratio);
 	}
 	goto return_true;
 }
@@ -2394,7 +2403,14 @@ static bool check_variables()
 	DBP_Option::Apply(sec_dosbox, "memsize", (mem_use_extended ? mem : "16"), false, true, mem_changed);
 
 	bool audiorate_changed = false;
+	// UWP: audiorate option only exists in the non-standalone core_options enum.
+	// Under DBP_STANDALONE hardcode 48kHz to match XAudio2 output (not upstream's
+	// 44100 default, which caused a sample-rate mismatch).
+	#ifndef DBP_STANDALONE
 	const char* audiorate = DBP_Option::Get(DBP_Option::audiorate, &audiorate_changed);
+	#else
+	const char* audiorate = "48000";
+	#endif
 	DBP_Option::Apply(sec_mixer, "rate", audiorate, false, true, audiorate_changed);
 	DBP_Option::GetAndApply(sec_mixer, "swapstereo", DBP_Option::swapstereo);
 	extern bool dbp_swapstereo;
@@ -2552,32 +2568,6 @@ static bool check_variables()
 
 	dbp_alphablend_base = (Bit8u)((atoi(DBP_Option::Get(DBP_Option::menu_transparency)) + 30) * 0xFF / 130);
 	dbp_joy_analog_deadzone = (int)((float)atoi(DBP_Option::Get(DBP_Option::joystick_analog_deadzone)) * 0.01f * (float)DBP_JOY_ANALOG_RANGE);
-
-	// Config dump: log key settings once after first full apply
-	{
-		static bool s_dumped = false;
-		if (!s_dumped && dbp_state != DBPSTATE_BOOT)
-		{
-			s_dumped = true;
-			log_cb(RETRO_LOG_INFO,
-				"[CONFIG] machine=%s mem=%s core=%s cputype=%s\n"
-				"[CONFIG] cycles=%s cycledown=%s cyclescale=%s cyclelimit=%s\n"
-				"[CONFIG] sblaster=%s oplrate=%d aspect=%s\n"
-				"[CONFIG] savestate=%s\n",
-				DBP_Option::Get(DBP_Option::machine),
-				DBP_Option::Get(DBP_Option::memory_size),
-				DBP_Option::Get(DBP_Option::cpu_core),
-				DBP_Option::Get(DBP_Option::cpu_type),
-				DBP_Option::Get(DBP_Option::cycles),
-				DBP_Option::Get(DBP_Option::cycles_max),
-				DBP_Option::Get(DBP_Option::cycles_scale),
-				DBP_Option::Get(DBP_Option::cycle_limit),
-				DBP_Option::Get(DBP_Option::sblaster_conf),
-				audiorate,
-				DBP_Option::Get(DBP_Option::aspect_correction),
-				DBP_Option::Get(DBP_Option::savestate));
-		}
-	}
 
 	return visibility_changed;
 }
@@ -3135,7 +3125,8 @@ void retro_init(void) //#3
 
 bool retro_load_game(const struct retro_game_info *info) //#4
 {
-	#ifndef DBP_STANDALONE
+	// UWP: always run the libretro software path even with DBP_STANDALONE —
+	// we are a libretro frontend, XRGB8888 + option-driven voodoo_perf apply.
 	enum retro_pixel_format pixel_format = RETRO_PIXEL_FORMAT_XRGB8888;
 	if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format))
 	{
@@ -3147,9 +3138,6 @@ bool retro_load_game(const struct retro_game_info *info) //#4
 	environ_cb(RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS, &support_achievements);
 
 	const char* voodoo_perf = DBP_Option::Get(DBP_Option::voodoo_perf);
-	#else
-	const char* voodoo_perf = "auto"; // standalone always uses OpenGL rendering
-	#endif
 	if (voodoo_perf[0] == 'a' || voodoo_perf[0] == '4') // 3dfx wants to use OpenGL, request hardware render context
 	{
 		static struct sglproc { retro_proc_address_t* ptr; const char* name; bool required; } glprocs[] = { MYGL_FOR_EACH_PROC(MYGL_MAKEPROCARRENTRY) };
@@ -3631,28 +3619,22 @@ void retro_run(void)
 					dbp_event_queue_read_cursor = ((dbp_event_queue_read_cursor + 1) % DBP_EVENT_QUEUE_SIZE);
 					dbp_intercept_next->evnt(e.type, e.val, e.val2);
 				}
-				if (dbp_intercept_next)
-				{
-					#ifndef DBP_STANDALONE
-					dbp_intercept_next->gfx(buf);
-					#else
-					DBP_Buffer& osdbf = dbp_osdbuf[(buffer_active + 1) % 3];
-					if (!osdbf.video) osdbf.video = (Bit32u*)malloc(DBPS_OSD_WIDTH*DBPS_OSD_HEIGHT*4);
-					memset(osdbf.video, 0, DBPS_OSD_WIDTH*DBPS_OSD_HEIGHT*4);
-					dbp_intercept_next->gfx(osdbf);
-					DBPS_SubmitOSDFrame(osdbf.video, osdbf.width, osdbf.height);
-					#endif
-				}
+			if (dbp_intercept_next)
+			{
+				// UWP: render the OSD at its fixed 640x480 design resolution via
+				// DBP_RenderOSD (the standalone dbp_osdbuf + DBPS_SubmitOSDFrame
+				// path is a no-op stub here, so we composite into buf.video).
+				DBP_RenderOSD(buf);
+			}
 			}
 
 			// submit last frame
-			#ifndef DBP_STANDALONE
+			// UWP: keep the empty-sample audio flush active with DBP_STANDALONE.
 			Bit32u numEmptySamples = (Bit32u)(av_info.timing.sample_rate / av_info.timing.fps);
 			DBP_Audio& aud = dbp_audio[dbp_audio_active ^= 1];
 			if (numEmptySamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, numEmptySamples * 4); aud.length = numEmptySamples; }
 			memset(aud.audio, 0, numEmptySamples * 4);
 			audio_batch_cb(aud.audio, numEmptySamples);
-			#endif
 			if (dbp_opengl_draw)
 				dbp_opengl_draw(buf);
 			else
@@ -3693,7 +3675,7 @@ void retro_run(void)
 		dbp_perf_uniquedraw = dbp_perf_count = dbp_perf_totaltime = 0;
 	}
 
-	#ifndef DBP_STANDALONE
+	// UWP: mix audio stays active with DBP_STANDALONE (we are a libretro frontend).
 	// mix audio
 	Bit32u haveSamples = DBP_MIXER_DoneSamplesCount(), mixSamples = 0; double numSamples;
 	if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
@@ -3711,7 +3693,6 @@ void retro_run(void)
 		if (mixSamples > aud.length) { aud.audio = (int16_t*)realloc(aud.audio, mixSamples * 4); aud.length = mixSamples; }
 		MIXER_CallBack(0, (Bit8u*)aud.audio, mixSamples * 4);
 	}
-	#endif
 	const DBP_Buffer& buf = dbp_buffers[buffer_active];
 	Bit32u view_width = buf.width, view_height = buf.height;
 
@@ -3719,11 +3700,10 @@ void retro_run(void)
 
 	DBP_ThreadControl(skip_emulate ? TCM_RESUME_FRAME : TCM_NEXT_FRAME);
 
-	#ifndef DBP_STANDALONE
+	// UWP: submit audio stays active with DBP_STANDALONE.
 	// submit audio
 	if (mixSamples)
 		audio_batch_cb(dbp_audio[dbp_audio_active].audio, mixSamples);
-	#endif
 
 	if (tpfActual)
 	{
