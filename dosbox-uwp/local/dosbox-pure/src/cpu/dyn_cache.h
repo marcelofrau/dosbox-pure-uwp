@@ -61,6 +61,18 @@ static inline int nxmunmap(void *addr, size_t)
 }
 #endif
 
+#if defined (WIN32)
+// UWP dual-view JIT cache (codeGeneration capability required). One
+// PAGE_EXECUTE_READWRITE section aliased by two views: RW view to write
+// generated code, RX view to execute it. The AppContainer refuses a single
+// WRITE+EXECUTE view (MapViewOfFileFromApp err=87), but separate views work.
+// cache_add* translate RX->RW (mirrors the HAVE_LIBNX design above).
+static Bit8u *jit_rx_addr = NULL;
+static Bit8u *jit_rw_addr = NULL;
+static HANDLE jit_section = NULL;
+static bool jit_dualview = false;
+#endif
+
 #ifdef WIIU
 // WiiU has just shy of 8MiB RWX RAM available using the current method
 #define WUP_RWX_MEM_BASE 0x00802000
@@ -540,38 +552,10 @@ void CacheBlockDynRec::Clear(void) {
 
 #if defined (WIN32)
 #include <memoryapi.h>
-// UWP JIT: W^X via RW/RX switching.
-// VirtualAlloc with PAGE_EXECUTE_READWRITE blocked in AppContainer.
-// Allocate PAGE_READWRITE, flip to PAGE_EXECUTE_READ after writing.
-static DWORD cache_protect_size = 0;
-
-static void cache_make_writable(void) {
-	if (cache_code_start_ptr) {
-		DWORD old;
-		BOOL ok = VirtualProtectFromApp(cache_code_start_ptr, cache_protect_size,
-			PAGE_READWRITE, &old);
-#if defined(DBP_STANDALONE)
-		if (!ok) OutputDebugStringA("[dosbox-uwp] cache_make_writable FAILED\n");
-#endif
-	}
-}
-static void cache_make_executable(void) {
-	if (cache_code_start_ptr) {
-		DWORD old;
-		BOOL ok = VirtualProtectFromApp(cache_code_start_ptr, cache_protect_size,
-			PAGE_EXECUTE_READ, &old);
-#if defined(DBP_STANDALONE)
-		if (!ok) OutputDebugStringA("[dosbox-uwp] cache_make_executable FAILED\n");
-#endif
-	}
-}
 #endif
 
 
 static CacheBlockDynRec * cache_openblock(void) {
-#if defined (WIN32)
-	cache_make_writable();
-#endif
 	CacheBlockDynRec * block=cache.block.active;
 	// check for enough space in this block
 	Bitu size=block->cache.size;
@@ -636,15 +620,12 @@ static void cache_closeblock(void) {
 	} else {
 		cache.block.active=block->cache.next;
 	}
-#if defined (WIN32)
-	cache_make_executable();
-#endif
 }
 
 
 // place an 8bit value into the cache
 static INLINE void cache_addb(Bit8u val,const Bit8u *pos) {
-#ifdef HAVE_LIBNX
+#if defined (HAVE_LIBNX) || defined (WIN32)
 	Bit8u* rwPos = (Bit8u*)((intptr_t)pos - (intptr_t)jit_rx_addr + (intptr_t)jit_rw_addr);
 	*rwPos=val;
 #else
@@ -659,7 +640,7 @@ static INLINE void cache_addb(Bit8u val) {
 
 // place a 16bit value into the cache
 static INLINE void cache_addw(Bit16u val,const Bit8u *pos) {
-#ifdef HAVE_LIBNX
+#if defined (HAVE_LIBNX) || defined (WIN32)
 	Bit16u* rwPos = (Bit16u*)((intptr_t)pos - (intptr_t)jit_rx_addr + (intptr_t)jit_rw_addr);
 	*rwPos=val;
 #else
@@ -674,7 +655,7 @@ static INLINE void cache_addw(Bit16u val) {
 
 // place a 32bit value into the cache
 static INLINE void cache_addd(Bit32u val,const Bit8u *pos) {
-#ifdef HAVE_LIBNX
+#if defined (HAVE_LIBNX) || defined (WIN32)
 	Bit32u* rwPos = (Bit32u*)((intptr_t)pos - (intptr_t)jit_rx_addr + (intptr_t)jit_rw_addr);
 	*rwPos=val;
 #else
@@ -689,7 +670,7 @@ static INLINE void cache_addd(Bit32u val) {
 
 // place a 64bit value into the cache
 static INLINE void cache_addq(Bit64u val,const Bit8u *pos) {
-#ifdef HAVE_LIBNX
+#if defined (HAVE_LIBNX) || defined (WIN32)
 	Bit64u* rwPos = (Bit64u*)((intptr_t)pos - (intptr_t)jit_rx_addr + (intptr_t)jit_rw_addr);
 	*rwPos=val;
 #else
@@ -742,13 +723,34 @@ static void cache_init(bool enable) {
 		if (cache_code_start_ptr==NULL) {
 			// allocate the code cache memory
 #if defined (WIN32)
-			// UWP: VirtualAlloc(..., PAGE_EXECUTE_READWRITE) blocked.
-			// Use VirtualAllocFromApp + PAGE_READWRITE, then flip to PAGE_EXECUTE_READ after writing.
-			cache_protect_size = CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP;
-			cache_code_start_ptr=(Bit8u*)VirtualAllocFromApp(0, cache_protect_size,
-				MEM_COMMIT, PAGE_READWRITE);
-			if (!cache_code_start_ptr)
-				cache_code_start_ptr=(Bit8u*)malloc(cache_protect_size);
+			// UWP dual-view JIT cache (codeGeneration required). One
+			// PAGE_EXECUTE_READWRITE section aliased by two views: RW view for
+			// writing generated code, RX view for executing it. A single
+			// WRITE+EXECUTE view is refused by the AppContainer
+			// (MapViewOfFileFromApp err=87); separate views work. cache_add*
+			// translate RX->RW so no W^X flips are needed.
+			{
+				const SIZE_T cache_size = CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP;
+				jit_section = CreateFileMappingFromApp(INVALID_HANDLE_VALUE, NULL,
+					PAGE_EXECUTE_READWRITE | SEC_COMMIT, cache_size, NULL);
+				if (jit_section) {
+					jit_rw_addr=(Bit8u*)MapViewOfFileFromApp(jit_section, FILE_MAP_ALL_ACCESS, 0, 0);
+					if (jit_rw_addr)
+						jit_rx_addr=(Bit8u*)MapViewOfFileFromApp(jit_section, FILE_MAP_EXECUTE | FILE_MAP_READ, 0, 0);
+					LOG_MSG("JIT cache: dual-view RW=%p RX=%p section=%p err=%lu",
+						jit_rw_addr, jit_rx_addr, jit_section, jit_rx_addr ? 0 : GetLastError());
+					if (jit_rw_addr && jit_rx_addr) {
+						cache_code_start_ptr = jit_rx_addr;
+						jit_dualview = true;
+					} else {
+						if (jit_rw_addr) { UnmapViewOfFile(jit_rw_addr); jit_rw_addr = NULL; }
+						if (jit_rx_addr) { UnmapViewOfFile(jit_rx_addr); jit_rx_addr = NULL; }
+						CloseHandle(jit_section); jit_section = NULL;
+					}
+				} else {
+					LOG_MSG("JIT cache: CreateFileMappingFromApp failed err=%lu", GetLastError());
+				}
+			}
 #elif defined (HAVE_LIBNX)
 			cache_code_start_ptr=(Bit8u*)nxmmap(NULL, CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP);
 #elif defined (VITA)
@@ -765,7 +767,16 @@ static void cache_init(bool enable) {
 #else
 			cache_code_start_ptr=(Bit8u*)malloc(CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP);
 #endif
-			if(!cache_code_start_ptr) E_Exit("Allocating dynamic cache failed");
+			if(!cache_code_start_ptr) {
+				// malloc fallback: keep the app alive so the diagnostic log lines
+				// above are visible. RW only — dynarec faults on first execute if
+				// no RWX path worked, but that beats the NULL deref from E_Exit.
+				cache_code_start_ptr=(Bit8u*)malloc(CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP);
+				if (cache_code_start_ptr)
+					LOG_MSG("JIT cache: malloc fallback (RW only — dynarec will fault on execute)");
+				else
+					E_Exit("Allocating dynamic cache failed");
+			}
 
 			// align the cache at a page boundary
 			cache_code=(Bit8u*)(((Bitu)cache_code_start_ptr + PAGESIZE_TEMP-1) & ~(PAGESIZE_TEMP-1));//Bitu is same size as a pointer.
@@ -825,10 +836,6 @@ static void cache_init(bool enable) {
 		cache_block_closing(link_blocks[1].cache.start, cache.pos-link_blocks[1].cache.start);
 #endif
 
-#if defined (WIN32)
-		cache_make_executable();
-#endif
-
 		cache.free_pages=0;
 		cache.last_page=0;
 		cache.used_pages=0;
@@ -858,8 +865,16 @@ static void cache_close(void) {
 	}
 	if (cache_code_start_ptr != NULL) {
 #if defined (WIN32)
-		if (!VirtualFree(cache_code_start_ptr, 0, MEM_RELEASE))
+		// UWP JIT: dual-view section cache (two views + section handle) or the
+		// malloc fallback. Unmap both views, close the section; else free().
+		if (jit_dualview) {
+			if (jit_rx_addr) { UnmapViewOfFile(jit_rx_addr); jit_rx_addr = NULL; }
+			if (jit_rw_addr) { UnmapViewOfFile(jit_rw_addr); jit_rw_addr = NULL; }
+			if (jit_section) { CloseHandle(jit_section); jit_section = NULL; }
+			jit_dualview = false;
+		} else {
 			free(cache_code_start_ptr);
+		}
 #elif defined (HAVE_LIBNX)
 		nxmunmap(cache_code_start_ptr, CACHE_TOTAL+CACHE_MAXSIZE+PAGESIZE_TEMP-1+PAGESIZE_TEMP);
 #elif defined (VITA)
@@ -901,17 +916,11 @@ static void DBPSerialize_cache_reset(void) {
 		block->cache.next=0;
 
 		/* Setup the default blocks for block linkage returns */
-#if defined (WIN32)
-		cache_make_writable();
-#endif
 		cache.pos=&cache_code_link_blocks[0];
 		link_blocks[0].cache.start=cache.pos;
 		dyn_return(BR_Link1,false);
 		cache.pos=&cache_code_link_blocks[32];
 		link_blocks[1].cache.start=cache.pos;
 		dyn_return(BR_Link2,false);
-#if defined (WIN32)
-		cache_make_executable();
-#endif
 	}
 }

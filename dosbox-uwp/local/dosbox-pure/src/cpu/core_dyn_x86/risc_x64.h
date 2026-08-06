@@ -273,9 +273,6 @@ static BlockReturn gen_runcodeInit(const Bit8u *code);
 static BlockReturn (*gen_runcode)(const Bit8u *code) = gen_runcodeInit;
 
 static BlockReturn gen_runcodeInit(const Bit8u *code) {
-#if defined (_WIN32)
-	cache_make_writable();
-#endif
 	const Bit8u* oldpos = cache.pos;
 	cache.pos = &cache_code_link_blocks[128];
 	gen_runcode = (BlockReturn(*)(const Bit8u*))cache.pos;
@@ -335,9 +332,6 @@ static BlockReturn gen_runcodeInit(const Bit8u *code) {
 	cache_addb(0xc3);          // ret
 
 	cache.pos = oldpos;
-#if defined (WIN32)
-	cache_make_executable();
-#endif
 	return gen_runcode(code);
 }
 
@@ -1303,9 +1297,6 @@ static void gen_init(void) {
 #if defined(X86_DYNFPU_DH_ENABLED)
 // DO NOT USE opcode::setabsaddr IN THIS FUNCTION (RBP unavailable at execution time)
 static void gen_dh_fpu_saveInit(void) {
-#if defined (_WIN32)
-	cache_make_writable();
-#endif
 	const Bit8u* oldpos = cache.pos;
 	cache.pos = &cache_code_link_blocks[64];
 	gen_dh_fpu_save = (void(*)(void))cache.pos;
@@ -1326,9 +1317,6 @@ static void gen_dh_fpu_saveInit(void) {
 	cache_addb(0xC3); // RET
 
 	cache.pos = oldpos;
-#if defined (_WIN32)
-	cache_make_executable();
-#endif
 	gen_dh_fpu_save();
 }
 #endif
