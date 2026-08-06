@@ -1,30 +1,6 @@
-## 🎮 DOSBox Pure UWP 1.0.0.235 — OSD & Input Polish
+## 🎮 DOSBox Pure UWP 1.0.0.235 — First 1.0.0 Release
 
-Fix pass on the in-game menu and controller input since 1.0.0.213.
-
----
-
-### 🖥️ PUREMENU now renders at native 640x480
-
-- The OSD/PUREMENU framebuffer is presented at its native **640x480** resolution instead of being scaled back down to the game framebuffer — **menu fonts are crisp and pixel-perfect** even when the game runs at 320x240 or 640x400
-- OSD keeps a **raw 4:3 aspect** so menu geometry is correct at any game resolution
-
-### 🎬 Menu flicker mitigation
-
-- New **sticky OSD-open flag**: once the menu is open, the OSD buffer stays on screen even when the game briefly drops its render target while switching resolutions behind it (was causing ~5ms flashes of the game over PUREMENU)
-- Diagnostic log line kept (`[UWP] OSD sticky: intercept dropped, kept OSD buffer`) for future tuning — rare residual flicker can still occur on aggressive resolution switches
-
-### 🎮 Controller fixes
-
-- **Analog stick steering-left glitch fixed** — full negative axis (`-32768`) combined with a direction-1 binding (e.g. `KBD_left`) overflowed `Bit16s` back to `-32768`, tripping the KEYUP branch while the stick was still held hard left
-- **Right stick now captured and fed to the core** as `RETRO_DEVICE_ANALOG` (raw; core applies its own deadzone). Analog is zeroed while the menu is open so no stale joystick state leaks into the game on resume
-- **Cursor auto-hide**: the on-screen cursor hides after 2s without movement (real mouse or stick)
-
----
-
-## 🎮 DOSBox Pure UWP 1.0.0.213 — First 1.0.0 Release
-
-First release under the **1.0.0** line and the biggest performance + stability jump since 0.9.5.135. Emulation now runs on its own thread, audio latency dropped to 48ms, the JIT cache is faster on UWP, and Xbox behaves better (screen stays on, clean suspend/resume).
+First release under the **1.0.0** line and the biggest performance + stability jump since 0.9.5.136. Emulation runs on its own thread, audio latency dropped to 48ms, the JIT cache is faster on UWP, and Xbox behaves better (screen stays on, clean suspend/resume). The 1.0.0.213 release candidate went through one more fix pass before shipping — pixel-perfect PUREMENU rendering, menu flicker mitigation, and controller input fixes.
 
 ---
 
@@ -37,8 +13,14 @@ First release under the **1.0.0** line and the biggest performance + stability j
 
 ### 🖥️ In-Game Menu (PUREMENU) — now pixel-perfect
 
-- The in-game settings menu renders at its native **640x480** resolution and scales cleanly to any output — no more mis-layout or blurry text at odd resolutions
+- The OSD/PUREMENU framebuffer is presented at its native **640x480** resolution instead of being scaled back down to the game framebuffer — **menu fonts are crisp and pixel-perfect** even when the game runs at 320x240 or 640x400
+- OSD keeps a **raw 4:3 aspect** so menu geometry is correct at any game resolution
 - Menu is crisp and centered, and the mouse cursor tracks correctly at any resolution
+
+### 🎬 Menu flicker mitigation
+
+- New **sticky OSD-open flag**: once the menu is open, the OSD buffer stays on screen even when the game briefly drops its render target while switching resolutions behind it (was causing ~5ms flashes of the game over PUREMENU)
+- Diagnostic log line kept (`[UWP] OSD sticky: intercept dropped, kept OSD buffer`) for future tuning — rare residual flicker can still occur on aggressive resolution switches
 
 ### 🎮 Xbox Experience
 
@@ -46,6 +28,12 @@ First release under the **1.0.0** line and the biggest performance + stability j
 - **Clean suspend/resume** — emulation pauses instantly when you switch away and resumes on return, without stutter or crashes
 - **Faster remote debugging** — Visual Studio is pre-configured to deploy straight to your Xbox (Remote Debugger)
 - Debug builds include extended input logging (`INPUT_DEBUG_ENABLED`) to help troubleshoot controller issues
+
+### 🎮 Controller fixes
+
+- **Analog stick steering-left glitch fixed** — full negative axis (`-32768`) combined with a direction-1 binding (e.g. `KBD_left`) overflowed `Bit16s` back to `-32768`, tripping the KEYUP branch while the stick was still held hard left
+- **Right stick now captured and fed to the core** as `RETRO_DEVICE_ANALOG` (raw; core applies its own deadzone). Analog is zeroed while the menu is open so no stale joystick state leaks into the game on resume
+- **Cursor auto-hide**: the on-screen cursor hides after 2s without movement (real mouse or stick)
 
 ### 🎛️ Settings & Persistence
 
@@ -58,7 +46,7 @@ First release under the **1.0.0** line and the biggest performance + stability j
 - **Threaded emulation**: emulation thread owns `retro_run` / `retro_load_game` / `retro_deinit`, paced by the blocking audio `Write()`. UI thread only reads the newest frame from a **3-slot frame ring** (per-slot monotonic sequence counters → always presents the newest frame) and presents it
 - **Audio-master pacing** replaces the QPC `PaceFrame()` timer + multi-run model. The ring is a pure follower (4 × 12ms = 48ms sub-buffers, `MAX_BUFFERS=4`, `SUBBUF_FRAMES=576`); blocking `Write()` is a safety valve ≤256ms; `OnBufferEnd` = dec + event
 - **Dynarec**: `dyn_cache.h` maps a single `PAGE_EXECUTE_READWRITE` file-mapping section with two views — `FILE_MAP_ALL_ACCESS` (write) + `FILE_MAP_EXECUTE|FILE_MAP_READ` (run). AppContainer refuses one WRITE+EXECUTE view (err=87); two views of the same section work. Removes `cache_make_writable/executable` and all W^X flips
-- **OSD**: per-file `DBP_STANDALONE` (core TU only, vcxproj override) keeps libretro audio/OSD/SW-render alive; `DBP_RenderOSD` composites PUREMENU at fixed 640x480 onto the game framebuffer
+- **OSD**: per-file `DBP_STANDALONE` (core TU only, vcxproj override) keeps libretro audio/OSD/SW-render alive; `DBP_RenderOSD` renders PUREMENU into a 640x480 buffer that is presented at native resolution while the menu is open
 - **Suspend/resume**: `DisplayRequest` keeps the screen awake; `OnSuspending` pauses emulation immediately, `OnResuming` resumes, `OnVisibilityChanged` joins the emulation thread so no retro callbacks fire after the CoreWindow is gone
 
 ---
@@ -116,12 +104,12 @@ Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cyc
 
 ### 📦 Installation
 
-1. Download `dosbox-uwp_0.9.5.135_x64.zip`
-2. Extract to a folder on your Xbox/PC
-3. Run `Install.ps1` (installs cert + dependencies + app)
-4. Launch from Start Menu or Xbox Dev Mode
+Install on your Xbox Dev Mode console:
 
-> **Note:** Side-loading requires Developer Mode enabled in Windows Settings.
+- **Xbox Web Portal** — open your console's Dev Mode home (`https://<xbox-ip>`), upload `dosbox-uwp_1.0.0.235_x64.msix` from the zip (add `Dependencies\x64\Microsoft.VCLibs.x64.14.00.appx` if prompted for a dependency)
+- **XB Homebrew Vault** — https://github.com/marcelofrau/xb-homebrew-vault — browse and install straight to the console
+
+> **Note:** Side-loading requires Developer Mode enabled on the console.
 
 ---
 
@@ -133,4 +121,4 @@ Major audio + pacing overhaul since v0.8.2.0. Multi-run model restored, auto-cyc
 
 ---
 
-**Full Changelog**: https://github.com/marcelofrau/dosbox-pure-uwp/compare/v0.8.2.0...v0.9.5.135
+**Full Changelog**: https://github.com/marcelofrau/dosbox-pure-uwp/compare/v0.9.5.136...v1.0.0.235
