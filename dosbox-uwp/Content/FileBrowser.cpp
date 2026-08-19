@@ -45,12 +45,12 @@ static std::wstring EnsureTrailingSlash(const std::wstring& path)
 
 FileBrowser::FileBrowser()
 {
-    spdlog::info("[FileBrowser] Created");
+    spdlog::debug("[FileBrowser] Created");
 }
 
 void FileBrowser::Open()
 {
-    spdlog::info("[FileBrowser] Open — showing root drive list (pickMode={})", m_folderPickMode);
+    spdlog::debug("[FileBrowser] Open — root drive list (pickMode={})", m_folderPickMode);
     m_visible = true;
     m_selected = 0;
     m_scrollOffset = 0;
@@ -61,14 +61,14 @@ void FileBrowser::Open()
 
 void FileBrowser::OpenForFolderPick()
 {
-    spdlog::info("[FileBrowser] OpenForFolderPick");
+    spdlog::debug("[FileBrowser] OpenForFolderPick");
     m_folderPickMode = true;
     Open();
 }
 
 void FileBrowser::Close()
 {
-    spdlog::info("[FileBrowser] Close");
+    spdlog::debug("[FileBrowser] Close");
     m_visible = false;
     m_folderPickMode = false;
 }
@@ -96,14 +96,14 @@ std::wstring FileBrowser::GetParentPath(const std::wstring& path)
         // Root of a drive like "C:" — return empty to go back to drive list
         if (p.size() == 2 && p[1] == L':')
         {
-            spdlog::info("[FileBrowser] Parent of drive root '{}' -> root list", std::string(p.begin(), p.end()));
+            spdlog::debug("[FileBrowser] Parent of drive root '{}' -> root list", std::string(p.begin(), p.end()));
             return L"";
         }
         return L"";
     }
 
     std::wstring parent = p.substr(0, lastSlash + 1);
-    spdlog::info("[FileBrowser] Parent of '{}' -> '{}'",
+    spdlog::debug("[FileBrowser] Parent of '{}' -> '{}'",
         std::string(path.begin(), path.end()),
         std::string(parent.begin(), parent.end()));
     return parent;
@@ -117,7 +117,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
     m_marqueeItemIdx = -1;
     m_currentPath = path;
 
-    spdlog::info("[FileBrowser] ScanDirectory: '{}'",
+    spdlog::debug("[FileBrowser] ScanDirectory: '{}'",
         path.empty() ? "(root)" : std::string(path.begin(), path.end()));
 
     if (path.empty())
@@ -134,7 +134,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
             setEntry.isDir = true;
             setEntry.prefixOverride = L"[SET] ";
             m_entries.push_back(setEntry);
-            spdlog::info("[FileBrowser]   [SET] entry added");
+            spdlog::debug("[FileBrowser]   [SET] entry added");
 
             if (!favFolder.empty())
             {
@@ -143,7 +143,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
                 clearEntry.isDir = true;
                 clearEntry.prefixOverride = L"[CLR] ";
                 m_entries.push_back(clearEntry);
-                spdlog::info("[FileBrowser]   [CLR] entry added");
+                spdlog::debug("[FileBrowser]   [CLR] entry added");
             }
 
             // Separator
@@ -160,7 +160,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
             favEntry.isDir = true;
             favEntry.prefixOverride = L"[FAV] ";
             m_entries.push_back(favEntry);
-            spdlog::info("[FileBrowser]   [FAV] '{}'", favFolder);
+            spdlog::debug("[FileBrowser]   [FAV] '{}'", favFolder);
 
             // Separator
             FileEntry sep;
@@ -170,7 +170,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
         }
 
         DWORD drives = GetLogicalDrives();
-        spdlog::info("[FileBrowser] GetLogicalDrives() = 0x{:08X}", (unsigned)drives);
+        spdlog::debug("[FileBrowser] GetLogicalDrives() = 0x{:08X}", (unsigned)drives);
 
         for (int i = 0; i < 26; i++)
         {
@@ -181,7 +181,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
                 entry.name = driveLetter;
                 entry.isDir = true;
                 m_entries.push_back(entry);
-                spdlog::info("[FileBrowser]   Drive: {}", std::string(driveLetter, driveLetter + 3));
+                spdlog::debug("[FileBrowser]   Drive: {}", std::string(driveLetter, driveLetter + 3));
             }
         }
 
@@ -193,14 +193,14 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
             homeEntry.name = L"[HOME] " + std::wstring(localFolder->Path->Data());
             homeEntry.isDir = true;
             m_entries.push_back(homeEntry);
-            spdlog::info("[FileBrowser]   Home: {}", std::string(homeEntry.name.begin(), homeEntry.name.end()));
+            spdlog::debug("[FileBrowser]   Home: {}", std::string(homeEntry.name.begin(), homeEntry.name.end()));
         }
         catch (Platform::Exception^ ex)
         {
             spdlog::warn("[FileBrowser]   Failed to get LocalFolder: {}", (int)ex->HResult);
         }
 
-        spdlog::info("[FileBrowser] Root: {} entries", (int)m_entries.size());
+        spdlog::debug("[FileBrowser] Root: {} entries", (int)m_entries.size());
         return;
     }
 
@@ -312,7 +312,7 @@ void FileBrowser::ScanDirectory(const std::wstring& path)
     m_entries = dirs;
     m_entries.insert(m_entries.end(), files.begin(), files.end());
 
-    spdlog::info("[FileBrowser] '{}' -> {} dirs, {} files ({} total)",
+    spdlog::debug("[FileBrowser] '{}' -> {} dirs, {} files ({} total)",
         std::string(path.begin(), path.end()),
         (int)dirs.size(), (int)files.size(), (int)m_entries.size());
 }
@@ -406,7 +406,7 @@ void FileBrowser::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrit
         fontSizeFooter, L"en-US", &m_textFormatFooter);
 
     m_resourcesCreated = true;
-    spdlog::info("[FileBrowser] Resources created (fonts + brushes)");
+    spdlog::debug("[FileBrowser] Resources created (fonts + brushes)");
 }
 
 void FileBrowser::ReleaseResources()
@@ -432,7 +432,7 @@ void FileBrowser::ReleaseResources()
     m_fontCollection.Reset();
 
     m_resourcesCreated = false;
-    spdlog::info("[FileBrowser] Resources released");
+    spdlog::debug("[FileBrowser] Resources released");
 }
 
 static ComPtr<ID2D1Brush> MakeAnimatedTitleBrush(ID2D1DeviceContext* d2d,
@@ -777,7 +777,7 @@ void FileBrowser::OnDPad(bool up)
 {
     if (!m_visible || m_entries.empty()) return;
 
-    spdlog::info("[FileBrowser] OnDPad up={} selected={} total={}", up, m_selected, (int)m_entries.size());
+    spdlog::debug("[FileBrowser] OnDPad up={} selected={} total={}", up, m_selected, (int)m_entries.size());
 
     if (up)
     {
@@ -808,14 +808,14 @@ void FileBrowser::OnConfirm()
     if (m_selected < 0 || m_selected >= (int)m_entries.size()) return;
 
     auto& entry = m_entries[m_selected];
-    spdlog::info("[FileBrowser] OnConfirm: '{}' isDir={} prefix={}",
+    spdlog::debug("[FileBrowser] OnConfirm: '{}' isDir={} prefix={}",
         std::string(entry.name.begin(), entry.name.end()), entry.isDir,
         entry.prefixOverride ? "special" : "normal");
 
     // Handle special entries: [SET], [CLR], [FAV]
     if (entry.prefixOverride == L"[SET] ")
     {
-        spdlog::info("[FileBrowser] SET as startup folder: '{}'",
+        spdlog::debug("[FileBrowser] SET as startup folder: '{}'",
             m_currentPath.empty() ? "(root)" : std::string(m_currentPath.begin(), m_currentPath.end()));
         if (onFolderSelected) onFolderSelected(m_currentPath);
         Close();
@@ -823,7 +823,7 @@ void FileBrowser::OnConfirm()
     }
     if (entry.prefixOverride == L"[CLR] ")
     {
-        spdlog::info("[FileBrowser] CLEAR startup folder");
+        spdlog::debug("[FileBrowser] CLEAR startup folder");
         if (onFolderSelected) onFolderSelected(L"");
         Close();
         return;
@@ -832,7 +832,7 @@ void FileBrowser::OnConfirm()
     {
         std::string favFolder = SettingsManager::GetOption("frontend_startup_folder", "");
         std::wstring wfav(favFolder.begin(), favFolder.end());
-        spdlog::info("[FileBrowser] Navigate to favorite: '{}'", favFolder);
+        spdlog::debug("[FileBrowser] Navigate to favorite: '{}'", favFolder);
         ScanDirectory(wfav);
         return;
     }
@@ -860,18 +860,18 @@ void FileBrowser::OnConfirm()
             newPath = EnsureTrailingSlash(m_currentPath) + entry.name;
         }
 
-        spdlog::info("[FileBrowser] Navigate into: '{}'", std::string(newPath.begin(), newPath.end()));
+        spdlog::debug("[FileBrowser] Navigate into: '{}'", std::string(newPath.begin(), newPath.end()));
         ScanDirectory(newPath);
     }
     else
     {
         // File selected — build full path and callback
         std::wstring fullPath = EnsureTrailingSlash(m_currentPath) + entry.name;
-        spdlog::info("[FileBrowser] File selected: '{}'", std::string(fullPath.begin(), fullPath.end()));
+        spdlog::debug("[FileBrowser] File selected: '{}'", std::string(fullPath.begin(), fullPath.end()));
 
         if (onFileSelected)
         {
-            spdlog::info("[FileBrowser] Invoking onFileSelected callback");
+            spdlog::debug("[FileBrowser] Invoking onFileSelected callback");
             onFileSelected(fullPath);
         }
     }
@@ -884,13 +884,13 @@ void FileBrowser::OnBack()
     if (m_currentPath.empty())
     {
         // Already at root — close browser
-        spdlog::info("[FileBrowser] Back at root — closing");
+        spdlog::debug("[FileBrowser] Back at root — closing");
         Close();
         return;
     }
 
     std::wstring parent = GetParentPath(m_currentPath);
-    spdlog::info("[FileBrowser] Back: '{}' -> '{}'",
+    spdlog::debug("[FileBrowser] Back: '{}' -> '{}'",
         std::string(m_currentPath.begin(), m_currentPath.end()),
         parent.empty() ? "(root)" : std::string(parent.begin(), parent.end()));
     ScanDirectory(parent);
@@ -906,7 +906,7 @@ void FileBrowser::OnPageUp()
     m_scrollOffset -= maxVisible;
     if (m_scrollOffset < 0) m_scrollOffset = 0;
 
-    spdlog::info("[FileBrowser] PageUp -> selected={}", m_selected);
+    spdlog::debug("[FileBrowser] PageUp -> selected={}", m_selected);
 }
 
 void FileBrowser::OnPageDown()
@@ -920,13 +920,13 @@ void FileBrowser::OnPageDown()
     if (m_scrollOffset > (int)m_entries.size() - maxVisible)
         m_scrollOffset = max(0, (int)m_entries.size() - maxVisible);
 
-    spdlog::info("[FileBrowser] PageDown -> selected={}", m_selected);
+    spdlog::debug("[FileBrowser] PageDown -> selected={}", m_selected);
 }
 
 void FileBrowser::OnHome()
 {
     if (!m_visible) return;
-    spdlog::info("[FileBrowser] Home -> LocalFolder");
+    spdlog::debug("[FileBrowser] Home -> LocalFolder");
     try
     {
         auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;

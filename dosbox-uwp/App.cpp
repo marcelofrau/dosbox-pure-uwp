@@ -46,7 +46,6 @@ App::App() :
 // The first method called when the IFrameworkView is being created.
 void App::Initialize(CoreApplicationView^ applicationView)
 {
-	OutputDebugStringA("[dosbox-uwp] App::Initialize\n");
 	LogInit();
 
 	applicationView->Activated +=
@@ -70,13 +69,13 @@ void App::Initialize(CoreApplicationView^ applicationView)
 	QueryPerformanceCounter(&m_lastFrameTime);
 	m_targetFrameMs = 1000.0 / 70.0; // default 70fps, updated once core reports timing
 
-	OutputDebugStringA("[dosbox-uwp] App::Initialize done\n");
+	spdlog::debug("[App] Initialize done");
 }
 
 // Called when the CoreWindow object is created (or re-created).
 void App::SetWindow(CoreWindow^ window)
 {
-	OutputDebugStringA("[dosbox-uwp] App::SetWindow\n");
+	spdlog::debug("[App] SetWindow");
 
 	window->SizeChanged += 
 		ref new TypedEventHandler<CoreWindow^, WindowSizeChangedEventArgs^>(this, &App::OnWindowSizeChanged);
@@ -108,7 +107,7 @@ void App::SetWindow(CoreWindow^ window)
 
 	// Xbox + Windows: cursor hidden from start — DOS apps + PUREMENU render own cursor
 	window->PointerCursor = nullptr;
-	OutputDebugStringA("[dosbox-uwp] CoreCursor(nullptr)\n");
+	spdlog::debug("[App] CoreCursor(nullptr)");
 #endif
 
 	DisplayInformation^ currentDisplayInformation = DisplayInformation::GetForCurrentView();
@@ -128,24 +127,23 @@ void App::SetWindow(CoreWindow^ window)
 	nav->BackRequested +=
 		ref new EventHandler<BackRequestedEventArgs^>(this, &App::OnBackRequested);
 
-	OutputDebugStringA("[dosbox-uwp] App::SetWindow done\n");
+	spdlog::debug("[App] SetWindow done");
 }
 
 // Initializes scene resources, or loads a previously saved app state.
 void App::Load(Platform::String^ entryPoint)
 {
-	OutputDebugStringA("[dosbox-uwp] App::Load\n");
 	if (m_main == nullptr)
 	{
 		m_main = std::unique_ptr<dosbox_uwpMain>(new dosbox_uwpMain(m_deviceResources));
 	}
-	OutputDebugStringA("[dosbox-uwp] App::Load done\n");
+	spdlog::debug("[App] Load done");
 }
 
 // This method is called after the window becomes active.
 void App::Run()
 {
-	OutputDebugStringA("[dosbox-uwp] App::Run enter\n");
+	spdlog::debug("[App] Run enter");
 
 	while (!m_windowClosed)
 	{
@@ -190,7 +188,7 @@ void App::Run()
 		}
 	}
 
-	OutputDebugStringA("[dosbox-uwp] App::Run exit\n");
+	spdlog::debug("[App] Run exit");
 }
 
 // Required for IFrameworkView.
@@ -394,7 +392,7 @@ void App::OnPointerPressed(CoreWindow^ sender, PointerEventArgs^ args)
 
 	// Hide native cursor — DOS apps + PUREMENU render their own
 	sender->PointerCursor = nullptr;
-	OutputDebugStringA("[dosbox-uwp] PtrPress — cursor hidden\n");
+	spdlog::debug("[App] PtrPress - cursor hidden");
 }
 
 void App::OnPointerReleased(CoreWindow^ sender, PointerEventArgs^ args)

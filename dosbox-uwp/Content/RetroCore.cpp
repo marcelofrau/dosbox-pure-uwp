@@ -138,26 +138,20 @@ bool RetroCore::Init()
 
 bool RetroCore::InitCore()
 {
-    OutputDebugStringA("[dosbox-uwp] RetroCore::InitCore enter\n");
+    spdlog::debug("[RetroCore] InitCore enter, calling retro_set_* + retro_init");
 
-    OutputDebugStringA("[dosbox-uwp] retro_set_environment\n");
     retro_set_environment(retro_env_wrap);
-    OutputDebugStringA("[dosbox-uwp] retro_set_video_refresh\n");
     retro_set_video_refresh(&RetroCore::retro_video);
-    OutputDebugStringA("[dosbox-uwp] retro_set_audio_sample_batch\n");
     retro_set_audio_sample_batch(&RetroCore::retro_audio);
-    OutputDebugStringA("[dosbox-uwp] retro_set_input_poll\n");
     retro_set_input_poll(&RetroCore::retro_input_poll);
-    OutputDebugStringA("[dosbox-uwp] retro_set_input_state\n");
     retro_set_input_state(&RetroCore::retro_input_state);
 
-    OutputDebugStringA("[dosbox-uwp] retro_init call\n");
     retro_init();
 
     // Apply theme colors from settings to PUREMENU statics
     SettingsManager::ApplyThemeToPUREMENU();
 
-    OutputDebugStringA("[dosbox-uwp] RetroCore::InitCore exit OK\n");
+    spdlog::debug("[RetroCore] InitCore exit OK");
     return true;
 }
 
@@ -393,14 +387,13 @@ void RetroCore::ToggleOSD()
 
 bool RetroCore::LoadGameInternal(const std::wstring& uwpPath, const std::vector<uint8_t>& romData)
 {
-    OutputDebugStringA("[dosbox-uwp] LoadGameInternal enter\n");
+    spdlog::debug("[RetroCore] LoadGameInternal enter");
     if (!s_initialized.load())
     {
         OutputDebugStringA("[dosbox-uwp] LoadGameInternal FAILED: not initialized\n");
         return false;
     }
 
-    char buf[512];
     int len = WideCharToMultiByte(CP_UTF8, 0, uwpPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (len <= 0)
     {
@@ -409,15 +402,14 @@ bool RetroCore::LoadGameInternal(const std::wstring& uwpPath, const std::vector<
     }
     std::string pathUtf8(len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, uwpPath.c_str(), -1, &pathUtf8[0], len, nullptr, nullptr);
-    sprintf_s(buf, "[dosbox-uwp] LoadGameInternal path: %s data=%zu bytes\n", pathUtf8.c_str(), romData.size());
-    OutputDebugStringA(buf);
+    spdlog::debug("[RetroCore] LoadGameInternal path='{}' data={} bytes", pathUtf8, romData.size());
 
     retro_game_info info = {};
     info.path = pathUtf8.c_str();
     info.data = romData.empty() ? nullptr : romData.data();
     info.size = romData.size();
 
-    OutputDebugStringA("[dosbox-uwp] retro_load_game call\n");
+    spdlog::debug("[RetroCore] retro_load_game call");
     if (!retro_load_game(&info))
     {
         spdlog::error("[RetroCore] retro_load_game FAILED");
@@ -427,19 +419,15 @@ bool RetroCore::LoadGameInternal(const std::wstring& uwpPath, const std::vector<
     // Fetch AV info: populates core's internal av_info (fps, sample_rate)
     retro_system_av_info av = {};
     retro_get_system_av_info(&av);
-    {
-        char buf2[256];
-        sprintf_s(buf2, "[dosbox-uwp] av_info: %dx%d @ %.2fHz, sample_rate=%.0f\n",
-            av.geometry.base_width, av.geometry.base_height,
-            av.timing.fps, av.timing.sample_rate);
-        OutputDebugStringA(buf2);
-    }
+    spdlog::debug("[RetroCore] av_info: {}x{} @ {:.2f}Hz, sample_rate={:.0f}",
+        av.geometry.base_width, av.geometry.base_height,
+        av.timing.fps, av.timing.sample_rate);
     if (av.timing.fps > 0)
         s_targetFps.store(av.timing.fps);
 
     s_loaded.store(true);
     s_lastPresentedSeq.store(0, std::memory_order_release);
-    OutputDebugStringA("[dosbox-uwp] retro_load_game SUCCESS\n");
+    spdlog::debug("[RetroCore] retro_load_game SUCCESS");
     return true;
 }
 
@@ -450,7 +438,7 @@ void RetroCore::UnloadGameInternal()
         s_shutdownRequested.store(false);
         return;
     }
-    OutputDebugStringA("[dosbox-uwp] UnloadGameInternal\n");
+    spdlog::debug("[RetroCore] UnloadGameInternal");
     s_loaded.store(false);
     s_lastPresentedSeq.store(0, std::memory_order_release);
     retro_unload_game();
@@ -492,9 +480,7 @@ void RetroCore::RunFrame()
     if ((frameCount % 600) == 0)
     {
         double ms = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq.QuadPart;
-        char buf[128];
-        sprintf_s(buf, "[dosbox-uwp] RunFrame #%d took %.1fms\n", frameCount, ms);
-        OutputDebugStringA(buf);
+        spdlog::debug("[RetroCore] RunFrame #{} took {:.1f}ms", frameCount, ms);
     }
 }
 
@@ -668,11 +654,7 @@ void RetroCore::SetOptionValue(const char* key, const char* value)
 
 int RetroCore::retro_env(unsigned cmd, void* data)
 {
-    char buf[256];
-#ifdef FRAME_TRACE
-    sprintf_s(buf, "[dosbox-uwp] retro_env cmd=%d(%s)\n", cmd, retro_env_name(cmd));
-    OutputDebugStringA(buf);
-#endif
+    spdlog::debug("[RetroCore] retro_env cmd={}({})", cmd, retro_env_name(cmd));
 
     switch (cmd)
     {
@@ -681,7 +663,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         auto* vfs_info = static_cast<retro_vfs_interface_info*>(data);
         vfs_info->required_interface_version = 3;
         vfs_info->iface = &uwp_vfs_iface;
-        OutputDebugStringA("[dosbox-uwp]   VFS interface provided (v3)\n");
+        spdlog::debug("[RetroCore]   VFS interface provided (v3)");
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
@@ -696,8 +678,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
             WideCharToMultiByte(CP_UTF8, 0, path, -1, &sysDir[0], len, nullptr, nullptr);
         }
         *static_cast<const char**>(data) = sysDir.c_str();
-        sprintf_s(buf, "[dosbox-uwp]   SYSTEM_DIR=%s\n", sysDir.c_str());
-        OutputDebugStringA(buf);
+        spdlog::debug("[RetroCore]   SYSTEM_DIR={}", sysDir);
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
@@ -712,8 +693,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
             WideCharToMultiByte(CP_UTF8, 0, path, -1, &saveDir[0], len, nullptr, nullptr);
         }
         *static_cast<const char**>(data) = saveDir.c_str();
-        sprintf_s(buf, "[dosbox-uwp]   SAVE_DIR=%s\n", saveDir.c_str());
-        OutputDebugStringA(buf);
+        spdlog::debug("[RetroCore]   SAVE_DIR={}", saveDir);
         return 1;
     }
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
@@ -722,13 +702,12 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         const char* fmtName = (fmt == RETRO_PIXEL_FORMAT_0RGB1555 ? "0RGB1555" :
             fmt == RETRO_PIXEL_FORMAT_XRGB8888 ? "XRGB8888" :
             fmt == RETRO_PIXEL_FORMAT_RGB565 ? "RGB565" : "UNKNOWN");
-        sprintf_s(buf, "[dosbox-uwp]   SET_PIXEL_FORMAT=%s(%d)\n", fmtName, fmt);
-        OutputDebugStringA(buf);
+        spdlog::debug("[RetroCore]   SET_PIXEL_FORMAT={}({})", fmtName, (int)fmt);
         return 1;
     }
     case RETRO_ENVIRONMENT_SET_HW_RENDER:
     {
-        OutputDebugStringA("[dosbox-uwp]   SET_HW_RENDER=REJECTED (return 0)\n");
+        spdlog::debug("[RetroCore]   SET_HW_RENDER=REJECTED (return 0)");
         return 0;
     }
     case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:
@@ -743,7 +722,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     {
         auto* cb = static_cast<const retro_keyboard_callback*>(data);
         s_keyboardCallback.store(cb ? cb->callback : nullptr);
-        OutputDebugStringA("[dosbox-uwp]   SET_KEYBOARD_CALLBACK: stored\n");
+        spdlog::debug("[RetroCore]   SET_KEYBOARD_CALLBACK: stored");
         return 1;
     }
     case RETRO_ENVIRONMENT_GET_THROTTLE_STATE:
@@ -773,7 +752,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
     {
         auto* cb = static_cast<retro_log_callback*>(data);
         cb->log = uwp_log;
-        OutputDebugStringA("[dosbox-uwp]   GET_LOG_INTERFACE: log callback provided\n");
+        spdlog::debug("[RetroCore]   GET_LOG_INTERFACE: log callback provided");
         return 1;
     }
     case RETRO_ENVIRONMENT_SHUTDOWN:
@@ -786,9 +765,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         if (var && var->key)
         {
             const char* val = var->value ? var->value : "(default)";
-            char kbuf[512];
-            sprintf_s(kbuf, "[dosbox-uwp]   SET_VARIABLE: %s = %s\n", var->key, val);
-            OutputDebugStringA(kbuf);
+            spdlog::debug("[RetroCore]   SET_VARIABLE: {} = {}", var->key, val);
             {
                 std::lock_guard<std::mutex> lk(s_optionMutex);
                 s_optionValues[var->key] = (var->value ? var->value : "");
@@ -812,7 +789,7 @@ int RetroCore::retro_env(unsigned cmd, void* data)
             if (!strcmp(var->key, "dosbox_pure_menu_time"))
             {
                 var->value = OVERRIDE_MENU_TIME;
-                OutputDebugStringA("[dosbox-uwp]   GET_VARIABLE(menu_time) = -1\n");
+                spdlog::debug("[RetroCore]   GET_VARIABLE(menu_time) = -1");
                 return 1;
             }
 
@@ -823,20 +800,12 @@ int RetroCore::retro_env(unsigned cmd, void* data)
                 if (!it->second.empty())
                 {
                     var->value = it->second.c_str();
-#ifdef FRAME_TRACE
-                    char kbuf[256];
-                    sprintf_s(kbuf, "[dosbox-uwp]   GET_VARIABLE(%s) = %s\n", var->key, it->second.c_str());
-                    OutputDebugStringA(kbuf);
-#endif
+                    spdlog::debug("[RetroCore]   GET_VARIABLE({}) = {}", var->key, it->second);
                     return 1;
                 }
                 // Empty value means "use default" — fall through to return 0
             }
-#ifdef FRAME_TRACE
-            char kbuf[256];
-            sprintf_s(kbuf, "[dosbox-uwp]   GET_VARIABLE(%s) = NOT FOUND\n", var->key);
-            OutputDebugStringA(kbuf);
-#endif
+            spdlog::debug("[RetroCore]   GET_VARIABLE({}) = NOT FOUND", var->key);
         }
         return 0;
     }
@@ -856,27 +825,20 @@ int RetroCore::retro_env(unsigned cmd, void* data)
         auto* av = static_cast<const retro_system_av_info*>(data);
         if (av && av->timing.fps > 0)
             s_targetFps.store(av->timing.fps);
-        char buf2[256];
-        sprintf_s(buf2, "[dosbox-uwp]   SET_SYSTEM_AV_INFO: %dx%d @ %.2fHz sample_rate=%.0f\n",
+        spdlog::debug("[RetroCore]   SET_SYSTEM_AV_INFO: {}x{} @ {:.2f}Hz sample_rate={:.0f}",
             av->geometry.base_width, av->geometry.base_height,
             av->timing.fps, av->timing.sample_rate);
-        OutputDebugStringA(buf2);
         return 1;
     }
     case RETRO_ENVIRONMENT_SET_GEOMETRY:
     {
         auto* geom = static_cast<const retro_game_geometry*>(data);
-        char buf2[256];
-        sprintf_s(buf2, "[dosbox-uwp]   SET_GEOMETRY: %dx%d aspect=%.2f\n",
+        spdlog::debug("[RetroCore]   SET_GEOMETRY: {}x{} aspect={:.2f}",
             geom->base_width, geom->base_height, geom->aspect_ratio);
-        OutputDebugStringA(buf2);
         return 1;
     }
     default:
-#ifdef FRAME_TRACE
-        sprintf_s(buf, "[dosbox-uwp]   UNSUPPORTED env cmd=%d\n", cmd);
-        OutputDebugStringA(buf);
-#endif
+        spdlog::debug("[RetroCore]   UNSUPPORTED env cmd={}", cmd);
         return 0;
     }
 }

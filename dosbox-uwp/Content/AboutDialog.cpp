@@ -47,7 +47,7 @@ void AboutDialog::Open(const std::wstring& versionStr)
     // Separator
     m_lines.push_back({ L"=", COL_DIM, FONT_SMALL, true });
 
-    spdlog::info("[AboutDialog] Opened");
+    spdlog::debug("[AboutDialog] Opened");
 }
 
 void AboutDialog::Close()
@@ -188,7 +188,7 @@ void AboutDialog::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwrit
     }
 
     m_resourcesCreated = true;
-    spdlog::info("[AboutDialog] Resources created (dpi={})", dpiscale);
+    spdlog::debug("[AboutDialog] Resources created (dpi={})", dpiscale);
 }
 
 void AboutDialog::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH)

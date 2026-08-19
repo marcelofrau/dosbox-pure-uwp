@@ -311,7 +311,7 @@ void XAudio2Output::Flush()
         m_underruns = 0;
         m_overruns = 0;
     }
-    spdlog::info("[XA2] Flush: ring reset ({} waits)", waited);
+    spdlog::debug("[XA2] Flush: ring reset ({} waits)", waited);
 }
 
 void XAudio2Output::Start()

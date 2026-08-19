@@ -367,6 +367,7 @@ void FrontendMenu::BuildMenuTree()
         { "Audio",               MenuAction::AUDIO },
         { "",                    MenuAction::NONE },
         { "Reset All Settings",  MenuAction::RESET_ALL_SETTINGS },
+        { "Clear Logs",          MenuAction::CLEAR_LOGS },
         { "",                    MenuAction::NONE },
         { "Back",                MenuAction::BACK },
     };
@@ -771,7 +772,7 @@ static void LoadImg(ID2D1DeviceContext* d2d, const wchar_t* filename, ID2D1Bitma
         catch (...) { return; }
         if (TryLoadImgFromPath(d2d, imgPath, bitmap, wicFactory.Get()))
         {
-            spdlog::info("LoadImg: OK from InstalledLocation");
+            spdlog::debug("LoadImg: OK from InstalledLocation");
             return;
         }
         spdlog::warn("LoadImg: InstalledLocation failed, trying parent dir");
@@ -796,7 +797,7 @@ static void LoadImg(ID2D1DeviceContext* d2d, const wchar_t* filename, ID2D1Bitma
         catch (...) { return; }
         if (TryLoadImgFromPath(d2d, imgPath, bitmap, wicFactory.Get()))
         {
-            spdlog::info("LoadImg: OK from parent dir");
+            spdlog::debug("LoadImg: OK from parent dir");
             return;
         }
         spdlog::warn("LoadImg: all paths failed");
@@ -1580,7 +1581,7 @@ void FrontendMenu::RefreshOverlayItems()
     else if (m_overlayTitle == "Audio") m_overlayItems = &m_audioItems;
     m_selected = 0;
     m_scrollOffset = 0;
-    spdlog::info("[FrontendMenu] RefreshOverlayItems: '{}' rebuilt ({} items)",
+            spdlog::debug("[FrontendMenu] RefreshOverlayItems: '{}' rebuilt ({} items)",
         m_overlayTitle, m_overlayItems ? (int)m_overlayItems->size() : 0);
 }
 
@@ -1839,7 +1840,7 @@ void FrontendMenu::OnDPadLeft()
             if (!item.optionKey.empty())
             {
                 const char* newVal = item.coreValues.empty() ? item.values[item.currentValue].c_str() : item.coreValues[item.currentValue].c_str();
-                spdlog::info("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
+                spdlog::debug("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
                 SettingsManager::SetOption(item.optionKey.c_str(), newVal);
                 RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
                 if (onOptionChanged)
@@ -1858,7 +1859,7 @@ void FrontendMenu::OnDPadLeft()
         if (!item.optionKey.empty())
         {
             const char* newVal = item.coreValues.empty() ? item.values[item.currentValue].c_str() : item.coreValues[item.currentValue].c_str();
-            spdlog::info("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
+            spdlog::debug("[FrontendMenu] DPadLeft TOGGLE: {} = {}", item.optionKey, newVal);
             SettingsManager::SetOption(item.optionKey.c_str(), newVal);
             RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
             if (onOptionChanged)
@@ -1888,7 +1889,7 @@ void FrontendMenu::OnDPadRight()
             if (!item.optionKey.empty())
             {
                 const char* newVal = item.coreValues.empty() ? item.values[item.currentValue].c_str() : item.coreValues[item.currentValue].c_str();
-                spdlog::info("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
+                spdlog::debug("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
                 SettingsManager::SetOption(item.optionKey.c_str(), newVal);
                 RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
                 if (onOptionChanged)
@@ -1907,7 +1908,7 @@ void FrontendMenu::OnDPadRight()
         if (!item.optionKey.empty())
         {
             const char* newVal = item.coreValues.empty() ? item.values[item.currentValue].c_str() : item.coreValues[item.currentValue].c_str();
-            spdlog::info("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
+            spdlog::debug("[FrontendMenu] DPadRight TOGGLE: {} = {}", item.optionKey, newVal);
             SettingsManager::SetOption(item.optionKey.c_str(), newVal);
             RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
             if (onOptionChanged)
@@ -1967,7 +1968,7 @@ void FrontendMenu::OnConfirm()
             else if (item.action == MenuAction::VIDEO) { catName = "Video"; catItems = &m_videoItems; }
             else if (item.action == MenuAction::SYSTEM) { catName = "System"; catItems = &m_systemItems; }
             else if (item.action == MenuAction::AUDIO) { catName = "Audio"; catItems = &m_audioItems; }
-            spdlog::info("[FrontendMenu] OVERLAY PUSH: {} -> {}", m_overlayTitle, catName);
+            spdlog::debug("[FrontendMenu] OVERLAY PUSH: {} -> {}", m_overlayTitle, catName);
             m_overlayTitle = catName;
             m_overlayItems = catItems;
             m_selected = 0;
@@ -1987,7 +1988,7 @@ void FrontendMenu::OnConfirm()
             if (!m_overlayStack.empty())
             {
                 auto& prev = m_overlayStack.back();
-                spdlog::info("[FrontendMenu] OVERLAY POP: {} -> {}", m_overlayTitle, prev.title);
+                spdlog::debug("[FrontendMenu] OVERLAY POP: {} -> {}", m_overlayTitle, prev.title);
                 m_overlayTitle = prev.title;
                 m_overlayItems = prev.items;
                 m_selected = prev.selected;
@@ -1996,7 +1997,7 @@ void FrontendMenu::OnConfirm()
             }
             else
             {
-                spdlog::info("[FrontendMenu] OVERLAY CLOSE: {} -> panel", m_overlayTitle);
+                spdlog::debug("[FrontendMenu] OVERLAY CLOSE: {} -> panel", m_overlayTitle);
                 m_overlayActive = false;
                 m_overlayItems = nullptr;
                 m_selected = m_panelSavedSelected;
@@ -2009,7 +2010,7 @@ void FrontendMenu::OnConfirm()
             // History: load game — check BEFORE values.empty() since history items have no values
             if (m_overlayTitle == "History" && !item.optionKey.empty())
             {
-                spdlog::info("[FrontendMenu] History: load {}", item.optionKey);
+                spdlog::debug("[FrontendMenu] History: load {}", item.optionKey);
                 m_overlayActive = false;
                 m_overlayItems = nullptr;
                 m_overlayStack.clear();
@@ -2031,7 +2032,7 @@ void FrontendMenu::OnConfirm()
                 if (!item.optionKey.empty())
                 {
                     const char* newVal = item.coreValues.empty() ? item.values[item.currentValue].c_str() : item.coreValues[item.currentValue].c_str();
-                    spdlog::info("[FrontendMenu] TOGGLE: {} = {}", item.optionKey, newVal);
+                    spdlog::debug("[FrontendMenu] TOGGLE: {} = {}", item.optionKey, newVal);
                     SettingsManager::SetOption(item.optionKey.c_str(), newVal);
                     RetroCore::SetOptionValue(item.optionKey.c_str(), newVal);
                     if (onOptionChanged)
@@ -2042,13 +2043,13 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::RESET_DEFAULTS:
         {
-            spdlog::info("[FrontendMenu] RESET_DEFAULTS -> confirm (section={})", m_overlayTitle);
+            spdlog::debug("[FrontendMenu] RESET_DEFAULTS -> confirm (section={})", m_overlayTitle);
             std::string title = m_overlayTitle;
             m_confirmDialog.Open("Reset all " + title + " settings to defaults?",
                 ConfirmDialog::CONFIRM, [this, title](bool confirmed)
             {
                 if (!confirmed) return;
-                spdlog::info("[FrontendMenu] RESET_DEFAULTS confirmed (section={})", title);
+                spdlog::debug("[FrontendMenu] RESET_DEFAULTS confirmed (section={})", title);
                 std::vector<std::string> sectionKeys;
                 std::vector<MenuItem>* targetItems = nullptr;
                 if (title == "General") targetItems = &m_generalItems;
@@ -2087,12 +2088,12 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::RESET_ALL_SETTINGS:
         {
-            spdlog::info("[FrontendMenu] RESET_ALL_SETTINGS -> confirm");
+            spdlog::debug("[FrontendMenu] RESET_ALL_SETTINGS -> confirm");
             m_confirmDialog.Open("Reset ALL settings to defaults?\nThis cannot be undone.",
                 ConfirmDialog::CONFIRM, [this](bool confirmed)
             {
                 if (!confirmed) return;
-                spdlog::info("[FrontendMenu] RESET_ALL_SETTINGS confirmed");
+                spdlog::debug("[FrontendMenu] RESET_ALL_SETTINGS confirmed");
                 SettingsManager::ResetToDefaults();
                 BuildMenuTree();
                 m_overlayTitle = "Settings";
@@ -2106,12 +2107,12 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::CLEAR_HISTORY:
         {
-            spdlog::info("[FrontendMenu] CLEAR_HISTORY -> confirm");
+            spdlog::debug("[FrontendMenu] CLEAR_HISTORY -> confirm");
             m_confirmDialog.Open("Clear all history items?\nThis cannot be undone.",
                 ConfirmDialog::CONFIRM, [this](bool confirmed)
             {
                 if (!confirmed) return;
-                spdlog::info("[FrontendMenu] CLEAR_HISTORY confirmed");
+                spdlog::debug("[FrontendMenu] CLEAR_HISTORY confirmed");
                 SettingsManager::ClearHistory();
                 // Close history overlay back to main menu
                 m_overlayActive = false;
@@ -2123,19 +2124,73 @@ void FrontendMenu::OnConfirm()
             break;
         }
 
+        case MenuAction::CLEAR_LOGS:
+        {
+            spdlog::debug("[FrontendMenu] CLEAR_LOGS -> confirm");
+            m_confirmDialog.Open("Clear all log files?\nThis cannot be undone.",
+                ConfirmDialog::CONFIRM, [this](bool confirmed)
+            {
+                if (!confirmed) return;
+                spdlog::debug("[FrontendMenu] CLEAR_LOGS confirmed");
+
+                // Determine log directory (same logic as dosbox_uwpMain.cpp)
+                wchar_t logDir[MAX_PATH] = {};
+                try {
+                    auto installPath = Windows::ApplicationModel::Package::Current->InstalledLocation->Path;
+                    // Xbox: E:\dosbox\logs\, Windows: %TEMP%\dosbox-pure\logs\
+                    wcscpy_s(logDir, installPath->Data());
+                    // Fallback to TEMP
+                    wchar_t tempDir[MAX_PATH];
+                    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
+                        wcscpy_s(logDir, tempDir);
+                        wcscat_s(logDir, L"dosbox-pure\\logs\\");
+                    }
+                } catch (...) {
+                    wchar_t tempDir[MAX_PATH];
+                    if (GetTempPathW(MAX_PATH, tempDir) > 0) {
+                        wcscpy_s(logDir, tempDir);
+                        wcscat_s(logDir, L"dosbox-pure\\logs\\");
+                    }
+                }
+
+                // Delete all xray-*.log and xray-*.log.gz files
+                wchar_t pattern[MAX_PATH];
+                WIN32_FIND_DATAW findData;
+                wcscpy_s(pattern, logDir);
+                wcscat_s(pattern, L"xray-*.*");
+                HANDLE hFind = FindFirstFileW(pattern, &findData);
+                int deleted = 0;
+                if (hFind != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                            wchar_t fullPath[MAX_PATH];
+                            wcscpy_s(fullPath, logDir);
+                            wcscat_s(fullPath, findData.cFileName);
+                            if (DeleteFileW(fullPath)) deleted++;
+                        }
+                    } while (FindNextFileW(hFind, &findData));
+                    FindClose(hFind);
+                }
+
+                ShowToast(L"Logs cleared");
+                spdlog::info("[FrontendMenu] CLEAR_LOGS: deleted {} log files", deleted);
+            });
+            break;
+        }
+
         case MenuAction::PICK_FOLDER:
-            spdlog::info("[FrontendMenu] PICK_FOLDER -> FileBrowser.OpenForFolderPick()");
+            spdlog::debug("[FrontendMenu] PICK_FOLDER -> FileBrowser.OpenForFolderPick()");
             m_fileBrowser.OpenForFolderPick();
             break;
 
         case MenuAction::RELOAD_SETTINGS:
         {
-            spdlog::info("[FrontendMenu] RELOAD_SETTINGS -> confirm");
+            spdlog::debug("[FrontendMenu] RELOAD_SETTINGS -> confirm");
             m_confirmDialog.Open("Reset all settings to defaults\nand reload?", ConfirmDialog::CONFIRM,
                 [this](bool confirmed)
             {
                 if (!confirmed) return;
-                spdlog::info("[FrontendMenu] RELOAD_SETTINGS confirmed");
+                spdlog::debug("[FrontendMenu] RELOAD_SETTINGS confirmed");
                 SettingsManager::ResetToDefaults();
                 SettingsManager::ForEachOption([](const char* key, const char* value) {
                     if (strncmp(key, "frontend_", 9) != 0)
@@ -2156,12 +2211,12 @@ void FrontendMenu::OnConfirm()
 
         case MenuAction::RESTART_APP:
         {
-            spdlog::info("[FrontendMenu] RESTART_APP -> confirm");
+            spdlog::debug("[FrontendMenu] RESTART_APP -> confirm");
             m_confirmDialog.Open("Exit now and re-launch?", ConfirmDialog::CONFIRM,
                 [this](bool confirmed)
             {
                 if (!confirmed) return;
-                spdlog::info("[FrontendMenu] RESTART confirmed — exiting");
+                spdlog::debug("[FrontendMenu] RESTART confirmed — exiting");
                 Windows::ApplicationModel::Core::CoreApplication::Exit();
             });
             break;
@@ -2181,7 +2236,7 @@ void FrontendMenu::OnConfirm()
     switch (item.action)
     {
     case MenuAction::OPEN_FILE:
-        spdlog::info("[FrontendMenu] OPEN_FILE -> FileBrowser.Open()");
+        spdlog::debug("[FrontendMenu] OPEN_FILE -> FileBrowser.Open()");
         m_fileBrowser.Open();
         break;
 
@@ -2233,19 +2288,19 @@ void FrontendMenu::OnConfirm()
         break;
 
     case MenuAction::EXIT:
-        spdlog::info("[FrontendMenu] EXIT -> confirm");
+        spdlog::debug("[FrontendMenu] EXIT -> confirm");
         m_confirmDialog.Open("Exit DOSBox Pure Unleashed?", ConfirmDialog::CONFIRM,
             [this](bool confirmed)
         {
             if (!confirmed) return;
-            spdlog::info("[FrontendMenu] EXIT confirmed");
+            spdlog::debug("[FrontendMenu] EXIT confirmed");
             m_visible = false;
             if (onExit) onExit();
         });
         break;
 
     case MenuAction::ABOUT:
-        spdlog::info("[FrontendMenu] ABOUT -> AboutDialog.Open()");
+        spdlog::debug("[FrontendMenu] ABOUT -> AboutDialog.Open()");
         m_aboutDialog.Open(m_versionStr);
         break;
 
@@ -2290,7 +2345,7 @@ void FrontendMenu::OnBack()
         if (!m_overlayStack.empty())
         {
             auto& prev = m_overlayStack.back();
-            spdlog::info("[FrontendMenu] BACK overlay pop: {} -> {}", m_overlayTitle, prev.title);
+            spdlog::debug("[FrontendMenu] BACK overlay pop: {} -> {}", m_overlayTitle, prev.title);
             m_overlayTitle = prev.title;
             m_overlayItems = prev.items;
             m_selected = prev.selected;
@@ -2299,7 +2354,7 @@ void FrontendMenu::OnBack()
         }
         else
         {
-            spdlog::info("[FrontendMenu] BACK overlay close: {} -> panel", m_overlayTitle);
+            spdlog::debug("[FrontendMenu] BACK overlay close: {} -> panel", m_overlayTitle);
             m_overlayActive = false;
             m_overlayItems = nullptr;
             m_selected = m_panelSavedSelected;

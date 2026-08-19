@@ -33,6 +33,7 @@ namespace dosbox_uwp
         RESET_DEFAULTS,
         RESET_ALL_SETTINGS,
         CLEAR_HISTORY,
+        CLEAR_LOGS,
         ABOUT,
         EXIT,
         PICK_FOLDER,

@@ -17,7 +17,7 @@ void ConfirmDialog::Open(const std::string& message, Mode mode, std::function<vo
     m_onResult = onResult;
     m_selectedBtn = 0;
     ReleaseResources();
-    spdlog::info("[ConfirmDialog] Open (mode={})", mode == CONFIRM ? "confirm" : "info");
+    spdlog::debug("[ConfirmDialog] Open (mode={})", mode == CONFIRM ? "confirm" : "info");
 }
 
 void ConfirmDialog::Close()
@@ -118,7 +118,7 @@ void ConfirmDialog::EnsureResources(ID2D1DeviceContext* d2d, IDWriteFactory* dwr
     if (m_textFormatTitle) m_textFormatTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 
     m_resourcesCreated = true;
-    spdlog::info("[ConfirmDialog] Resources created");
+    spdlog::debug("[ConfirmDialog] Resources created");
 }
 
 void ConfirmDialog::Render(ID2D1DeviceContext* d2d, IDWriteFactory* dwrite, float screenW, float screenH)

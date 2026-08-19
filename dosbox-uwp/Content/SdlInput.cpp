@@ -42,7 +42,7 @@ bool SdlInput::Initialize()
 
     if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) < 0)
     {
-        OutputDebugStringA("SDL_Init FAILED\n");
+        spdlog::error("[SdlInput] SDL_Init FAILED");
         return false;
     }
     m_initialized = true;
@@ -56,14 +56,12 @@ bool SdlInput::Initialize()
         {
             const char* name = SDL_GameControllerName(m_controller);
             strcpy_s(m_controllerName, sizeof(m_controllerName), name ? name : "Unknown");
-            char buf[128];
-            sprintf_s(buf, "Controller: %s\n", m_controllerName);
-            OutputDebugStringA(buf);
+            spdlog::debug("[SdlInput] Controller: {}", m_controllerName);
         }
     }
     else
     {
-        OutputDebugStringA("No SDL controller. Will try UWP Gamepad API...\n");
+        spdlog::debug("[SdlInput] No SDL controller, trying UWP Gamepad API");
         m_hasController = false;
     }
     return true;
@@ -99,9 +97,7 @@ void SdlInput::PollEvents()
                     // close UWP fallback since SDL now owns the controller
                     m_uwpGamepad = nullptr;
                     sprintf_s(m_lastEventStr, "CTL:CONNECTED %s", m_controllerName);
-                    char buf[256];
-                    sprintf_s(buf, "SDL controller connected: %s\n", m_controllerName);
-                    OutputDebugStringA(buf);
+                    spdlog::debug("[SdlInput] SDL controller connected: {}", m_controllerName);
                 }
             }
             break;
@@ -117,7 +113,7 @@ void SdlInput::PollEvents()
                 m_controllerName[0] = '\0';
                 memset(m_buttonHeld, 0, sizeof(m_buttonHeld));
                 sprintf_s(m_lastEventStr, "CTL:DISCONNECTED");
-                OutputDebugStringA("SDL controller disconnected\n");
+                spdlog::debug("[SdlInput] SDL controller disconnected");
                 // UWP fallback will re-open in PollUwpGamepad next frame
             }
             break;
@@ -227,7 +223,7 @@ void SdlInput::PollUwpGamepad()
             m_uwpGamepad = gamepads->GetAt(0);
             m_hasController = true;
             strcpy_s(m_controllerName, sizeof(m_controllerName), "UWP Gamepad");
-            OutputDebugStringA("UWP Gamepad connected\n");
+            spdlog::debug("[SdlInput] UWP Gamepad connected");
         }
     }
 

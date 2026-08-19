@@ -8,17 +8,17 @@ using namespace Microsoft::WRL;
 RetroScreenRenderer::RetroScreenRenderer(const std::shared_ptr<DX::DeviceResources>& deviceResources)
     : m_deviceResources(deviceResources)
 {
-    OutputDebugStringA("[dosbox-uwp] RetroScreenRenderer ctor\n");
+    spdlog::debug("[Render] ctor");
 }
 
 void RetroScreenRenderer::CreateDeviceDependentResources()
 {
-    OutputDebugStringA("[dosbox-uwp] RetroScreenRenderer::CreateDeviceDependentResources\n");
+    spdlog::debug("[Render] CreateDeviceDependentResources");
 }
 
 void RetroScreenRenderer::ReleaseDeviceDependentResources()
 {
-    OutputDebugStringA("[dosbox-uwp] RetroScreenRenderer::ReleaseDeviceDependentResources\n");
+    spdlog::debug("[Render] ReleaseDeviceDependentResources");
     m_videoBitmap.Reset();
     m_frameWidth = 0;
     m_frameHeight = 0;
@@ -28,24 +28,17 @@ void RetroScreenRenderer::UpdateVideoFrame(const uint8_t* data, unsigned width, 
 {
     if (!data || width == 0 || height == 0)
     {
-        OutputDebugStringA("[dosbox-uwp] UpdateVideoFrame: invalid params\n");
+        spdlog::warn("[Render] UpdateVideoFrame: invalid params");
         return;
     }
 
-    char buf[256];
-#ifdef FRAME_TRACE
-    sprintf_s(buf, "[dosbox-uwp] UpdateVideoFrame: %ux%u pitch=%u d2dContext=%p\n",
-        width, height, pitch, m_deviceResources->GetD2DDeviceContext());
-    OutputDebugStringA(buf);
-#endif
+    spdlog::debug("[Render] UpdateVideoFrame: {}x{} pitch={}", width, height, pitch);
 
     auto d2dContext = m_deviceResources->GetD2DDeviceContext();
 
     if (!m_videoBitmap || m_frameWidth != width || m_frameHeight != height)
     {
-        sprintf_s(buf, "[dosbox-uwp]   RecreateBitmap needed: old=%ux%u new=%ux%u\n",
-            m_frameWidth, m_frameHeight, width, height);
-        OutputDebugStringA(buf);
+        spdlog::debug("[Render]   RecreateBitmap needed: old={}x{} new={}x{}", m_frameWidth, m_frameHeight, width, height);
         RecreateBitmap(width, height);
     }
 
@@ -55,13 +48,12 @@ void RetroScreenRenderer::UpdateVideoFrame(const uint8_t* data, unsigned width, 
         HRESULT hr = m_videoBitmap->CopyFromMemory(&rect, data, pitch);
         if (FAILED(hr))
         {
-            sprintf_s(buf, "[dosbox-uwp]   CopyFromMemory FAILED hr=0x%08X\n", hr);
-            OutputDebugStringA(buf);
+            spdlog::error("[Render]   CopyFromMemory FAILED hr=0x{:08X}", (unsigned)hr);
         }
     }
     else
     {
-        OutputDebugStringA("[dosbox-uwp]   m_videoBitmap is NULL after RecreateBitmap!\n");
+        spdlog::error("[Render]   m_videoBitmap is NULL after RecreateBitmap!");
     }
 }
 
@@ -69,19 +61,14 @@ void RetroScreenRenderer::Render()
 {
     if (!m_videoBitmap)
     {
-        OutputDebugStringA("[dosbox-uwp] Render: no bitmap, skip\n");
+        spdlog::debug("[Render] no bitmap, skip");
         return;
     }
 
     auto d2dContext = m_deviceResources->GetD2DDeviceContext();
     auto logicalSize = m_deviceResources->GetLogicalSize();
 
-    char buf[256];
-#ifdef FRAME_TRACE
-    sprintf_s(buf, "[dosbox-uwp] Render: frame=%ux%u logical=%.0fx%.0f\n",
-        m_frameWidth, m_frameHeight, logicalSize.Width, logicalSize.Height);
-    OutputDebugStringA(buf);
-#endif
+    spdlog::debug("[Render] frame={}x{} logical={:.0f}x{:.0f}", m_frameWidth, m_frameHeight, logicalSize.Width, logicalSize.Height);
 
     d2dContext->BeginDraw();
 
@@ -96,11 +83,7 @@ void RetroScreenRenderer::Render()
 
     D2D1_RECT_F destRect = D2D1::RectF(offsetX, offsetY, offsetX + drawW, offsetY + drawH);
 
-#ifdef FRAME_TRACE
-    sprintf_s(buf, "[dosbox-uwp]   DrawBitmap dest=(%.0f,%.0f)-(%.0f,%.0f) bitmap=%p\n",
-        destRect.left, destRect.top, destRect.right, destRect.bottom, m_videoBitmap.Get());
-    OutputDebugStringA(buf);
-#endif
+    spdlog::debug("[Render]   DrawBitmap dest=({:.0f},{:.0f})-({:.0f},{:.0f})", destRect.left, destRect.top, destRect.right, destRect.bottom);
 
     d2dContext->DrawBitmap(
         m_videoBitmap.Get(),
@@ -113,15 +96,14 @@ void RetroScreenRenderer::Render()
     HRESULT hr = d2dContext->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET)
     {
-        OutputDebugStringA("[dosbox-uwp]   EndDraw: D2DERR_RECREATE_TARGET\n");
+        spdlog::warn("[Render]   EndDraw: D2DERR_RECREATE_TARGET");
         m_videoBitmap.Reset();
         m_frameWidth = 0;
         m_frameHeight = 0;
     }
     else if (FAILED(hr))
     {
-        sprintf_s(buf, "[dosbox-uwp]   EndDraw FAILED hr=0x%08X\n", hr);
-        OutputDebugStringA(buf);
+        spdlog::error("[Render]   EndDraw FAILED hr=0x{:08X}", (unsigned)hr);
     }
 }
 
@@ -134,10 +116,7 @@ void RetroScreenRenderer::RecreateBitmap(unsigned width, unsigned height)
     float dpiX, dpiY;
     d2dContext->GetDpi(&dpiX, &dpiY);
 
-    char buf[256];
-    sprintf_s(buf, "[dosbox-uwp] RecreateBitmap: %ux%u dpi=%.0fx%.0f context=%p\n",
-        width, height, dpiX, dpiY, d2dContext);
-    OutputDebugStringA(buf);
+    spdlog::debug("[Render] RecreateBitmap: {}x{} dpi={:.0f}x{:.0f}", width, height, dpiX, dpiY);
 
     D2D1_BITMAP_PROPERTIES1 props = {};
     props.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -160,12 +139,10 @@ void RetroScreenRenderer::RecreateBitmap(unsigned width, unsigned height)
         m_videoBitmap = bitmap;
         m_frameWidth = width;
         m_frameHeight = height;
-        sprintf_s(buf, "[dosbox-uwp]   CreateBitmap OK bitmap=%p\n", m_videoBitmap.Get());
-        OutputDebugStringA(buf);
+        spdlog::debug("[Render]   CreateBitmap OK");
     }
     else
     {
-        sprintf_s(buf, "[dosbox-uwp]   CreateBitmap FAILED hr=0x%08X\n", hr);
-        OutputDebugStringA(buf);
+        spdlog::error("[Render]   CreateBitmap FAILED hr=0x{:08X}", (unsigned)hr);
     }
 }

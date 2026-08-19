@@ -89,10 +89,7 @@ dosbox_uwpMain::dosbox_uwpMain(const std::shared_ptr<DX::DeviceResources>& devic
     if (m_sdlInput->Initialize())
     {
         m_hasController = m_sdlInput->HasController();
-        char buf[128];
-        sprintf_s(buf, "SDL: controller=%s\n",
-            m_hasController ? "CONNECTED" : "NONE (SPACE=btnA)");
-        OutputDebugStringA(buf);
+    spdlog::debug("[SdlInput] controller={}", m_hasController ? "CONNECTED" : "NONE (SPACE=btnA)");
     }
 
     // Initialize settings manager (loads dosbox-pure-settings.json)
@@ -336,7 +333,7 @@ void dosbox_uwpMain::BootCore()
 {
     if (!m_retroCore->Init())
     {
-        OutputDebugStringA("[dosbox-uwp] retro_init FAILED\n");
+        spdlog::error("[Core] retro_init FAILED");
         return;
     }
 
@@ -345,10 +342,9 @@ void dosbox_uwpMain::BootCore()
 
     _wmkdir((basePath + L"\\saves").c_str());
     _wmkdir((basePath + L"\\config").c_str());
-    OutputDebugStringA("[dosbox-uwp] LocalFolder dirs: saves/, config/\n");
+    spdlog::debug("[Core] LocalFolder dirs: saves/, config/");
 
-    OutputDebugStringA("[dosbox-uwp] Core initialized OK\n");
-    OutputDebugStringA("[dosbox-uwp] Keyboard mapping active: VirtualKey->RETROK_\n");
+    spdlog::debug("[Core] initialized OK, keyboard mapping active");
 
     m_retroRunning = true;
 }
@@ -384,7 +380,7 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     }
     else
     {
-        spdlog::info("[LoadRom] core already initialized, skipping retro_init");
+        spdlog::debug("[LoadRom] core already initialized, skipping retro_init");
     }
 
     // Keep requested paths so the async load-success handler can update
@@ -407,7 +403,7 @@ void dosbox_uwpMain::LoadRom(const std::wstring& path, std::vector<uint8_t> romD
     m_retroCore->LoadGame(path, romData);
     m_loadState = LOAD_BOOTING;
     m_loadTimer = 0;
-    spdlog::info("[LoadRom] game load enqueued (async on emulation thread)");
+    spdlog::debug("[LoadRom] game load enqueued (async on emulation thread)");
 }
 
 void dosbox_uwpMain::QueueLoadRom(const std::wstring& path, std::vector<uint8_t> romData, const std::wstring& originalPath)
@@ -558,7 +554,7 @@ void dosbox_uwpMain::Update()
 
         // R3 -> PUREMENU toggle (after menu nav so WasButtonJustPressed not consumed)
         if (m_sdlInput->WasButtonJustPressed(BUTTON_R3) && m_retroCore && m_retroCore->IsLoaded()) {
-            spdlog::info("[input] R3 -> toggle PUREMENU");
+            spdlog::debug("[input] R3 -> toggle PUREMENU");
             m_retroCore->ToggleOSD();
         }
 
@@ -574,7 +570,7 @@ void dosbox_uwpMain::Update()
             bool allThree = lb && rb && sel;
             if (allThree && !m_lbrbsPrevHeld && m_retroCore && m_retroCore->IsLoaded()) {
                 m_gamepadMouseMode = !m_gamepadMouseMode;
-                spdlog::info("[input] Gamepad mouse mode: {}", m_gamepadMouseMode ? "ON" : "OFF");
+                spdlog::debug("[input] Gamepad mouse mode: {}", m_gamepadMouseMode ? "ON" : "OFF");
             }
             m_lbrbsPrevHeld = allThree;
         }
@@ -765,7 +761,7 @@ void dosbox_uwpMain::Update()
         // game (RetroCore handles it internally). Do the UI-side cleanup here.
         if (RetroCore::ConsumeUnloadEvent())
         {
-            OutputDebugStringA("[dosbox-uwp] Emulation thread unloaded game (core SHUTDOWN)\n");
+            spdlog::debug("[Core] Emulation thread unloaded game (SHUTDOWN)");
             m_retroRunning = false;
             m_lastRetroRuns = 0;
             m_clearColor = DirectX::Colors::Black;
@@ -1002,7 +998,7 @@ void dosbox_uwpMain::Update()
                 {
                     static bool warned = false;
                     if (!warned) { warned = true;
-                        OutputDebugStringA("[dosbox-uwp] WARNING: Load stuck in BOOTING >5s (possible hang)\n");
+                        spdlog::warn("[Core] Load stuck in BOOTING >5s (possible hang)");
                     }
                 }
             }
@@ -1058,12 +1054,9 @@ void dosbox_uwpMain::Update()
                 float fps       = m_timer.GetFramesPerSecond();
                 unsigned long long memBytes = 0;
                 try { memBytes = Windows::System::MemoryManager::AppMemoryUsage; } catch (...) { }
-                char _dbg[512];
-                sprintf_s(_dbg, "[dosbox-uwp] TICK #%u: frame=%.1fms hud=%.1f scene=%.1f fps=%.0f "
-                    "MEM=%lluMB total=%.1f\n",
+                spdlog::debug("[TICK] #{}: frame={:.1f}ms hud={:.1f} scene={:.1f} fps={:.0f} MEM={}MB total={:.1f}",
                     _tc, frameMs, hudMs, sceneMs, fps,
                     memBytes / (1024 * 1024), total_ms);
-                OutputDebugStringA(_dbg);
             }
         }
     });
@@ -1378,16 +1371,12 @@ void dosbox_uwpMain::OnKeyEvent(Windows::System::VirtualKey key, bool down, uint
     {
         if (!m_retroCore->IsLoaded())
         {
-            char buf[128];
-            sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X ignored — core not loaded\n", vk);
-            OutputDebugStringA(buf);
+            spdlog::debug("[Input] VK=0x{:02X} ignored — core not loaded", vk);
         }
         else
         {
 #ifdef DEBUG_KEYBOARD
-            char buf[128];
-            sprintf_s(buf, "[dosbox-uwp] Key: VK=0x%02X down=%d retroKey=%u\n", vk, down, retroKey);
-            OutputDebugStringA(buf);
+            spdlog::debug("[Input] VK=0x{:02X} down={} retroKey={}", vk, down, retroKey);
 #endif
             RetroCore::SetKeyState(retroKey, down);
         }
